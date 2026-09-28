@@ -1,0 +1,17 @@
+node_modules/
+.next/
+dist/
+.turbo/
+.env
+.env.local
+.env.*.local
+!.env.example
+.secrets/
+*.pem
+*.key
+*service-account*.json
+*serviceAccount*.json
+*firebase-adminsdk*.json
+graphify-out/
+*.tsbuildinfo
+coverage/
