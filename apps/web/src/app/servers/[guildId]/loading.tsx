@@ -1,1 +1,1 @@
-export default function Loading() { return <main className="p-8 text-slate-400">Loading server…</main>; }
+export default function Loading() { return <main className="content-page" aria-label="Завантаження сервера"><div className="skeleton skeleton-title" /><div className="skeleton skeleton-line" /><div className="skeleton skeleton-card" /></main>; }

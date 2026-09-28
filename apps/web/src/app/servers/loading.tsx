@@ -1,1 +1,1 @@
-export default function Loading() { return <main className="mx-auto max-w-5xl p-8 text-slate-400">Loading your servers…</main>; }
+export default function Loading() { return <main className="content-page" aria-label="Завантаження серверів"><div className="skeleton skeleton-title" /><div className="skeleton skeleton-line" /><div className="server-group"><div className="skeleton skeleton-heading" /><div className="server-grid">{[0, 1, 2, 3].map((item) => <div key={item} className="skeleton skeleton-card" />)}</div></div></main>; }

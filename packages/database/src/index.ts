@@ -10,6 +10,17 @@ export function firestore(credentials: FirebaseCredentials) {
 
 export class GuildRepository {
   constructor(private readonly db: ReturnType<typeof firestore>) {}
+  async installedGuildIds(guildIds: readonly string[]): Promise<Set<string>> {
+    const installed = new Set<string>();
+    for (let start = 0; start < guildIds.length; start += 100) {
+      const ids = guildIds.slice(start, start + 100);
+      const snapshots = await this.db.getAll(...ids.map((id) => this.db.collection('guilds').doc(id)));
+      for (const snapshot of snapshots) {
+        if (snapshot.get('botInstalled') === true) installed.add(snapshot.id);
+      }
+    }
+    return installed;
+  }
   async get(guildId: string): Promise<GuildRecord | null> {
     const snapshot = await this.db.collection('guilds').doc(guildId).get();
     return snapshot.exists ? snapshot.data() as GuildRecord : null;
