@@ -8,6 +8,8 @@ export function ServerCard({ guild }: { guild: ManageableGuild }) {
   return <article className="server-card">
     <GuildIcon id={guild.id} name={guild.name} icon={guild.icon} size={48} />
     <div className="server-card-copy"><h3>{guild.name}</h3><p>{guild.installed ? 'SCRT підключено' : 'SCRT ще не додано'}</p></div>
-    <Link className="action-link" href={action.href} prefetch={guild.installed ? undefined : false}>{action.label}</Link>
+    {guild.installed
+      ? <Link className="action-link" href={action.href} prefetch={false}>{action.label}</Link>
+      : <a className="action-link" href={action.href} target="_blank" rel="noopener noreferrer">{action.label}</a>}
   </article>;
 }

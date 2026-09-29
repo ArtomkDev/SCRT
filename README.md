@@ -1,6 +1,6 @@
 # SCRT Control
 
-Private-first Discord server control platform. This milestone provides the bot, Discord login, a protected multi-guild dashboard, Firestore guild lifecycle, and a permission policy. Feature modules are intentionally absent.
+Private-first Discord server control platform. The first feature module provides temporary voice rooms with Creator channels, room ownership and controls, a protected multi-guild dashboard, and restart recovery.
 
 ## Architecture
 
@@ -8,16 +8,16 @@ This pnpm workspace is a modular monolith:
 
 | Path | Responsibility |
 | --- | --- |
-| `apps/bot` | Persistent discord.js Gateway worker, slash command, guild synchronization |
+| `apps/bot` | Persistent discord.js Gateway worker, slash commands, guild and Voice lifecycle |
 | `apps/web` | Next.js App Router dashboard, OAuth routes, server-side guards |
 | `packages/config` | Validated runtime environment |
-| `packages/database` | Singleton Firebase Admin and guild repository |
+| `packages/database` | Singleton Firebase Admin, guild and Voice repositories |
 | `packages/discord` | Discord OAuth/API and installation URLs |
 | `packages/permissions` | Pure application permission policy |
 | `packages/validation` | Untrusted input schemas |
 | `packages/shared` | Domain records and structured logging |
 
-Firestore uses `guilds/{guildId}`. The root record stores guild identity, installation state and timestamps. `guilds/{guildId}/access/roles` may store `{ mappings: [{ discordRoleId, appRole }] }`. The owner receives Super Admin independent of this document. Future modules should own their own subcollections. Voice activity should persist session starts, then aggregate duration on leave or recovery after a restart; never write a Firestore heartbeat every second.
+Firestore uses `guilds/{guildId}`. The root record stores guild identity, installation state and timestamps. `guilds/{guildId}/access/roles` may store `{ mappings: [{ discordRoleId, appRole }] }`. The owner receives Super Admin independent of this document. Voice uses `voiceSettings/main`, `voiceCreators/{channelId}`, `voiceRooms/{channelId}`, `voiceInterfaces/{channelId}`, and `voiceAudit/{autoId}` under each guild. Room records contain SCRT ownership, access lists and lifecycle state; Discord remains the source for channel name, bitrate, limit and current members. Voice writes on events and control changes, without a heartbeat.
 
 ## Requirements and local setup
 
@@ -54,7 +54,13 @@ With development credentials filled, `pnpm verify:live` checks bot identity, OAu
 
 ## Discord setup
 
-Create one application in the Discord Developer Portal and enable its bot. Set its OAuth redirect URI to `http://localhost:3000/api/auth/callback` for local work and `<production-origin>/api/auth/callback` in production. Fill the bot token, application ID and client secret. OAuth login requests `identify guilds guilds.members.read` so the backend can verify the current user's Discord roles; bot installation requests `bot applications.commands`. The installation URL is pinned to a selected manageable guild. Requested bot permission integer is **0**: `/ping`, guild metadata and installation lifecycle require no elevated bot permissions. Add permissions only as a future module requires them and document each addition. Privileged Gateway intents are disabled.
+Create one application in the Discord Developer Portal and enable its bot. Set its OAuth redirect URI to `http://localhost:3000/api/auth/callback` for local work and `<production-origin>/api/auth/callback` in production. Fill the bot token, application ID and client secret. OAuth login requests `identify guilds guilds.members.read` so the backend can verify the current user's Discord roles; bot installation requests `bot applications.commands`. The installation URL is pinned to a selected manageable guild. The bot requests View Channel, Manage Channels, Manage Roles, Move Members, Connect, Send Messages, Embed Links, and Read Message History. It does not request Administrator. The bot uses the nonprivileged `GuildVoiceStates` Gateway intent; privileged Gateway intents remain disabled.
+
+For a guild where SCRT was installed before Voice, open **Голосові канали → Дозволи → Оновити дозволи** and authorize the updated bot permissions in Discord. Check effective permissions on each Creator and target category; a category overwrite can still deny the bot. The existing `permissions=0` installation is not upgraded automatically.
+
+To set up Voice, open **Голосові канали → Налаштування** and enable the module. Add one or more Creator channels in **Creator-канали**, selecting an existing voice channel or creating one through the dashboard. Each Creator has independent room defaults, target category, access rules and owner features. Members join a Creator to create a temporary room. Owners use `/voice` or a room greeting panel; administrators can publish a shared Interface Message in **Інтерфейси**. Empty rooms are deleted after the configured delay. A room reset restores Creator defaults and clears temporary permit/block lists without changing ownership.
+
+On startup the bot loads SCRT room records, removes records whose channels no longer exist, restores active rooms and ownership, and reschedules cleanup and owner-leave timers. It never infers managed rooms from their names and never recreates missing rooms. Creator configuration changes are observed through Firestore. A Railway redeploy does not require a persistent disk.
 
 Run `pnpm deploy:commands` after filling credentials. With `DISCORD_GUILD_ID` in development it registers to that guild; production registers global commands, which can take time to propagate. The bot reconciles guild records on ready and handles join/leave events. A join merges metadata without replacing access settings; a leave marks the record disconnected.
 
@@ -66,7 +72,7 @@ Create a Firebase project and Firestore database in production mode. Create a de
 
 Deploy the bot as a persistent worker from this repository. Build command: `pnpm install --frozen-lockfile && pnpm --filter @scrt/bot build`. Start command: `pnpm --filter @scrt/bot start`. Set the bot's required environment variables in Railway; no local `.env` or persistent volume is required. Deploy the web app as a separate service with build command `pnpm install --frozen-lockfile && pnpm --filter @scrt/web build`, start command `pnpm --filter @scrt/web start`, and its required environment variables. Set `NEXT_PUBLIC_APP_URL` to the web service's public HTTPS origin and add its OAuth callback URL in Discord. Register global commands from a credentialed deployment environment using `pnpm deploy:commands`.
 
-The bot tolerates reconnects and restart through idempotent guild reconciliation. Firestore is the persistent store. Guild sync failures are logged individually; there is no local disk dependency.
+The bot tolerates reconnects and restart through guild and Voice reconciliation. Firestore is the persistent store. Guild and room recovery failures are logged individually; there is no local disk dependency.
 
 ## Graphify and Codex
 
@@ -74,4 +80,4 @@ The project-scoped Graphify Codex installer owns its section in `AGENTS.md` and 
 
 ## Current status and next modules
 
-The implemented path is OAuth login → manageable guild list → installed guild dashboard or Add Bot → protected guild view. Credentials and Discord/Firebase setup are required for a live end-to-end run. The Access Control page shows the owner and the backend supports stored Discord role mappings; the mapping editor is future work. Temporary voice, activity tracking, XP, moderation, automation, analytics and audit logs remain future modules.
+The implemented path is OAuth login → manageable guild list → installed guild dashboard → protected Voice configuration → Creator join → managed room lifecycle. Credentials and Discord/Firebase setup are required for a live end-to-end run. The Access Control page shows the owner and the backend supports stored Discord role mappings; the mapping editor is future work. Activity tracking, XP, moderation, automation and analytics remain future modules.

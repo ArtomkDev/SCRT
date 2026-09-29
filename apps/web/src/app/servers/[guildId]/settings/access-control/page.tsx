@@ -1,4 +1,6 @@
 import { requireGuildAccess } from '@/lib/guards';
+import { botGuild } from '@scrt/discord';
+import { env, guilds } from '@/lib/server';
 import { permissionsForRole, type AppPermission, type AppRole } from '@scrt/permissions';
 
 const permissionLabels: Record<AppPermission, string> = {
@@ -13,7 +15,9 @@ const describePermissions = (role: AppRole) => permissionsForRole(role).map((per
 
 export default async function AccessControl({ params }: { params: Promise<{ guildId: string }> }) {
   const { guildId } = await params;
-  const { ownerId, mappings } = await requireGuildAccess(guildId, 'settings.view');
+  await requireGuildAccess(guildId, 'settings.view');
+  const [liveGuild, mappings] = await Promise.all([botGuild(env().DISCORD_BOT_TOKEN, guildId), guilds().roleMappings(guildId)]);
+  const ownerId = liveGuild.owner_id;
   return <main className="content-page">
     <div className="page-heading"><h1>Керування доступом</h1><p>Власник Discord-сервера завжди має повний доступ. Налаштування ролей з’явиться пізніше.</p></div>
     <div className="detail-panel">

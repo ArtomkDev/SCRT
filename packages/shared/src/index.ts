@@ -4,6 +4,7 @@ export type GuildRecord = {
   icon: string | null;
   ownerId: string;
   botInstalled: boolean;
+  resourceRevision?: number;
   schemaVersion: 1;
 };
 

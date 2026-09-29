@@ -38,9 +38,18 @@ importers:
       '@scrt/database':
         specifier: workspace:*
         version: link:../../packages/database
+      '@scrt/discord':
+        specifier: workspace:*
+        version: link:../../packages/discord
+      '@scrt/permissions':
+        specifier: workspace:*
+        version: link:../../packages/permissions
       '@scrt/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      '@scrt/validation':
+        specifier: workspace:*
+        version: link:../../packages/validation
       discord.js:
         specifier: ^14.0.0
         version: 14.27.0
@@ -118,6 +127,9 @@ importers:
       '@scrt/shared':
         specifier: workspace:*
         version: link:../shared
+      '@scrt/validation':
+        specifier: workspace:*
+        version: link:../validation
       firebase-admin:
         specifier: ^14.5.0
         version: 14.5.0(supports-color@7.2.0)
@@ -127,6 +139,9 @@ importers:
       '@scrt/validation':
         specifier: workspace:*
         version: link:../validation
+      discord-api-types:
+        specifier: ^0.38.0
+        version: 0.38.55
       zod:
         specifier: ^4.0.0
         version: 4.6.5

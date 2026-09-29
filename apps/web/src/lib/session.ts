@@ -1,10 +1,12 @@
 import 'server-only';
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 import { cookies } from 'next/headers';
-import { refreshTokens } from '@scrt/discord';
+import { discordUser, refreshTokens, type DiscordUser } from '@scrt/discord';
 import { env } from './server';
 
-type Session = { accessToken: string; refreshToken: string; accessExpiresAt: number; sessionExpiresAt: number };
+type Session = { accessToken: string; refreshToken: string; accessExpiresAt: number; sessionExpiresAt: number; user?: DiscordUser };
+type Tokens = Awaited<ReturnType<typeof refreshTokens>>;
+const pendingRefreshes = new Map<string, Promise<Tokens>>();
 const key = () => createHash('sha256').update(env().SESSION_SECRET).digest();
 const name = 'scrt_session';
 export const cookieOptions = () => ({ httpOnly: true, secure: env().NODE_ENV === 'production', sameSite: 'lax' as const, path: '/' });
@@ -25,26 +27,48 @@ function unseal(value: string): Session | null {
     return parsed as Session;
   } catch { return null; }
 }
-export async function createSession(tokens: { access_token: string; refresh_token: string; expires_in: number }) {
-  const session: Session = { accessToken: tokens.access_token, refreshToken: tokens.refresh_token, accessExpiresAt: Date.now() + tokens.expires_in * 1000, sessionExpiresAt: Date.now() + 7 * 86400_000 };
+export async function createSession(tokens: { access_token: string; refresh_token: string; expires_in: number }, user: DiscordUser) {
+  const session: Session = { accessToken: tokens.access_token, refreshToken: tokens.refresh_token, accessExpiresAt: Date.now() + tokens.expires_in * 1000, sessionExpiresAt: Date.now() + 7 * 86400_000, user };
   (await cookies()).set(name, seal(session), { ...cookieOptions(), maxAge: 7 * 86400 });
+}
+export async function sessionUser(): Promise<DiscordUser | null> {
+  const value = (await cookies()).get(name)?.value;
+  const session = value ? unseal(value) : null;
+  return session?.user ?? null;
+}
+export async function hasSession(): Promise<boolean> {
+  const value = (await cookies()).get(name)?.value;
+  return Boolean(value && unseal(value));
 }
 export async function accessToken(): Promise<string | null> {
   const value = (await cookies()).get(name)?.value;
   const session = value ? unseal(value) : null;
   if (!session) return null;
-  if (session.accessExpiresAt > Date.now() + 60_000) return session.accessToken;
+  if (session.accessExpiresAt > Date.now() + 10_000) return session.accessToken;
   // Refresh in a Route Handler so its Set-Cookie reaches the browser.
   return null;
 }
-export async function refreshSession(): Promise<boolean> {
+export async function refreshSession(force = false): Promise<boolean> {
   const value = (await cookies()).get(name)?.value;
   const session = value ? unseal(value) : null;
   if (!session) return false;
-  if (session.accessExpiresAt > Date.now() + 60_000) return true;
+  if (!force && session.accessExpiresAt > Date.now() + 10_000) return true;
   try {
-    const tokens = await refreshTokens(env().DISCORD_CLIENT_ID, env().DISCORD_CLIENT_SECRET, session.refreshToken);
-    await createSession(tokens);
+    // Parallel navigation requests can carry the same old cookie. Reusing the
+    // result prevents a rotated Discord refresh token from being spent twice.
+    const refreshKey = createHash('sha256').update(session.refreshToken).digest('hex');
+    let pending = pendingRefreshes.get(refreshKey);
+    if (!pending) {
+      pending = refreshTokens(env().DISCORD_CLIENT_ID, env().DISCORD_CLIENT_SECRET, session.refreshToken);
+      pendingRefreshes.set(refreshKey, pending);
+      const current = pending;
+      void current.then(
+        () => { setTimeout(() => { if (pendingRefreshes.get(refreshKey) === current) pendingRefreshes.delete(refreshKey); }, 30_000).unref(); },
+        () => { if (pendingRefreshes.get(refreshKey) === current) pendingRefreshes.delete(refreshKey); },
+      );
+    }
+    const tokens = await pending;
+    await createSession(tokens, session.user ?? await discordUser(tokens.access_token));
     return true;
   } catch { (await cookies()).delete(name); return false; }
 }
