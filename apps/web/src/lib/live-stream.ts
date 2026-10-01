@@ -2,16 +2,22 @@ import 'server-only';
 
 type Subscribe = (emit: (kind: string) => void, fail: (error: Error) => void) => () => void;
 
-export function liveStream(request: Request, subscribe: Subscribe, context: string): Response {
+export function liveStream(request: Request, subscribe: Subscribe, context: string, maxAgeMs = 4 * 60_000): Response {
   const encoder = new TextEncoder();
   let close: () => void = () => {};
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       let closed = false;
       let unsubscribe: () => void = () => {};
-      const send = (message: string) => { if (!closed) controller.enqueue(encoder.encode(message)); };
+      const send = (message: string) => {
+        if (closed) return;
+        const data = encoder.encode(message);
+        // Disconnect a slow consumer before its queued events grow without bound.
+        if ((controller.desiredSize ?? 0) < data.byteLength) { close(); return; }
+        controller.enqueue(data);
+      };
       const heartbeat = setInterval(() => send(': keepalive\n\n'), 25_000);
-      const expiry = setTimeout(() => close(), 4 * 60_000);
+      const expiry = setTimeout(() => close(), maxAgeMs);
       close = () => {
         if (closed) return;
         closed = true;
@@ -40,7 +46,7 @@ export function liveStream(request: Request, subscribe: Subscribe, context: stri
       }
     },
     cancel() { close(); },
-  });
+  }, { highWaterMark: 64 * 1024, size: (chunk) => chunk.byteLength });
   return new Response(stream, { headers: {
     'Content-Type': 'text/event-stream; charset=utf-8',
     'Cache-Control': 'no-cache, no-transform',

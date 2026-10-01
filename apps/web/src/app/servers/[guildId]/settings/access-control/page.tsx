@@ -1,31 +1,75 @@
+import { Suspense } from 'react';
 import { requireGuildAccess } from '@/lib/guards';
-import { botGuild } from '@scrt/discord';
-import { env, guilds } from '@/lib/server';
-import { permissionsForRole, type AppPermission, type AppRole } from '@scrt/permissions';
+import { ActionForm } from '@/app/components/action-form';
+import { canEditAccessGrant, type MemberMapping } from '@scrt/permissions';
+import { guilds } from '@/lib/server';
+import { voiceRoles } from '@/lib/voice-data';
+import { accessGuild, accessMemberProfile } from '@/lib/access-control-data';
+import { removeAccessMember, removeAccessRole, saveAccessMember, saveAccessRole } from './actions';
+import { MemberIdentity } from './member-identity';
+import { MemberSearch } from './member-search';
+import { MemberDirectoryProvider } from './member-directory';
+import { AccessRoleLists } from './access-role-lists';
+import { AccessRoleEditor } from './access-role-editor';
 
-const permissionLabels: Record<AppPermission, string> = {
-  'dashboard.access': 'Доступ до огляду', 'members.view': 'Перегляд учасників', 'members.manage': 'Керування учасниками',
-  'activity.view': 'Перегляд активності', 'voice.view': 'Перегляд голосових каналів', 'voice.manage': 'Керування голосовими каналами',
-  'moderation.view': 'Перегляд модерації', 'moderation.manage': 'Керування модерацією', 'automation.view': 'Перегляд автоматизації',
-  'automation.manage': 'Керування автоматизацією', 'logs.view': 'Перегляд журналу', 'settings.view': 'Перегляд налаштувань',
-  'settings.manage': 'Керування налаштуваннями',
-};
-const roleLabels: Record<AppRole, string> = { SUPER_ADMIN: 'Суперадміністратор', ADMIN: 'Адміністратор', VIEWER: 'Спостерігач' };
-const describePermissions = (role: AppRole) => permissionsForRole(role).map((permission) => permissionLabels[permission]).join(' · ');
+const roleLabels = { SUPER_ADMIN: 'Повний доступ', ADMIN: 'Налаштування бота', VIEWER: 'Лише перегляд' } as const;
+
+async function Profile({ guildId, userId, revision, owner = false }: { guildId: string; userId: string; revision: number; owner?: boolean }) {
+  try {
+    const member = await accessMemberProfile(guildId, userId, revision);
+    return <MemberIdentity guildId={guildId} member={member} userId={userId} fallbackName={owner ? 'Власник сервера' : undefined} />;
+  } catch (error) {
+    console.error('Could not load access member profile', { guildId, userId, error });
+    return <MemberIdentity guildId={guildId} member={null} userId={userId} fallbackName="Не вдалося завантажити профіль" />;
+  }
+}
+
+async function MemberAccessEditor({ guildId, mapping, revision }: { guildId: string; mapping: MemberMapping; revision: number }) {
+  let member;
+  try { member = await accessMemberProfile(guildId, mapping.discordUserId, revision); }
+  catch { return null; }
+  if (!member) return null;
+  return <ActionForm trackChanges={false} action={saveAccessMember.bind(null, guildId)} className="access-role-update" successMessage="Рівень доступу змінено." feedbackPlacement="toast"><input type="hidden" name="userId" value={mapping.discordUserId} /><label>Рівень доступу<select name="appRole" defaultValue={mapping.appRole}><option value="SUPER_ADMIN">Повний доступ</option><option value="ADMIN">Налаштування бота</option><option value="VIEWER">Лише перегляд</option></select></label><button type="submit" className="action-link">Змінити</button></ActionForm>;
+}
+
+function MemberAccessRow({ guildId, mapping, revision, editable }: { guildId: string; mapping: MemberMapping; revision: number; editable: boolean }) {
+  const userId = mapping.discordUserId;
+  return <li className="detail-panel access-role-row">
+    <div><Suspense fallback={<MemberIdentity guildId={guildId} member={null} userId={userId} fallbackName="Завантаження профілю…" />}><Profile guildId={guildId} userId={userId} revision={revision} /></Suspense><span className="role-label">{roleLabels[mapping.appRole]}</span></div>
+    {editable && <div className="access-role-actions">
+      <Suspense fallback={null}><MemberAccessEditor guildId={guildId} mapping={mapping} revision={revision} /></Suspense>
+      <ActionForm trackChanges={false} action={removeAccessMember.bind(null, guildId)} feedbackPlacement="toast" confirmation={{ title: 'Скасувати доступ?', description: 'Персональний доступ учасника буде скасовано. Доступ за ролями залишиться чинним.', actionLabel: 'Скасувати доступ' }}><input type="hidden" name="userId" value={userId} /><button type="submit" className="danger-button">Скасувати доступ</button></ActionForm>
+    </div>}
+    {!editable && mapping.appRole === 'SUPER_ADMIN' && <p className="muted">Змінювати цей доступ може лише власник сервера або адміністратор, який його надав.</p>}
+  </li>;
+}
 
 export default async function AccessControl({ params }: { params: Promise<{ guildId: string }> }) {
   const { guildId } = await params;
-  await requireGuildAccess(guildId, 'settings.view');
-  const [liveGuild, mappings] = await Promise.all([botGuild(env().DISCORD_BOT_TOKEN, guildId), guilds().roleMappings(guildId)]);
-  const ownerId = liveGuild.owner_id;
-  return <main className="content-page">
-    <div className="page-heading"><h1>Керування доступом</h1><p>Власник Discord-сервера завжди має повний доступ. Налаштування ролей з’явиться пізніше.</p></div>
-    <div className="detail-panel">
-      <div className="muted">Власник сервера · Суперадміністратор</div>
-      <div className="mono-line">{ownerId}</div>
-      <p className="muted">{describePermissions('SUPER_ADMIN')}</p>
-    </div>
-    <h2 className="subheading">Відповідність ролей Discord</h2>
-    {mappings.length ? <ul className="mapping-list">{mappings.map((mapping) => <li key={mapping.discordRoleId} className="detail-panel"><span className="mono-line">{mapping.discordRoleId}</span><span className="role-label">{roleLabels[mapping.appRole]}</span><p className="muted">{describePermissions(mapping.appRole)}</p></li>)}</ul> : <p className="muted">Відповідність ролей ще не налаштована.</p>}
+  const access = await requireGuildAccess(guildId, 'settings.view');
+  const [liveGuild, roles, accessMappings, revision] = await Promise.all([
+    accessGuild(guildId, access.guild.resourceRevision), voiceRoles(guildId, access.guild.resourceRevision),
+    guilds().accessMappings(guildId), guilds().memberDirectoryRevision(guildId),
+  ]);
+  const mappings = accessMappings.roles;
+  const memberMappings = accessMappings.members.filter((mapping) => mapping.discordUserId !== liveGuild.owner_id);
+  const availableRoles = roles.filter((role) => !mappings.some((mapping) => mapping.discordRoleId === role.id));
+  const editable = access.permissions.has('settings.manage');
+  const directoryScope = access.permissions.has('settings.manage') ? 'full' : 'access-roles';
+  return <main className="content-page access-control-page">
+    <div className="page-heading"><h1>Керування доступом</h1><p>Доступ до панелі SCRT за ролями Discord та для окремих учасників.</p></div>
+    <p className="muted">Власник сервера має всі права. Повний доступ інших адміністраторів може змінити власник або адміністратор, який його надав.</p>
+    {!editable && <p className="form-feedback" role="status">Ви можете переглядати доступ. Для змін потрібен рівень «Повний доступ».</p>}
+    <section className="detail-panel"><div className="member-access-head"><span className="role-label">Власник сервера</span><Suspense fallback={<MemberIdentity guildId={guildId} member={null} userId={liveGuild.owner_id} fallbackName="Власник сервера" />}><Profile guildId={guildId} userId={liveGuild.owner_id} revision={revision} owner /></Suspense></div></section>
+    <MemberDirectoryProvider key={`${guildId}:${directoryScope}:${mappings.map((mapping) => `${mapping.discordRoleId}:${mapping.appRole}`).join('|')}`} guildId={guildId} scope={directoryScope}>
+    <AccessRoleLists guildId={guildId} ownerId={liveGuild.owner_id} mappings={mappings} roles={roles} editable={editable} actor={access.accessActor} saveAction={saveAccessRole.bind(null, guildId)} removeAction={removeAccessRole.bind(null, guildId)} />
+    {editable && <section className="detail-panel access-role-editor"><h2>Надати доступ ролі</h2><p className="muted">Виберіть роль Discord і рівень доступу до панелі.</p>
+      <AccessRoleEditor guildId={guildId} roles={availableRoles} action={saveAccessRole.bind(null, guildId)} />
+      {availableRoles.length === 0 && <p className="muted">Усі ролі вже додано.</p>}
+    </section>}
+    <h2 className="subheading">Учасники з персональним доступом</h2>
+    {memberMappings.length ? <ul className="mapping-list">{memberMappings.map((mapping) => <MemberAccessRow key={mapping.discordUserId} guildId={guildId} mapping={mapping} revision={revision} editable={editable && canEditAccessGrant(access.accessActor, mapping)} />)}</ul> : <p className="empty-state">Немає персональних призначень.</p>}
+    {editable && <MemberSearch guildId={guildId} ownerId={liveGuild.owner_id} mappings={accessMappings} action={saveAccessMember.bind(null, guildId)} />}
+    </MemberDirectoryProvider>
   </main>;
 }

@@ -1,4 +1,4 @@
-import { discordGuildSchema, discordUserSchema } from '@scrt/validation';
+import { discordGuildSchema, discordUserSchema, snowflakeSchema, type DirectoryMember } from '@scrt/validation';
 import { z } from 'zod';
 import { PermissionFlagsBits } from 'discord-api-types/v10';
 import { voicePanelRows } from './voice-panel';
@@ -28,47 +28,143 @@ export function installUrl(clientId: string, guildId: string): string {
   url.search = new URLSearchParams({ client_id: clientId, scope: 'bot applications.commands', guild_id: guildId, disable_guild_select: 'true', permissions: botPermissions.toString() }).toString();
   return url.toString();
 }
+export function installAuthorizationUrl(clientId: string, guildId: string, redirectUri: string, state: string, challenge: string): string {
+  const url = new URL('https://discord.com/oauth2/authorize');
+  url.search = new URLSearchParams({
+    client_id: clientId, guild_id: snowflakeSchema.parse(guildId), disable_guild_select: 'true', integration_type: '0',
+    scope: 'bot applications.commands identify', permissions: botPermissions.toString(),
+    redirect_uri: redirectUri, response_type: 'code', state, code_challenge: challenge, code_challenge_method: 'S256',
+  }).toString();
+  return url.toString();
+}
 export type DiscordTokens = { access_token: string; refresh_token: string; expires_in: number; token_type: string };
 const tokensSchema = z.object({ access_token: z.string(), refresh_token: z.string(), expires_in: z.number(), token_type: z.string() });
 export class DiscordApiError extends Error {
-  constructor(readonly status: number) {
-    super(`Discord API failed (${status})`);
+  constructor(readonly status: number, readonly endpoint?: string) {
+    super(`Discord API failed (${status})${endpoint ? ` on ${endpoint}` : ''}`);
     this.name = 'DiscordApiError';
   }
 }
 const pendingGets = new Map<string, Promise<unknown>>();
-async function performRequest<T>(url: string, init: RequestInit, schema: z.ZodType<T>): Promise<T> {
+const routeQueues = new Map<string, Promise<void>>();
+const routeCooldowns = new Map<string, number>();
+const globalCooldowns = new Map<string, number>();
+const routeDepths = new Map<string, number>();
+let queuedRequests = 0;
+const maxRateLimitEntries = 1_000;
+const maxQueueWaitMs = 10_000;
+const maxRequestWaitMs = 30_000;
+const maxQueuedRequests = 512;
+const maxQueuedPerRoute = 64;
+
+function rateLimitKey(url: string, init: RequestInit): { route: string; auth: string; endpoint: string } {
+  const parsed = new URL(url);
+  const auth = new Headers(init.headers).get('authorization') ?? '';
+  const path = parsed.pathname.replace(/\/\d{17,20}(?=\/|$)/g, '/:id');
+  const majorId = parsed.pathname.match(/\/(?:guilds|channels)\/(\d{17,20})(?:\/|$)/)?.[1] ?? '';
+  const endpoint = `${init.method ?? 'GET'} ${path}`;
+  return { route: `${auth}:${endpoint}:${majorId}`, auth, endpoint };
+}
+
+function rememberCooldown(map: Map<string, number>, key: string, seconds: number): void {
+  if (!Number.isFinite(seconds) || seconds < 0) return;
+  if (map.size >= maxRateLimitEntries && !map.has(key)) map.delete(map.keys().next().value ?? '');
+  map.set(key, Math.max(map.get(key) ?? 0, Date.now() + Math.ceil(seconds * 1_000)));
+}
+
+async function waitForCooldown(route: string, auth: string, endpoint: string, deadline: number): Promise<void> {
+  while (true) {
+    const until = Math.max(routeCooldowns.get(route) ?? 0, auth ? globalCooldowns.get(auth) ?? 0 : 0);
+    if (until <= Date.now()) break;
+    if (until > deadline) throw new DiscordApiError(429, endpoint);
+    await new Promise((resolve) => setTimeout(resolve, until - Date.now()));
+  }
+  if ((routeCooldowns.get(route) ?? 0) <= Date.now()) routeCooldowns.delete(route);
+  if (auth && (globalCooldowns.get(auth) ?? 0) <= Date.now()) globalCooldowns.delete(auth);
+}
+
+function retrySeconds(response: Response, body?: unknown): number | null {
+  const payload = body && typeof body === 'object' ? body as Record<string, unknown> : null;
+  for (const value of [response.headers.get('retry-after'), payload?.retry_after, response.headers.get('x-ratelimit-reset-after')]) {
+    const seconds = typeof value === 'number' || typeof value === 'string' ? Number(value) : NaN;
+    if (Number.isFinite(seconds) && seconds >= 0) return seconds;
+  }
+  return null;
+}
+
+async function queuedRequest<T>(url: string, init: RequestInit, schema: z.ZodType<T>): Promise<T> {
+  const { route, auth, endpoint } = rateLimitKey(url, init);
+  const depth = routeDepths.get(route) ?? 0;
+  if (queuedRequests >= maxQueuedRequests || depth >= maxQueuedPerRoute) throw new DiscordApiError(503, endpoint);
+  queuedRequests++;
+  routeDepths.set(route, depth + 1);
+  const deadline = Date.now() + maxRequestWaitMs;
+  const previous = routeQueues.get(route) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => { release = resolve; });
+  routeQueues.set(route, current);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      previous,
+      new Promise<void>((_, reject) => { timer = setTimeout(() => reject(new Error(`Discord request queue timed out on ${endpoint}`)), maxQueueWaitMs); }),
+    ]);
+    if (timer) clearTimeout(timer);
+    return await performRequest(url, init, schema, route, auth, endpoint, deadline);
+  } finally {
+    if (timer) clearTimeout(timer);
+    queuedRequests--;
+    const remaining = (routeDepths.get(route) ?? 1) - 1;
+    if (remaining) routeDepths.set(route, remaining); else routeDepths.delete(route);
+    // A timed-out waiter must not let its successors overtake the active request.
+    void previous.then(() => {
+      if (routeQueues.get(route) === current) routeQueues.delete(route);
+      release();
+    });
+  }
+}
+async function performRequest<T>(url: string, init: RequestInit, schema: z.ZodType<T>, route: string, auth: string, endpoint: string, deadline: number): Promise<T> {
   const readable = !init.method || init.method === 'GET';
   for (let attempt = 0; ; attempt++) {
+    await waitForCooldown(route, auth, endpoint, deadline);
+    if (Date.now() >= deadline) throw new Error(`Discord request timed out on ${endpoint}`);
     let response: Response;
     try {
-      response = await fetch(url, { ...init, signal: readable ? AbortSignal.timeout(8_000) : init.signal });
+      const timeout = AbortSignal.timeout(Math.max(1, Math.min(8_000, deadline - Date.now())));
+      response = await fetch(url, { ...init, signal: init.signal ? AbortSignal.any([init.signal, timeout]) : timeout });
     } catch (error) {
-      if (!readable || attempt >= 2) throw error;
+      if (!readable || attempt >= 2 || Date.now() >= deadline) throw error;
       await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
       continue;
     }
-    if (response.status === 429 && attempt < 2 && readable) {
-      const retryAfter = Number(response.headers.get('retry-after'));
-      if (Number.isFinite(retryAfter) && retryAfter > 0 && retryAfter <= 10) {
-        await new Promise((resolve) => setTimeout(resolve, retryAfter * 1000));
-        continue;
-      }
+    if (response.status === 429) {
+      const body: unknown = await response.json().catch(() => null);
+      const retryAfter = retrySeconds(response, body) ?? Math.min(2 ** attempt, 10);
+      const global = response.headers.get('x-ratelimit-global') === 'true'
+        || (body !== null && typeof body === 'object' && (body as Record<string, unknown>).global === true);
+      rememberCooldown(global && auth ? globalCooldowns : routeCooldowns, global && auth ? auth : route, retryAfter);
+      console.warn('Discord API rate limited', { endpoint, retryAfterSeconds: retryAfter, global, scope: response.headers.get('x-ratelimit-scope') });
+      if (attempt < 3) continue;
+    }
+    const remaining = response.headers.get('x-ratelimit-remaining');
+    if (remaining === '0') {
+      const resetAfter = Number(response.headers.get('x-ratelimit-reset-after'));
+      rememberCooldown(routeCooldowns, route, resetAfter);
     }
     if ([502, 503, 504].includes(response.status) && attempt < 2 && readable) {
       await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
       continue;
     }
-    if (!response.ok) throw new DiscordApiError(response.status);
+    if (!response.ok) throw new DiscordApiError(response.status, endpoint);
     return schema.parse(await response.json());
   }
 }
 function request<T>(url: string, init: RequestInit, schema: z.ZodType<T>): Promise<T> {
-  if (init.method && init.method !== 'GET') return performRequest(url, init, schema);
+  if (init.method && init.method !== 'GET') return queuedRequest(url, init, schema);
   const key = `${new Headers(init.headers).get('authorization') ?? ''}:${url}`;
   const pending = pendingGets.get(key);
   if (pending) return pending as Promise<T>;
-  const result = performRequest(url, init, schema);
+  const result = queuedRequest(url, init, schema);
   pendingGets.set(key, result);
   void result.finally(() => { if (pendingGets.get(key) === result) pendingGets.delete(key); }).catch(() => {});
   return result;
@@ -83,9 +179,27 @@ export function discordUser(accessToken: string) { return request(`${api}/users/
 export type DiscordUser = z.infer<typeof discordUserSchema>;
 export function discordGuilds(accessToken: string) { return request(`${api}/users/@me/guilds`, { headers: { authorization: `Bearer ${accessToken}` } }, z.array(discordGuildSchema)); }
 export type DiscordGuild = z.infer<typeof discordGuildSchema>;
-export function canManageGuild(guild: DiscordGuild) { const bits = BigInt(guild.permissions); return guild.owner || (bits & (1n << 5n)) !== 0n || (bits & (1n << 3n)) !== 0n; }
+export function canManageGuild(guild: Pick<DiscordGuild, 'owner' | 'permissions'>) { const bits = BigInt(guild.permissions); return guild.owner || (bits & (1n << 5n)) !== 0n || (bits & (1n << 3n)) !== 0n; }
 
 const memberSchema = z.object({ roles: z.array(z.string()) });
+const guildMemberSchema = memberSchema.extend({
+  user: discordUserSchema.extend({ bot: z.boolean().optional(), discriminator: z.string().regex(/^\d{1,4}$/).optional() }),
+  nick: z.string().nullable().optional(),
+  avatar: z.string().nullable().optional(),
+});
+export type BotGuildMember = z.infer<typeof guildMemberSchema>;
+export function memberDisplayName(member: BotGuildMember): string { return member.nick || member.user.global_name || member.user.username; }
+export function memberAvatarUrl(guildId: string, member: BotGuildMember): string {
+  const userId = member.user.id;
+  if (member.avatar) return `https://cdn.discordapp.com/guilds/${guildId}/users/${userId}/avatars/${member.avatar}.webp?size=64`;
+  if (member.user.avatar) return `https://cdn.discordapp.com/avatars/${userId}/${member.user.avatar}.webp?size=64`;
+  const legacy = member.user.discriminator && member.user.discriminator !== '0';
+  const index = legacy ? Number(member.user.discriminator) % 5 : Number((BigInt(userId) >> 22n) % 6n);
+  return `https://cdn.discordapp.com/embed/avatars/${index}.png`;
+}
+export function directoryMember(guildId: string, member: BotGuildMember): DirectoryMember {
+  return { id: member.user.id, username: member.user.username, globalName: member.user.global_name ?? null, nick: member.nick ?? null, avatarUrl: memberAvatarUrl(guildId, member), roleIds: member.roles };
+}
 const guildSchema = z.object({ id: z.string(), owner_id: z.string(), name: z.string(), icon: z.string().nullable() });
 export function botGuild(botToken: string, guildId: string) { return request(`${api}/guilds/${guildId}`, { headers: { authorization: `Bot ${botToken}` } }, guildSchema); }
 export function currentGuildMember(accessToken: string, guildId: string) { return request(`${api}/users/@me/guilds/${guildId}/member`, { headers: { authorization: `Bearer ${accessToken}` } }, memberSchema); }
@@ -93,9 +207,34 @@ export function currentGuildMember(accessToken: string, guildId: string) { retur
 const channelSchema = z.object({ id: z.string(), guild_id: z.string().optional(), name: z.string().optional(), type: z.number(), parent_id: z.string().nullable().optional(), permission_overwrites: z.array(z.object({ id: z.string(), type: z.number(), allow: z.string(), deny: z.string() })).optional() });
 export type BotChannel = z.infer<typeof channelSchema>;
 export function botGuildChannels(botToken: string, guildId: string) { return request(`${api}/guilds/${guildId}/channels`, { headers: { authorization: `Bot ${botToken}` } }, z.array(channelSchema)); }
-export function botGuildRoles(botToken: string, guildId: string) { return request(`${api}/guilds/${guildId}/roles`, { headers: { authorization: `Bot ${botToken}` } }, z.array(z.object({ id: z.string(), name: z.string(), permissions: z.string() }))); }
+const botRoleSchema = z.object({
+  id: snowflakeSchema, name: z.string(), permissions: z.string(), position: z.number().int(),
+  color: z.number().int().nonnegative().optional(),
+  colors: z.object({ primary_color: z.number().int().nonnegative(), secondary_color: z.number().int().nonnegative().nullable(), tertiary_color: z.number().int().nonnegative().nullable() }).optional(),
+  icon: z.string().nullable().optional(), unicode_emoji: z.string().nullable().optional(),
+});
+export type BotGuildRole = z.infer<typeof botRoleSchema>;
+export function canMemberManageGuild(guild: { id: string; owner_id: string }, member: Pick<BotGuildMember, 'user' | 'roles'>, roles: readonly Pick<BotGuildRole, 'id' | 'permissions'>[]): boolean {
+  const bits = roles.reduce((permissions, role) => role.id === guild.id || member.roles.includes(role.id) ? permissions | BigInt(role.permissions) : permissions, 0n);
+  return canManageGuild({ owner: member.user.id === guild.owner_id, permissions: bits.toString() });
+}
+export function botGuildRoles(botToken: string, guildId: string) { return request(`${api}/guilds/${snowflakeSchema.parse(guildId)}/roles`, { headers: { authorization: `Bot ${botToken}` } }, z.array(botRoleSchema)); }
+export function administratorRoleIds(roles: readonly Pick<BotGuildRole, 'id' | 'permissions'>[]): string[] {
+  return roles.filter((role) => (BigInt(role.permissions) & PermissionFlagsBits.Administrator) !== 0n).map((role) => role.id);
+}
 export function botSelf(botToken: string) { return request(`${api}/users/@me`, { headers: { authorization: `Bot ${botToken}` } }, z.object({ id: z.string() })); }
-export function botGuildMember(botToken: string, guildId: string, userId: string) { return request(`${api}/guilds/${guildId}/members/${userId}`, { headers: { authorization: `Bot ${botToken}` } }, z.object({ roles: z.array(z.string()) })); }
+export function botGuildMember(botToken: string, guildId: string, userId: string) { return request(`${api}/guilds/${snowflakeSchema.parse(guildId)}/members/${snowflakeSchema.parse(userId)}`, { headers: { authorization: `Bot ${botToken}` } }, guildMemberSchema); }
+export function botListGuildMembers(botToken: string, guildId: string, after?: string) {
+  const params = new URLSearchParams({ limit: '1000' });
+  if (after) params.set('after', snowflakeSchema.parse(after));
+  return request(`${api}/guilds/${snowflakeSchema.parse(guildId)}/members?${params}`, { headers: { authorization: `Bot ${botToken}` } }, z.array(guildMemberSchema));
+}
+export function botSearchGuildMembers(botToken: string, guildId: string, query: string) {
+  const search = query.trim();
+  if (search.length < 2 || search.length > 50) throw new Error('Invalid member search');
+  const params = new URLSearchParams({ query: search, limit: '12' });
+  return request(`${api}/guilds/${snowflakeSchema.parse(guildId)}/members/search?${params}`, { headers: { authorization: `Bot ${botToken}` } }, z.array(guildMemberSchema));
+}
 export function botVoiceRegions(botToken: string) { return request(`${api}/voice/regions`, { headers: { authorization: `Bot ${botToken}` } }, z.array(z.object({ id: z.string(), name: z.string() }))); }
 export function botCreateVoiceChannel(botToken: string, guildId: string, name: string, parentId: string | null) {
   return request(`${api}/guilds/${guildId}/channels`, { method: 'POST', headers: { authorization: `Bot ${botToken}`, 'content-type': 'application/json' }, body: JSON.stringify({ name, type: 2, parent_id: parentId }) }, channelSchema);

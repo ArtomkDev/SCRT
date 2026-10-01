@@ -5,6 +5,27 @@ export const snowflakeSchema = z.string().regex(/^\d{17,20}$/, 'Expected a Disco
 export const guildIdSchema = snowflakeSchema;
 export const discordUserSchema = z.object({ id: snowflakeSchema, username: z.string(), global_name: z.string().nullable().optional(), avatar: z.string().nullable().optional() });
 export const discordGuildSchema = z.object({ id: guildIdSchema, name: z.string(), icon: z.string().nullable(), owner: z.boolean(), permissions: z.string() });
+export const directoryMemberSchema = z.object({
+  id: snowflakeSchema,
+  username: z.string(),
+  globalName: z.string().nullable(),
+  nick: z.string().nullable(),
+  avatarUrl: z.url(),
+  roleIds: z.array(snowflakeSchema),
+});
+export type DirectoryMember = z.infer<typeof directoryMemberSchema>;
+export const directoryChangeSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('upsert'), member: directoryMemberSchema, previousRoleIds: z.array(snowflakeSchema).optional() }),
+  z.object({ kind: z.literal('remove'), memberId: snowflakeSchema, roleIds: z.array(snowflakeSchema).optional() }),
+]);
+export type DirectoryChange = z.infer<typeof directoryChangeSchema>;
+export const directoryEventSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('sync'), revision: z.number().int().nonnegative() }),
+  z.object({ kind: z.literal('advance'), revision: z.number().int().nonnegative() }),
+  z.object({ kind: z.literal('reset'), revision: z.number().int().nonnegative() }),
+  z.object({ kind: z.literal('change'), revision: z.number().int().nonnegative(), change: directoryChangeSchema }),
+]);
+export type DirectoryEvent = z.infer<typeof directoryEventSchema>;
 export const defaultCreatorChannelName = '➕ Створити кімнату';
 
 export const voiceFeatureSchema = z.object({

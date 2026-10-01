@@ -1,6 +1,6 @@
 'use client';
 
-import Link from 'next/link';
+import { PrefetchLink } from './prefetch-link';
 import { usePathname } from 'next/navigation';
 
 export function DashboardNav({ guildId, showVoice = false, showAccess = false }: { guildId?: string; showVoice?: boolean; showAccess?: boolean }) {
@@ -13,6 +13,6 @@ export function DashboardNav({ guildId, showVoice = false, showAccess = false }:
     ]
     : [['Сервери', '/servers']];
   return <nav aria-label={guildId ? 'Розділи сервера' : 'Основна навігація'} className="nav-list">
-    {entries.map(([label, href]) => <Link key={href} href={href} prefetch={false} aria-current={pathname === href || pathname.startsWith(`${href}/`) ? 'page' : undefined} className="nav-link">{label}</Link>)}
+    {entries.map(([label, href]) => <PrefetchLink key={href} href={href} aria-current={pathname === href || pathname.startsWith(`${href}/`) ? 'page' : undefined} className="nav-link">{label}</PrefetchLink>)}
   </nav>;
 }

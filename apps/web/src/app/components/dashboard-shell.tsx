@@ -10,6 +10,6 @@ export async function DashboardShell({ children }: { children: ReactNode }) {
   const avatar = user.avatar ? `https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.${user.avatar.startsWith('a_') ? 'gif' : 'webp'}?size=64` : null;
   return <UnsavedChangesProvider><div className="app-shell">
     <header className="topbar"><Link className="brand" href="/servers">SCRT <span>CONTROL</span></Link><div className="profile">{avatar ? <Image src={avatar} alt="Аватар користувача" width={28} height={28} unoptimized /> : <span className="profile-fallback" aria-hidden="true">{user.username[0]?.toUpperCase()}</span>}<span className="profile-name">{user.global_name || user.username}</span><form action="/api/auth/logout" method="post"><button type="submit" className="logout">Вийти</button></form></div></header>
-    <div className="shell-body"><aside className="global-sidebar"><span className="sidebar-label">Робоча область</span><DashboardNav /></aside><div className="shell-content">{children}</div></div>
+    <div className="shell-body"><aside className="global-sidebar"><span className="sidebar-label">Панель керування</span><DashboardNav /></aside><div className="shell-content">{children}</div></div>
   </div></UnsavedChangesProvider>;
 }

@@ -1,4 +1,4 @@
-import { installUrl, type DiscordGuild } from '@scrt/discord';
+import type { DiscordGuild } from '@scrt/discord';
 
 export type ManageableGuild = Pick<DiscordGuild, 'id' | 'name' | 'icon'> & { installed: boolean };
 
@@ -18,8 +18,8 @@ export function guildInitials(name: string): string {
   return name.trim().split(/\s+/u).slice(0, 2).map((word) => [...word][0]?.toLocaleUpperCase('uk') ?? '').join('') || '?';
 }
 
-export function guildAction(guild: ManageableGuild, clientId: string) {
+export function guildAction(guild: ManageableGuild) {
   return guild.installed
     ? { label: 'Керувати', href: `/servers/${guild.id}` }
-    : { label: 'Додати бота', href: installUrl(clientId, guild.id) };
+    : { label: 'Додати бота', href: `/api/install/${guild.id}` };
 }

@@ -41,7 +41,8 @@ export function LiveRefresh({ endpoint }: { endpoint: string }) {
     let reconnectTimer: number | null = null;
     let refreshTimer: number | null = null;
     let retryDelay = 1000;
-    let lastRefresh = 0;
+    let lastRefresh = Date.now();
+    let synced = false;
 
     function refreshSoon() {
       if (dirty.current) { missedChange.current = true; return; }
@@ -71,7 +72,9 @@ export function LiveRefresh({ endpoint }: { endpoint: string }) {
       events.addEventListener('sync', () => {
         retryDelay = 1000;
         setConnected(true);
-        refreshSoon(); // Reconcile changes made before this subscription became active.
+        // The page was just rendered on the first connection. Reconcile after a reconnect.
+        if (synced) refreshSoon();
+        synced = true;
       });
       events.addEventListener('change', (event) => {
         if (affectsPage((event as MessageEvent).data, path.current)) refreshSoon();
@@ -79,7 +82,7 @@ export function LiveRefresh({ endpoint }: { endpoint: string }) {
       events.onerror = () => {
         disconnect();
         if (!active || document.hidden) return;
-        reconnectTimer = window.setTimeout(connect, retryDelay);
+        reconnectTimer = window.setTimeout(connect, retryDelay + Math.random() * retryDelay * 0.5);
         retryDelay = Math.min(retryDelay * 2, 30_000);
       };
     }
@@ -108,6 +111,6 @@ export function LiveRefresh({ endpoint }: { endpoint: string }) {
   }, [endpoint, router]);
 
   return <span className={`live-status ${connected ? 'live-status-connected' : ''}`} role="status">
-    <span aria-hidden="true" />{connected ? 'Дані оновлюються автоматично' : 'Відновлення оновлень…'}
+    <span aria-hidden="true" />{connected ? 'Автооновлення' : 'Відновлення з’єднання…'}
   </span>;
 }

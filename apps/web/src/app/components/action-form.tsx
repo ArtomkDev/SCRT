@@ -19,10 +19,12 @@ type ActionFormProps = {
   children: ReactNode;
   className?: string;
   successMessage?: string;
+  feedbackPlacement?: 'inline' | 'toast';
+  trackChanges?: boolean;
   confirmation?: { title: string; description: string; actionLabel: string };
 };
 
-export function ActionForm({ action, children, className, successMessage = 'Зміни збережено.', confirmation }: ActionFormProps) {
+export function ActionForm({ action, children, className, successMessage = 'Зміни збережено.', feedbackPlacement = 'inline', trackChanges = true, confirmation }: ActionFormProps) {
   const [pending, startTransition] = useTransition();
   const [feedback, setFeedback] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
   const submitting = useRef(false);
@@ -38,9 +40,15 @@ export function ActionForm({ action, children, className, successMessage = 'Зм
 
   useEffect(() => {
     mounted.current = true;
-    if (formRef.current) baseline.current = snapshot(formRef.current);
+    if (trackChanges && formRef.current) baseline.current = snapshot(formRef.current);
     return () => { mounted.current = false; setDirty(formId, null); };
-  }, [formId, setDirty]);
+  }, [formId, setDirty, trackChanges]);
+
+  useEffect(() => {
+    if (feedbackPlacement !== 'toast' || feedback?.kind !== 'success') return;
+    const timer = window.setTimeout(() => setFeedback(null), 5000);
+    return () => window.clearTimeout(timer);
+  }, [feedback, feedbackPlacement]);
 
   function discard() {
     for (const field of baseline.current) {
@@ -55,13 +63,13 @@ export function ActionForm({ action, children, className, successMessage = 'Зм
     const form = formRef.current;
     if (!form) return;
     setFeedback(null);
-    setDirty(formId, changed(baseline.current, snapshot(form)) ? { save: () => form.requestSubmit(), discard } : null);
+    if (trackChanges) setDirty(formId, changed(baseline.current, snapshot(form)) ? { save: () => form.requestSubmit(), discard } : null);
   }
 
   function submit(data: FormData) {
     if (submitting.current || pending) return;
     submitting.current = true;
-    const sentFields = formRef.current ? snapshot(formRef.current) : [];
+    const sentFields = trackChanges && formRef.current ? snapshot(formRef.current) : [];
     setFeedback(null);
     startTransition(async () => {
       try {
@@ -71,7 +79,7 @@ export function ActionForm({ action, children, className, successMessage = 'Зм
         updateDirty();
         setFeedback({ kind: 'success', text: successMessage });
       } catch {
-        if (mounted.current) setFeedback({ kind: 'error', text: 'Не вдалося зберегти зміни. Перевірте дані та спробуйте ще раз.' });
+        if (mounted.current) setFeedback({ kind: 'error', text: 'Не вдалося зберегти зміни. Спробуйте ще раз.' });
       } finally {
         submitting.current = false;
       }
@@ -104,7 +112,7 @@ export function ActionForm({ action, children, className, successMessage = 'Зм
       <p id={descriptionId}>{confirmation.description}</p>
       <div className="confirm-actions"><button type="button" onClick={() => dialog.current?.close()}>Скасувати</button><button type="button" className="danger-button" onClick={confirm}>{confirmation.actionLabel}</button></div>
     </dialog>}
-    {pending && <p className="form-feedback" role="status">Збереження…</p>}
-    {feedback && <p className={`form-feedback form-feedback-${feedback.kind}`} role={feedback.kind === 'error' ? 'alert' : 'status'}>{feedback.text}</p>}
+    {pending && !feedback && <p className={`form-feedback${feedbackPlacement === 'toast' ? ' form-feedback-toast' : ''}`} role="status">Збереження…</p>}
+    {feedback && <p className={`form-feedback form-feedback-${feedback.kind}${feedbackPlacement === 'toast' ? ' form-feedback-toast' : ''}`} role={feedback.kind === 'error' ? 'alert' : 'status'}><span>{feedback.text}</span>{feedbackPlacement === 'toast' && <button type="button" className="form-feedback-dismiss" onClick={() => setFeedback(null)} aria-label="Закрити повідомлення">×</button>}</p>}
   </form>;
 }

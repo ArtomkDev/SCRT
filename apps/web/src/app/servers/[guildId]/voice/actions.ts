@@ -68,7 +68,7 @@ export async function saveVoiceCreator(guildId: string, form: FormData) {
     channelId = channel.id;
   } else {
     if (!existingChannel) throw new Error('Invalid creator channel');
-    if (await voice().getRoom(guildId, channelId)) throw new Error('Тимчасову кімнату SCRT не можна призначити Creator-каналом.');
+    if (await voice().getRoom(guildId, channelId)) throw new Error('Тимчасову кімнату SCRT не можна призначити каналом створення.');
   }
   const features = ['rename', 'userLimit', 'bitrate', 'region', 'lock', 'hide', 'permit', 'block', 'kick', 'transfer', 'claim', 'reset', 'delete', 'chat'] as const;
   const enabledFeatures = Object.fromEntries(features.map((feature) => [feature, bool(form, `feature_${feature}`)]));

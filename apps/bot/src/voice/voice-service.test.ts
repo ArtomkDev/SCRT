@@ -41,7 +41,7 @@ function harness(overrides: { enabled?: boolean; bot?: boolean; moveFails?: bool
       rooms.set(id, { ...room, ownerId: next }); return true;
     }),
   };
-  const service = new VoiceService({ guilds: { cache: new Map() } } as unknown as Client, repository as unknown as VoiceRepository, { roleMappings: vi.fn(async () => []) } as unknown as GuildRepository);
+  const service = new VoiceService({ guilds: { cache: new Map() } } as unknown as Client, repository as unknown as VoiceRepository, { accessMappings: vi.fn(async () => ({ roles: [], members: [] })) } as unknown as GuildRepository);
   const state = (channelId: string | null) => ({ guild, member, id: userId, channelId }) as unknown as VoiceState;
   return { service, repository, guild, member, rooms, create, setPosition, deleteChannel, state, members };
 }

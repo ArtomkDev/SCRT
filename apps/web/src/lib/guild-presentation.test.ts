@@ -21,10 +21,7 @@ describe('guild presentation', () => {
   });
   it('retains manage and install destinations for the right state', () => {
     const groups = groupGuilds([guild('123', 'Перший'), guild('456', 'Другий')], new Set(['123']));
-    expect(guildAction(groups.installed[0]!, 'client')).toEqual({ label: 'Керувати', href: '/servers/123' });
-    const available = guildAction(groups.available[0]!, 'client');
-    expect(available.label).toBe('Додати бота');
-    const url = new URL(available.href);
-    expect(url.searchParams.get('guild_id')).toBe('456');
+    expect(guildAction(groups.installed[0]!)).toEqual({ label: 'Керувати', href: '/servers/123' });
+    expect(guildAction(groups.available[0]!)).toEqual({ label: 'Додати бота', href: '/api/install/456' });
   });
 });

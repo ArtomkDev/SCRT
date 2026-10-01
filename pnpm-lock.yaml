@@ -124,6 +124,9 @@ importers:
 
   packages/database:
     dependencies:
+      '@scrt/permissions':
+        specifier: workspace:*
+        version: link:../permissions
       '@scrt/shared':
         specifier: workspace:*
         version: link:../shared

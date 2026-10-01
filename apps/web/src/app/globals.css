@@ -89,6 +89,78 @@ form[aria-busy="true"] button[type="submit"] { opacity: .6; cursor: progress; }
 .mono-line { margin: 8px 0; overflow-wrap: anywhere; font-family: ui-monospace, monospace; font-size: 12px; }
 .mapping-list { margin: 0; padding: 0; list-style: none; }
 .role-label { margin-left: 12px; color: #b7bfff; }
+.access-role-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; min-width: 0; }
+.access-role-row > div:first-child { min-width: 0; }
+.access-role-editor h2 { margin: 0 0 8px; font-size: 18px; }
+.access-role-form { display: flex; align-items: end; flex-wrap: wrap; gap: 12px; margin-top: 20px; }
+.access-role-form label { display: grid; flex: 1 1 200px; gap: 6px; font-size: 13px; font-weight: 650; }
+.access-role-form select { min-height: 40px; padding: 8px 11px; border: 1px solid #6d6f78; border-radius: 5px; background: var(--input); color: var(--text); }
+.access-role-actions, .access-role-update { display: flex; align-items: end; flex-wrap: wrap; gap: 8px; min-width: 0; max-width: 100%; }
+.access-role-actions { justify-content: flex-end; margin-left: auto; }
+.access-role-actions > form { min-width: 0; max-width: 100%; }
+.access-role-update label { display: grid; min-width: 0; gap: 5px; color: var(--muted); font-size: 12px; }
+.access-role-update select { min-height: 36px; padding: 6px 8px; border: 1px solid #6d6f78; border-radius: 5px; background: var(--input); color: var(--text); }
+.access-role-form input { min-height: 40px; padding: 8px 11px; border: 1px solid #6d6f78; border-radius: 5px; background: var(--input); color: var(--text); }
+.member-access-head > .role-label { display: block; margin: 0 0 14px; }
+.member-identity { display: flex; align-items: center; min-width: 0; gap: 12px; }
+.member-identity > div { min-width: 0; overflow-wrap: anywhere; }
+.member-identity strong { overflow-wrap: anywhere; }
+.member-identity .mono-line { margin: 3px 0 0; }
+.member-avatar { flex: none; width: 44px; height: 44px; border-radius: 50%; object-fit: cover; }
+.member-avatar-missing { display: grid; place-items: center; background: var(--surface-hover); color: var(--muted); font-weight: 700; }
+.access-search-result { display: flex; align-items: end; justify-content: space-between; gap: 16px; padding: 16px 0; border-top: 1px solid var(--border); }
+.access-search-result:first-child { margin-top: 16px; }
+.access-role-sections { display: grid; gap: 28px; margin-top: 30px; }
+.access-role-section-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 12px; }
+.access-role-section-head h2 { margin: 0 0 3px; font-size: 19px; }
+.access-role-section-head p { margin: 0; color: var(--muted); font-size: 12px; }
+.access-role-card { display: grid; gap: 13px; }
+.access-loading-card { display: grid; min-height: 96px; align-content: center; gap: 12px; }
+.access-loading-card .skeleton-line { max-width: 65%; }
+.access-loading-avatar { width: 36px; height: 36px; border-radius: 50%; }
+.access-role-card-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 16px; min-width: 0; }
+.access-role-card-identity { display: grid; flex: 1 1 180px; justify-items: start; gap: 4px; min-width: 0; }
+.access-role-card-identity .mono-line { margin: 0; color: var(--subtle); }
+.access-role-badge { display: inline-flex; align-items: center; gap: 7px; max-width: 100%; min-height: 32px; padding: 5px 11px; border: 1px solid #ffffff30; border-radius: 16px; background-color: #4e5058; color: white; font-size: 13px; font-weight: 750; text-shadow: 0 1px 3px #000c; overflow-wrap: anywhere; }
+.access-role-badge img { flex: none; border-radius: 4px; }
+.access-role-badge-animated { background-size: 250% 250%; animation: role-shimmer 5s ease-in-out infinite alternate; }
+@keyframes role-shimmer { from { background-position: 0% 50%; } to { background-position: 100% 50%; } }
+.access-role-members { display: flex; min-height: 49px; flex-direction: column; justify-content: center; padding-top: 11px; border-top: 1px solid var(--border); }
+.access-role-members-note { margin: 0; font-size: 12px; overflow-wrap: anywhere; }
+.access-role-members-toggle + .access-role-members-note { margin-top: 6px; }
+.access-role-members-toggle { display: inline-flex; align-items: center; gap: 11px; max-width: 100%; padding: 2px 0; border: 0; background: none; color: var(--muted); font-size: 12px; text-align: left; }
+.access-role-members-toggle:hover { color: var(--text); }
+.access-role-avatar-stack { display: inline-flex; flex: none; align-items: center; padding-left: 2px; }
+.access-role-avatar-stack img { width: 32px; height: 32px; margin-left: -5px; border: 2px solid var(--surface); border-radius: 50%; object-fit: cover; }
+.access-role-avatar-stack img:first-child { margin-left: 0; }
+.access-role-members-expanded { margin-top: 13px; }
+.access-role-member-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(225px, 1fr)); gap: 7px; margin: 0 0 12px; padding: 0; list-style: none; }
+.access-role-member-list li { display: flex; align-items: center; gap: 9px; min-width: 0; padding: 8px; border-radius: 6px; background: var(--sidebar); }
+.access-role-member-list img { flex: none; border-radius: 50%; }
+.access-role-member-list li span { display: grid; min-width: 0; }
+.access-role-member-list strong, .access-role-member-list small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.access-role-member-list small { color: var(--subtle); font-size: 11px; }
+@media (max-width: 760px) { .access-role-card-head { align-items: stretch; flex-direction: column; } .access-role-actions { justify-content: flex-start; margin-left: 0; } }
+.member-search-label { display: grid; gap: 7px; margin-top: 18px; font-size: 13px; font-weight: 650; }
+.member-search-label input { width: 100%; min-height: 42px; padding: 9px 12px; border: 1px solid #6d6f78; border-radius: 5px; background: var(--input); color: var(--text); }
+.member-search-label input:focus { border-color: #a5adff; outline: 0; box-shadow: 0 0 0 2px #5865f255; }
+.member-search-count { margin: 10px 0; font-size: 12px; }
+.member-search-results { max-height: 390px; overflow: auto; margin: 10px 0 0; padding: 0; list-style: none; border: 1px solid var(--border); border-radius: 6px; }
+.member-search-results li + li { border-top: 1px solid var(--border); }
+.member-search-choice { display: flex; align-items: center; gap: 11px; width: 100%; padding: 9px 11px; border: 0; background: transparent; color: var(--text); text-align: left; }
+.member-search-choice:hover, .member-search-choice-selected { background: var(--surface-hover); }
+.member-search-choice img { flex: none; border-radius: 50%; }
+.member-search-names { display: grid; min-width: 0; flex: 1; }
+.member-search-names strong, .member-search-names small { overflow-wrap: anywhere; }
+.member-search-choice:disabled { cursor: default; opacity: 1; }
+.member-search-access { justify-self: start; margin-top: 4px; padding: 2px 7px; border-radius: 4px; background: #5865f22b; color: #c4c9ff; font-size: 11px; }
+.member-search-choice mark { background: #f4cc68; color: #211a08; border-radius: 2px; }
+.member-search-names small { color: var(--muted); }
+.member-search-choice code { flex: none; color: var(--subtle); font-size: 11px; }
+.member-search-grant { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
+@media (max-width: 600px) { .member-search-choice { flex-wrap: wrap; } .member-search-choice code { width: 100%; padding-left: 47px; overflow-wrap: anywhere; } }
+@media (max-width: 760px) { .access-role-row, .access-search-result { align-items: stretch; flex-direction: column; } }
+.access-control-page form[aria-busy="true"] button[type="submit"] { opacity: .65; pointer-events: none; }
 .login-page { display: grid; min-height: 100vh; place-items: center; padding: 24px; }
 .login-panel { width: min(100%, 450px); padding: 34px; border: 1px solid var(--border); border-radius: 10px; background: var(--sidebar); }
 .login-panel h1 { margin: 30px 0 10px; font-size: 26px; }
@@ -248,6 +320,8 @@ form[aria-busy="true"] button[type="submit"] { opacity: .6; cursor: progress; }
 .form-feedback { margin: 8px 0 0; padding: 10px 12px; border-radius: 5px; background: #404249; color: var(--text); font-size: 12px; }
 .form-feedback-success { background: #274a3a; color: #b7f2d1; }
 .form-feedback-error { background: #66333a; color: #ffe1e2; }
+.form-feedback-toast { position: fixed; right: 24px; bottom: 24px; z-index: 100; display: flex; align-items: center; justify-content: space-between; gap: 12px; width: min(360px, calc(100vw - 32px)); max-width: 100%; margin: 0; border: 1px solid #ffffff25; box-shadow: 0 12px 32px #0008; overflow-wrap: anywhere; }
+.form-feedback-dismiss { flex: none; align-self: start; padding: 0 2px; border: 0; background: none; color: inherit; font-size: 18px; line-height: 1; cursor: pointer; }
 .confirm-dialog { width: min(100% - 32px, 440px); max-width: 440px; padding: 24px; border: 1px solid var(--border); border-radius: 10px; background: var(--sidebar); color: var(--text); box-shadow: 0 20px 70px #0009; }
 .confirm-dialog::backdrop { background: #0e0f13b8; }
 .confirm-dialog h2 { margin: 0 0 10px; font-size: 19px; }
@@ -286,6 +360,7 @@ form[aria-busy="true"] button[type="submit"] { opacity: .6; cursor: progress; }
   .voice-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 650px) {
+  .form-feedback-toast { right: 16px; bottom: 16px; }
   .unsaved-banner { right: 12px; bottom: 12px; left: 12px; align-items: stretch; flex-direction: column; gap: 12px; padding: 14px; }
   .unsaved-actions { justify-content: flex-end; }
   .topbar { height: 56px; padding: 0 16px; }
@@ -318,4 +393,5 @@ form[aria-busy="true"] button[type="submit"] { opacity: .6; cursor: progress; }
   .skeleton { animation: none; }
   .unsaved-banner-blocked { animation: none; }
   .voice-switch input, .voice-switch input::after, .creator-card > summary::after { transition: none; }
+  .access-role-badge-animated { animation: none; }
 }

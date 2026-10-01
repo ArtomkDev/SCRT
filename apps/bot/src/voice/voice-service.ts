@@ -24,8 +24,8 @@ export class VoiceService {
   constructor(private readonly client: Client, private readonly repository: VoiceRepository, private readonly guildRepository: GuildRepository) { this.controls = new RoomControlService(repository); }
 
   async canManage(member: GuildMember): Promise<boolean> {
-    const mappings = await this.guildRepository.roleMappings(member.guild.id);
-    const input = { userId: member.id, ownerId: member.guild.ownerId, discordRoleIds: [...member.roles.cache.keys()], mappings, hasManageGuild: member.permissions.has(PermissionFlagsBits.ManageGuild) };
+    const access = await this.guildRepository.accessMappings(member.guild.id);
+    const input = { guildId: member.guild.id, userId: member.id, ownerId: member.guild.ownerId, discordRoleIds: [...member.roles.cache.keys()], mappings: access.roles, memberMappings: access.members };
     return new PermissionService().permissionsFor(input).has('voice.manage');
   }
 

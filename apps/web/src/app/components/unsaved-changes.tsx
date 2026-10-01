@@ -83,7 +83,7 @@ export function UnsavedChangesProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo(() => ({ setDirty, hasChanges }), [setDirty, hasChanges]);
   return <Context.Provider value={value}>{children}{hasChanges && <aside key={blockedAttempts} ref={banner} className={`unsaved-banner${blocked ? ' unsaved-banner-blocked' : ''}`} role={blocked ? 'alert' : 'status'} aria-live={blocked ? 'assertive' : 'polite'} tabIndex={-1}>
-    <div><strong>{blocked ? 'Перехід зупинено' : 'Є незбережені зміни'}</strong><span>Збережіть або скасуйте зміни, щоб перейти на інший екран.</span></div>
+    <div><strong>{blocked ? 'Зміни не збережено' : 'Незбережені зміни'}</strong><span>Перед переходом збережіть або скасуйте зміни.</span></div>
     <div className="unsaved-actions"><button type="button" className="secondary-button" onClick={() => Object.values(formsRef.current).forEach((form) => form.discard())}>Скасувати зміни</button><button type="button" className="action-link" onClick={() => Object.values(formsRef.current)[0]?.save()}>Зберегти{Object.keys(forms).length > 1 ? ' поточну форму' : ''}</button></div>
   </aside>}</Context.Provider>;
 }
