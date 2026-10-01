@@ -15,6 +15,7 @@
     "deploy:commands": "corepack pnpm --filter @scrt/bot deploy:commands",
     "verify:live": "corepack pnpm --filter @scrt/bot verify:live"
   },
+  "dependencies": {},
   "devDependencies": {
     "@types/node": "^22.0.0",
     "typescript": "^5.9.0",
