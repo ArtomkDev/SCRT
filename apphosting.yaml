@@ -1,0 +1,13 @@
+# Set the App Hosting root directory to / so pnpm can use the workspace lockfile.
+# Build and start only the web package; shared workspace packages remain available.
+scripts:
+  # The generic pnpm buildpack installs with --prod. Next.js also needs build
+  # dependencies (TypeScript, React types and Tailwind/PostCSS).
+  buildCommand: pnpm install --frozen-lockfile --prod=false && pnpm --filter @scrt/web build
+  runCommand: pnpm --filter @scrt/web start
+
+# The custom build bypasses the Next.js adapter. Keep the workspace dependencies
+# and Next.js output needed by next start.
+outputFiles:
+  serverApp:
+    include: [.]
