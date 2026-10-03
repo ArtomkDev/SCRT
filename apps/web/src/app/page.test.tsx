@@ -1,13 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as React from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 
 vi.stubGlobal('React', React);
+vi.mock('server-only', () => ({}));
+vi.mock('next/image', () => ({ default: ({ src, alt }: { src: string; alt: string }) => <img src={src} alt={alt} /> }));
 
 const mocks = vi.hoisted(() => ({ accessToken: vi.fn(), hasSession: vi.fn(), redirect: vi.fn() }));
 vi.mock('next/navigation', () => ({ redirect: mocks.redirect }));
 vi.mock('@/lib/session', () => ({ accessToken: mocks.accessToken, hasSession: mocks.hasSession }));
 
 import Home from './page';
+const props = () => ({ searchParams: Promise.resolve({}) });
 
 describe('landing page', () => {
   beforeEach(() => {
@@ -17,20 +21,30 @@ describe('landing page', () => {
 
   it('sends an active session directly to the server list', async () => {
     mocks.accessToken.mockResolvedValue('active-token');
-    await expect(Home()).rejects.toThrow('redirect:/servers');
+    await expect(Home(props())).rejects.toThrow('redirect:/servers');
     expect(mocks.hasSession).not.toHaveBeenCalled();
   });
 
   it('refreshes an existing expired session before entering', async () => {
     mocks.accessToken.mockResolvedValue(null);
     mocks.hasSession.mockResolvedValue(true);
-    await expect(Home()).rejects.toThrow('redirect:/api/auth/refresh?next=%2Fservers');
+    await expect(Home(props())).rejects.toThrow('redirect:/api/auth/refresh?next=%2Fservers');
   });
 
   it('shows the Discord login prompt without a session', async () => {
     mocks.accessToken.mockResolvedValue(null);
     mocks.hasSession.mockResolvedValue(false);
-    await expect(Home()).resolves.toMatchObject({ type: 'main' });
+    const html = renderToStaticMarkup(await Home(props()));
+    expect(html).toContain('Увійти до SCRT');
+    expect(html).toContain('href="/api/auth/login"');
     expect(mocks.redirect).not.toHaveBeenCalled();
+  });
+  it('renders only the safe message for an existing callback error code', async () => {
+    mocks.accessToken.mockResolvedValue(null);
+    mocks.hasSession.mockResolvedValue(false);
+    const html = renderToStaticMarkup(await Home({ searchParams: Promise.resolve({ error: 'oauth_failed' }) }));
+    expect(html).toContain('Не вдалося увійти через Discord. Спробуйте ще раз.');
+    expect(html).toContain('role="alert"');
+    expect(html).toContain('href="/api/auth/login"');
   });
 });

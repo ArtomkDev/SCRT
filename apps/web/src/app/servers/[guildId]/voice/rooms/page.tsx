@@ -1,9 +1,11 @@
 import { requireGuildAccess } from '@/lib/guards';
+import { Suspense } from 'react';
+import { DataLoading } from '@/app/components/data-loading';
 import { voiceRoomChannels, voiceRooms } from '@/lib/voice-data';
 import { deleteVoiceRoom } from '../actions';
 import { ActionForm } from '@/app/components/action-form';
 
-export default async function RoomsPage({ params }: { params: Promise<{ guildId: string }> }) {
+async function RoomsContent({ params }: { params: Promise<{ guildId: string }> }) {
   const { guildId } = await params;
   const access = await requireGuildAccess(guildId, 'voice.view');
   const [rooms, channels] = await Promise.all([voiceRooms(guildId), voiceRoomChannels(guildId, access.guild.resourceRevision)]);
@@ -15,4 +17,8 @@ export default async function RoomsPage({ params }: { params: Promise<{ guildId:
     })}</tbody></table></div>}
     <p className="muted">Кількість учасників оновлюється після входу або виходу з кімнати.</p>
   </section>;
+}
+
+export default function RoomsPage(props: Parameters<typeof RoomsContent>[0]) {
+  return <Suspense fallback={<section><h2 className="subheading">Активні кімнати</h2><DataLoading label="Завантаження кімнат…" /></section>}><RoomsContent {...props} /></Suspense>;
 }

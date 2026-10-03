@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { PermissionFlagsBits } from 'discord-api-types/v10';
-import { administratorRoleIds, botGuildMember, botGuildRoles, botPermissions, botRenameVoiceChannel, canManageGuild, canMemberManageGuild, DiscordApiError, discordUser, effectiveBotPermissions, installAuthorizationUrl, installUrl, memberAvatarUrl, memberDisplayName, requiredBotPermissions, type BotGuildMember } from './index';
+import { ApplicationFlags, PermissionFlagsBits } from 'discord-api-types/v10';
+import { administratorRoleIds, botGuildMember, botGuildRoles, botPermissions, botPresenceIntentAvailable, botRenameVoiceChannel, canManageGuild, canMemberManageGuild, DiscordApiError, discordUser, effectiveBotPermissions, installAuthorizationUrl, installUrl, memberAvatarUrl, memberDisplayName, requiredBotPermissions, type BotGuildMember } from './index';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -18,6 +18,10 @@ describe('live installer permissions', () => {
 });
 
 describe('Discord API errors', () => {
+  it.each([0, ApplicationFlags.GatewayPresence, ApplicationFlags.GatewayPresenceLimited])('detects Presence availability for flags %d', async (flags) => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ flags }), { status: 200 })));
+    await expect(botPresenceIntentAvailable(`flags-${flags}`)).resolves.toBe(flags !== 0);
+  });
   it('preserves the response status for an expired user token', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 401 })));
     await expect(discordUser('expired')).rejects.toMatchObject({ name: 'DiscordApiError', status: 401 });
@@ -124,6 +128,51 @@ describe('Discord API errors', () => {
       await expect(Promise.all([first, later])).resolves.toHaveLength(2);
       expect(fetchMock).toHaveBeenCalledTimes(2);
     } finally { vi.useRealTimers(); }
+  });
+
+  it('runs an interactive access check ahead of queued profile reads without overlapping calls', async () => {
+    let finish!: (response: Response) => void;
+    const body = JSON.stringify({ roles: [], user: { id: '12345678901234567', username: 'Tester' } });
+    const fetchMock = vi.fn().mockReturnValueOnce(new Promise<Response>((resolve) => { finish = resolve; }))
+      .mockImplementation(async () => new Response(body));
+    vi.stubGlobal('fetch', fetchMock);
+    const ids = ['12345678901234567', '22345678901234567', '32345678901234567', '42345678901234567'];
+    const requests = ids.map((id, index) => botGuildMember('priority-bot', '82345678901234567', id, index === 3 ? { priority: 'interactive' } : undefined));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    finish(new Response(body));
+    await Promise.all(requests);
+    expect(fetchMock.mock.calls.map(([url]) => String(url).split('/').at(-1))).toEqual([ids[0], ids[3], ids[1], ids[2]]);
+  });
+
+  it('promotes an existing queued profile read when authorization needs the same member', async () => {
+    let finish!: (response: Response) => void;
+    const body = JSON.stringify({ roles: [], user: { id: '12345678901234567', username: 'Tester' } });
+    const fetchMock = vi.fn().mockReturnValueOnce(new Promise<Response>((resolve) => { finish = resolve; }))
+      .mockImplementation(async () => new Response(body));
+    vi.stubGlobal('fetch', fetchMock);
+    const ids = ['12345678901234567', '22345678901234567', '32345678901234567'];
+    const requests = ids.map((id) => botGuildMember('promoted-priority-bot', '82345678901234567', id));
+    const promoted = botGuildMember('promoted-priority-bot', '82345678901234567', ids[2]!, { priority: 'interactive' });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    finish(new Response(body));
+    await Promise.all([...requests, promoted]);
+    expect(fetchMock.mock.calls.map(([url]) => String(url).split('/').at(-1))).toEqual([ids[0], ids[2], ids[1]]);
+  });
+
+  it('allows normal reads to progress during a run of interactive checks', async () => {
+    let finish!: (response: Response) => void;
+    const body = JSON.stringify({ roles: [], user: { id: '12345678901234567', username: 'Tester' } });
+    const fetchMock = vi.fn().mockReturnValueOnce(new Promise<Response>((resolve) => { finish = resolve; }))
+      .mockImplementation(async () => new Response(body));
+    vi.stubGlobal('fetch', fetchMock);
+    const guildId = '82345678901234567';
+    const first = botGuildMember('fair-priority-bot', guildId, '12345678901234567');
+    const normal = botGuildMember('fair-priority-bot', guildId, '22345678901234567');
+    const interactive = Array.from({ length: 5 }, (_, index) => botGuildMember('fair-priority-bot', guildId, String(30000000000000000n + BigInt(index)), { priority: 'interactive' }));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    finish(new Response(body));
+    await Promise.all([first, normal, ...interactive]);
+    expect(String(fetchMock.mock.calls[5]![0])).toContain('/members/22345678901234567');
   });
 });
 

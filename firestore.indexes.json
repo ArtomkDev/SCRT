@@ -1,0 +1,15 @@
+{
+  "indexes": [
+    { "collectionGroup": "activityMembers", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "streakEpoch", "order": "ASCENDING" }, { "fieldPath": "lastQualifiedVoiceDate", "order": "ASCENDING" }, { "fieldPath": "currentVoiceStreak", "order": "DESCENDING" }] },
+    { "collectionGroup": "activityDailyMembers", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "userId", "order": "ASCENDING" }, { "fieldPath": "date", "order": "ASCENDING" }] },
+    { "collectionGroup": "activityGameMembers", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "gameKey", "order": "ASCENDING" }, { "fieldPath": "totalSeconds", "order": "DESCENDING" }] },
+    { "collectionGroup": "activityGameMembers", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "userId", "order": "ASCENDING" }, { "fieldPath": "totalSeconds", "order": "DESCENDING" }] },
+    { "collectionGroup": "activityDailyGameMembers", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "gameKey", "order": "ASCENDING" }, { "fieldPath": "date", "order": "ASCENDING" }] },
+    { "collectionGroup": "activityDailyGameMembers", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "userId", "order": "ASCENDING" }, { "fieldPath": "date", "order": "ASCENDING" }] },
+    { "collectionGroup": "activityDailyGames", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "gameKey", "order": "ASCENDING" }, { "fieldPath": "date", "order": "ASCENDING" }] }
+  ],
+  "fieldOverrides": [
+    { "collectionGroup": "activityArtworkUploads", "fieldPath": "bytes", "indexes": [] },
+    { "collectionGroup": "activityProfiles", "fieldPath": "searchPrefixes", "indexes": [{ "arrayConfig": "CONTAINS", "queryScope": "COLLECTION" }] }
+  ]
+}

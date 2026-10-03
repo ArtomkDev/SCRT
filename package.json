@@ -12,6 +12,7 @@
     "typecheck": "corepack pnpm -r typecheck",
     "test": "corepack pnpm -r test",
     "benchmark:web": "tsx scripts/benchmark-web.mts",
+    "profile:web": "tsx scripts/profile-web.mts",
     "deploy:commands": "corepack pnpm --filter @scrt/bot deploy:commands",
     "verify:live": "corepack pnpm --filter @scrt/bot verify:live"
   },

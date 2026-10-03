@@ -1,7 +1,7 @@
 import 'server-only';
 import { cache } from 'react';
 import { redirect } from 'next/navigation';
-import { botGuildMember, canManageGuild, discordGuilds, discordUser, DiscordApiError } from '@scrt/discord';
+import { botGuild, botGuildMember, canManageGuild, discordGuilds, discordUser, DiscordApiError } from '@scrt/discord';
 import { PermissionService, type AppPermission } from '@scrt/permissions';
 import { guildIdSchema } from '@scrt/validation';
 import { accessToken, sessionUser } from './session';
@@ -26,7 +26,7 @@ const cachedGuilds = cache(discordGuilds);
 // Request-scoped only: authorization must not reuse cached directory/profile roles.
 const liveMember = cache(async (guildId: string, userId: string) => {
   try {
-    const member = await botGuildMember(env().DISCORD_BOT_TOKEN, guildId, userId);
+    const member = await botGuildMember(env().DISCORD_BOT_TOKEN, guildId, userId, { priority: 'interactive' });
     if (member.user.id !== userId) throw new Error('Forbidden');
     return member;
   } catch (error) {
@@ -36,11 +36,22 @@ const liveMember = cache(async (guildId: string, userId: string) => {
 });
 const cachedRecord = cache((guildId: string) => guilds().get(guildId));
 const cachedMappings = cache((guildId: string) => guilds().accessMappings(guildId));
+const liveGuild = cache(async (guildId: string) => {
+  try {
+    const guild = await botGuild(env().DISCORD_BOT_TOKEN, guildId, { priority: 'interactive' });
+    if (guild.id !== guildId) throw new Error('Forbidden');
+    return guild;
+  } catch (error) {
+    if (error instanceof DiscordApiError && error.status === 404) throw new Error('Bot not installed', { cause: error });
+    throw error;
+  }
+});
 export async function requireSession(next = '/servers') {
   const token = requireTokenRedirect(next, await accessToken());
   return { token, user: await sessionUser() ?? await withUserToken(next, () => cachedUser(token)) };
 }
-export async function manageableGuildList() {
+// Shared by the persistent rail and /servers during the same server render.
+export const manageableGuildList = cache(async () => {
   const token = requireTokenRedirect('/servers', await accessToken());
   const [listed, user] = await Promise.all([
     withUserToken('/servers', () => cachedGuilds(token)),
@@ -61,24 +72,20 @@ export async function manageableGuildList() {
     return member !== null && permissions.permissionsFor({ ...input, discordRoleIds: member.roles }).has('dashboard.access');
   }));
   return { list: listed.filter((_, index) => accessible[index]), installedIds: installed };
-}
+});
 export async function manageableGuilds() { return (await manageableGuildList()).list; }
 const guildAccess = cache(async (guildId: string) => {
-  const token = requireTokenRedirect(`/servers/${guildId}`, await accessToken());
-  const [user, userGuilds, record] = await Promise.all([
-    sessionUser().then((stored) => stored ?? withUserToken(`/servers/${guildId}`, () => cachedUser(token))),
-    withUserToken(`/servers/${guildId}`, () => cachedGuilds(token)),
-    cachedRecord(guildId),
+  const { user } = await requireSession(`/servers/${guildId}`);
+  // All live facts for this guild are independent. The OAuth guild list is only
+  // needed on /servers; fetching it on every tab consumes its shared quota.
+  const [guild, member, record, mappings] = await Promise.all([
+    liveGuild(guildId), liveMember(guildId, user.id), cachedRecord(guildId), cachedMappings(guildId),
   ]);
-  const listed = userGuilds.find((guild) => guild.id === guildId);
-  if (!listed) throw new Error('Forbidden');
   if (!record?.botInstalled) throw new Error('Bot not installed');
-  const mappings = listed.owner ? { roles: [], members: [] } : await cachedMappings(guildId);
-  const needsRoles = mappings.roles.some((mapping) => mapping.discordRoleId !== guildId);
-  const member = needsRoles ? await liveMember(guildId, user.id) : null;
-  if (needsRoles && !member) throw new Error('Forbidden');
-  const input = { guildId, userId: user.id, ownerId: listed.owner ? user.id : '', discordRoleIds: member?.roles ?? [], mappings: mappings.roles, memberMappings: mappings.members };
-  return { guild: record, discordGuild: listed, user, input };
+  if (!member) throw new Error('Forbidden');
+  const discordGuild = { id: guild.id, name: guild.name, icon: guild.icon, owner: guild.owner_id === user.id };
+  const input = { guildId, userId: user.id, ownerId: guild.owner_id, discordRoleIds: member.roles, mappings: mappings.roles, memberMappings: mappings.members };
+  return { guild: record, discordGuild, liveGuild: guild, user, input };
 });
 export async function requireGuildAccess(rawGuildId: string, permission: AppPermission = 'dashboard.access') {
   const guildId = guildIdSchema.parse(rawGuildId);
@@ -86,5 +93,5 @@ export async function requireGuildAccess(rawGuildId: string, permission: AppPerm
   const input = access.input;
   new PermissionService().require(input, permission);
   const accessActor = { guildId, userId: access.user.id, isOwner: access.discordGuild.owner, discordRoleIds: input.discordRoleIds };
-  return { guild: access.guild, discordGuild: access.discordGuild, user: access.user, accessActor, permissions: new PermissionService().permissionsFor(input) };
+  return { guild: access.guild, discordGuild: access.discordGuild, liveGuild: access.liveGuild, user: access.user, accessActor, accessMappings: { roles: input.mappings, members: input.memberMappings }, permissions: new PermissionService().permissionsFor(input) };
 }

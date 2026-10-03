@@ -1,4 +1,6 @@
 import { z } from 'zod';
+export * from './activity';
+export * from './activity-artwork';
 export { renderVoiceRoomName, voiceNameVariables, type VoiceNameInput } from './voice-name';
 
 export const snowflakeSchema = z.string().regex(/^\d{17,20}$/, 'Expected a Discord snowflake');

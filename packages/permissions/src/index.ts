@@ -1,4 +1,4 @@
-export const permissions = ['dashboard.access', 'members.view', 'members.manage', 'activity.view', 'voice.view', 'voice.manage', 'moderation.view', 'moderation.manage', 'automation.view', 'automation.manage', 'logs.view', 'settings.view', 'settings.manage'] as const;
+export const permissions = ['dashboard.access', 'members.view', 'members.manage', 'activity.view', 'activity.manage', 'voice.view', 'voice.manage', 'moderation.view', 'moderation.manage', 'automation.view', 'automation.manage', 'logs.view', 'settings.view', 'settings.manage'] as const;
 export type AppPermission = typeof permissions[number];
 export type AppRole = 'SUPER_ADMIN' | 'ADMIN' | 'VIEWER';
 export type AccessGrant = { appRole: AppRole; grantedBy?: string };

@@ -69,6 +69,16 @@ On startup the bot loads SCRT room records, removes records whose channels no lo
 
 Run `pnpm deploy:commands` after filling credentials. With `DISCORD_GUILD_ID` in development it registers to that guild; production registers global commands, which can take time to propagate. The bot reconciles guild records on ready and handles join/leave events. A join merges metadata without replacing access settings; a leave marks the record disconnected.
 
+## Activity Tracking & Leaderboards
+
+Open **Активність → Налаштування** to enable guild-scoped messages, voice time, screen-share time, Discord-visible Playing games and daily voice streaks. The dashboard includes today/7-day/30-day/all-time leaderboards, game/player rankings and member profiles. Activity starts disabled and does not implement XP or levels. It stores metadata only: no message content, voice audio or screen content.
+
+The worker uses `Guilds`, `GuildMessages`, `GuildVoiceStates` and, when available, privileged `GuildPresences`. **Enable Presence Intent in Discord Developer Portal → Bot → Privileged Gateway Intents, then restart the bot.** Without it, messages/voice/screen sharing still work and Games health reports unavailable. Message Content Intent is never requested; Activity does not enable Guild Members Intent.
+
+Messages flush every 60 seconds. Persistent sessions aggregate at close and five-minute checkpoints, with atomic cursor updates and timezone/DST-aware daily splitting. Restart recovery closes at the last durable observation and starts fresh from current Discord state, so unknown downtime is not invented. SIGINT/SIGTERM attempt a final flush within a 12-second deadline. Keep one Railway bot replica.
+
+Activity documents are under `guilds/{guildId}/activity*`. Daily/all-time aggregates remain; closed sessions are removed after aggregation. AFK/channel/category/role/user exclusions are centralized. Streaks require five minutes per guild-calendar day by default. See [Activity architecture, schema, recovery, indexes and manual verification](docs/activity.md). Run `pnpm --filter @scrt/bot verify:activity` for isolated Firestore/Gateway verification; deploy `firestore.indexes.json` for efficient compound queries. Bounded server fallbacks keep private-server rankings correct while indexes are unavailable.
+
 ## Firebase setup
 
 Create a Firebase project and Firestore database in production mode. Create a dedicated service account with Firestore access. Put its project ID, client email and private key into the server environment. The Admin SDK bypasses Firestore client rules; this app uses only server-side Admin access and the web guard enforces Discord identity and guild permissions. No browser Firebase configuration is needed. Restrict service account access and rotate it if exposed.
@@ -93,4 +103,6 @@ The project-scoped Graphify Codex installer owns its section in `AGENTS.md` and 
 
 ## Current status and next modules
 
-The implemented path is OAuth login → manageable guild list → installed guild dashboard → protected Voice configuration → Creator join → managed room lifecycle. Credentials and Discord/Firebase setup are required for a live end-to-end run. The Access Control page shows the owner and the backend supports stored Discord role mappings; the mapping editor is future work. Activity tracking, XP, moderation, automation and analytics remain future modules.
+Activity lists and detail pages support cached artwork, deterministic fallbacks and administrator overrides. Optional server-only providers use `STEAMGRIDDB_API_KEY`, `IGDB_TWITCH_CLIENT_ID`, and `IGDB_TWITCH_CLIENT_SECRET`; setup, priorities, TTLs and controls are documented in [Activity artwork](docs/activity-artwork.md).
+
+The implemented path includes OAuth login, guild authorization, access-role/member editors, Temporary Voice lifecycle, and Activity tracking/leaderboards. Credentials, Presence Intent and manual Discord interactions are required to complete live acceptance. XP/Levels can consume the normalized Activity outputs in a later milestone; XP, moderation, automation and rewards are not implemented here.

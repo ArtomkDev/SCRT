@@ -1,3 +1,5 @@
+export * from './activity';
+export * from './activity-artwork';
 export type GuildRecord = {
   guildId: string;
   name: string;

@@ -2,16 +2,18 @@
 
 import { useEffect, useId, useRef, useState, useTransition, type FormEvent, type ReactNode } from 'react';
 import { useUnsavedChanges } from './unsaved-changes';
+import { Dialog } from './dialog';
+import { Button } from './controls';
 
 type Control = HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
-type FieldState = { control: Control; value: string; checked?: boolean };
+type FieldState = { control: Control; name: string; value: string; checked?: boolean };
 function snapshot(form: HTMLFormElement): FieldState[] {
   return Array.from(form.elements).filter((element): element is Control => element instanceof HTMLInputElement || element instanceof HTMLSelectElement || element instanceof HTMLTextAreaElement)
-    .filter((control) => !['submit', 'button', 'reset'].includes(control.type))
-    .map((control) => ({ control, value: control.value, ...('checked' in control ? { checked: control.checked } : {}) }));
+    .filter((control) => control.name && !['submit', 'button', 'reset'].includes(control.type))
+    .map((control) => ({ control, name: control.name, value: control.value, ...('checked' in control ? { checked: control.checked } : {}) }));
 }
 function changed(baseline: FieldState[], current: FieldState[]) {
-  return baseline.length !== current.length || baseline.some((field, index) => field.control !== current[index]?.control || field.value !== current[index]?.value || field.checked !== current[index]?.checked);
+  return baseline.length !== current.length || baseline.some((field, index) => field.name !== current[index]?.name || field.value !== current[index]?.value || field.checked !== current[index]?.checked);
 }
 
 type ActionFormProps = {
@@ -29,18 +31,17 @@ export function ActionForm({ action, children, className, successMessage = 'Зм
   const [feedback, setFeedback] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
   const submitting = useRef(false);
   const mounted = useRef(true);
-  const dialog = useRef<HTMLDialogElement>(null);
+  const [confirming, setConfirming] = useState(false);
   const pendingData = useRef<FormData | null>(null);
-  const titleId = useId();
-  const descriptionId = useId();
   const formId = useId();
   const formRef = useRef<HTMLFormElement>(null);
   const baseline = useRef<FieldState[]>([]);
+  const baselineData = useRef<FormData>(new FormData());
   const { setDirty } = useUnsavedChanges();
 
   useEffect(() => {
     mounted.current = true;
-    if (trackChanges && formRef.current) baseline.current = snapshot(formRef.current);
+    if (trackChanges && formRef.current) { baseline.current = snapshot(formRef.current); baselineData.current = new FormData(formRef.current); }
     return () => { mounted.current = false; setDirty(formId, null); };
   }, [formId, setDirty, trackChanges]);
 
@@ -55,6 +56,7 @@ export function ActionForm({ action, children, className, successMessage = 'Зм
       field.control.value = field.value;
       if (field.checked !== undefined && field.control instanceof HTMLInputElement) field.control.checked = field.checked;
     }
+    formRef.current?.dispatchEvent(new CustomEvent('scrt:reset', { detail: baselineData.current }));
     setDirty(formId, null);
     setFeedback(null);
   }
@@ -76,6 +78,7 @@ export function ActionForm({ action, children, className, successMessage = 'Зм
         await action(data);
         if (!mounted.current) return;
         baseline.current = sentFields;
+        baselineData.current = data;
         updateDirty();
         setFeedback({ kind: 'success', text: successMessage });
       } catch {
@@ -92,7 +95,7 @@ export function ActionForm({ action, children, className, successMessage = 'Зм
     const data = new FormData(event.currentTarget);
     if (confirmation) {
       pendingData.current = data;
-      dialog.current?.showModal();
+      setConfirming(true);
       return;
     }
     submit(data);
@@ -101,17 +104,13 @@ export function ActionForm({ action, children, className, successMessage = 'Зм
   function confirm() {
     const data = pendingData.current;
     pendingData.current = null;
-    dialog.current?.close();
+    setConfirming(false);
     if (data) submit(data);
   }
 
   return <form ref={formRef} className={className} onSubmit={handleSubmit} onChange={updateDirty} onInput={updateDirty} aria-busy={pending}>
     {children}
-    {confirmation && <dialog ref={dialog} className="confirm-dialog" aria-labelledby={titleId} aria-describedby={descriptionId} onClose={() => { pendingData.current = null; }}>
-      <h2 id={titleId}>{confirmation.title}</h2>
-      <p id={descriptionId}>{confirmation.description}</p>
-      <div className="confirm-actions"><button type="button" onClick={() => dialog.current?.close()}>Скасувати</button><button type="button" className="danger-button" onClick={confirm}>{confirmation.actionLabel}</button></div>
-    </dialog>}
+    {confirmation && <Dialog open={confirming} onClose={() => { pendingData.current = null; setConfirming(false); }} title={confirmation.title} description={confirmation.description} footer={<><Button variant="secondary" onClick={() => { pendingData.current = null; setConfirming(false); }}>Скасувати</Button><Button variant="danger" onClick={confirm}>{confirmation.actionLabel}</Button></>} />}
     {pending && !feedback && <p className={`form-feedback${feedbackPlacement === 'toast' ? ' form-feedback-toast' : ''}`} role="status">Збереження…</p>}
     {feedback && <p className={`form-feedback form-feedback-${feedback.kind}${feedbackPlacement === 'toast' ? ' form-feedback-toast' : ''}`} role={feedback.kind === 'error' ? 'alert' : 'status'}><span>{feedback.text}</span>{feedbackPlacement === 'toast' && <button type="button" className="form-feedback-dismiss" onClick={() => setFeedback(null)} aria-label="Закрити повідомлення">×</button>}</p>}
   </form>;

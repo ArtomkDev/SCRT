@@ -21,7 +21,12 @@ describe('server entry', () => {
     await expect(GuildHome({ params: Promise.resolve({ guildId }) })).rejects.toThrow(`redirect:/servers/${guildId}/voice`);
   });
 
-  it('opens access control when Voice is unavailable', async () => {
+  it('opens Activity when Voice is unavailable', async () => {
+    mocks.requireGuildAccess.mockResolvedValue({ permissions: new Set(['activity.view', 'settings.view']) });
+    await expect(GuildHome({ params: Promise.resolve({ guildId }) })).rejects.toThrow(`redirect:/servers/${guildId}/activity`);
+  });
+
+  it('opens access control when Voice and Activity are unavailable', async () => {
     mocks.requireGuildAccess.mockResolvedValue({ permissions: new Set(['settings.view']) });
     await expect(GuildHome({ params: Promise.resolve({ guildId }) })).rejects.toThrow(`redirect:/servers/${guildId}/settings/access-control`);
   });

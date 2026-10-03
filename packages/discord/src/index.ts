@@ -1,6 +1,6 @@
 import { discordGuildSchema, discordUserSchema, snowflakeSchema, type DirectoryMember } from '@scrt/validation';
 import { z } from 'zod';
-import { PermissionFlagsBits } from 'discord-api-types/v10';
+import { ApplicationFlags, PermissionFlagsBits } from 'discord-api-types/v10';
 import { voicePanelRows } from './voice-panel';
 export { voiceComponentPrefix, voicePanelRows } from './voice-panel';
 
@@ -46,10 +46,12 @@ export class DiscordApiError extends Error {
   }
 }
 const pendingGets = new Map<string, Promise<unknown>>();
-const routeQueues = new Map<string, Promise<void>>();
+export type DiscordRequestOptions = { priority?: 'interactive' | 'normal' };
+type QueuedCall = { url: string; priority: 'interactive' | 'normal'; start: () => void };
+type RouteQueue = { active: boolean; calls: QueuedCall[]; interactiveRun: number };
+const routeQueues = new Map<string, RouteQueue>();
 const routeCooldowns = new Map<string, number>();
 const globalCooldowns = new Map<string, number>();
-const routeDepths = new Map<string, number>();
 let queuedRequests = 0;
 const maxRateLimitEntries = 1_000;
 const maxQueueWaitMs = 10_000;
@@ -92,36 +94,54 @@ function retrySeconds(response: Response, body?: unknown): number | null {
   return null;
 }
 
-async function queuedRequest<T>(url: string, init: RequestInit, schema: z.ZodType<T>): Promise<T> {
-  const { route, auth, endpoint } = rateLimitKey(url, init);
-  const depth = routeDepths.get(route) ?? 0;
-  if (queuedRequests >= maxQueuedRequests || depth >= maxQueuedPerRoute) throw new DiscordApiError(503, endpoint);
-  queuedRequests++;
-  routeDepths.set(route, depth + 1);
-  const deadline = Date.now() + maxRequestWaitMs;
-  const previous = routeQueues.get(route) ?? Promise.resolve();
-  let release!: () => void;
-  const current = new Promise<void>((resolve) => { release = resolve; });
-  routeQueues.set(route, current);
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    await Promise.race([
-      previous,
-      new Promise<void>((_, reject) => { timer = setTimeout(() => reject(new Error(`Discord request queue timed out on ${endpoint}`)), maxQueueWaitMs); }),
-    ]);
-    if (timer) clearTimeout(timer);
-    return await performRequest(url, init, schema, route, auth, endpoint, deadline);
-  } finally {
-    if (timer) clearTimeout(timer);
-    queuedRequests--;
-    const remaining = (routeDepths.get(route) ?? 1) - 1;
-    if (remaining) routeDepths.set(route, remaining); else routeDepths.delete(route);
-    // A timed-out waiter must not let its successors overtake the active request.
-    void previous.then(() => {
-      if (routeQueues.get(route) === current) routeQueues.delete(route);
-      release();
-    });
+function runNext(route: string, queue: RouteQueue): void {
+  if (queue.active) return;
+  if (!queue.calls.length) {
+    if (routeQueues.get(route) === queue) routeQueues.delete(route);
+    return;
   }
+  // Interactive checks may overtake queued presentation reads, never an active
+  // request or a Discord cooldown. Reserve every fifth turn for normal work.
+  const interactive = queue.interactiveRun < 4 ? queue.calls.findIndex((call) => call.priority === 'interactive') : -1;
+  const normal = queue.calls.findIndex((call) => call.priority === 'normal');
+  const index = interactive >= 0 ? interactive : normal >= 0 ? normal : 0;
+  const call = queue.calls.splice(index, 1)[0]!;
+  queue.interactiveRun = call.priority === 'interactive' ? queue.interactiveRun + 1 : 0;
+  queue.active = true;
+  call.start();
+}
+
+function queuedRequest<T>(url: string, init: RequestInit, schema: z.ZodType<T>, options: DiscordRequestOptions): Promise<T> {
+  const { route, auth, endpoint } = rateLimitKey(url, init);
+  let queue = routeQueues.get(route);
+  if (!queue) { queue = { active: false, calls: [], interactiveRun: 0 }; routeQueues.set(route, queue); }
+  if (queuedRequests >= maxQueuedRequests || queue.calls.length + Number(queue.active) >= maxQueuedPerRoute) {
+    if (!queue.active && !queue.calls.length) routeQueues.delete(route);
+    return Promise.reject(new DiscordApiError(503, endpoint));
+  }
+  queuedRequests++;
+  const deadline = Date.now() + maxRequestWaitMs;
+  const current = queue;
+  return new Promise<T>((resolve, reject) => {
+    const call: QueuedCall = { url, priority: options.priority ?? 'normal', start: () => {
+      clearTimeout(timer);
+      void performRequest(url, init, schema, route, auth, endpoint, deadline).then(resolve, reject).finally(() => {
+        queuedRequests--;
+        current.active = false;
+        runNext(route, current);
+      });
+    } };
+    const timer = setTimeout(() => {
+      const index = current.calls.indexOf(call);
+      if (index < 0) return;
+      current.calls.splice(index, 1);
+      queuedRequests--;
+      reject(new Error(`Discord request queue timed out on ${endpoint}`));
+      runNext(route, current);
+    }, maxQueueWaitMs);
+    current.calls.push(call);
+    runNext(route, current);
+  });
 }
 async function performRequest<T>(url: string, init: RequestInit, schema: z.ZodType<T>, route: string, auth: string, endpoint: string, deadline: number): Promise<T> {
   const readable = !init.method || init.method === 'GET';
@@ -159,12 +179,18 @@ async function performRequest<T>(url: string, init: RequestInit, schema: z.ZodTy
     return schema.parse(await response.json());
   }
 }
-function request<T>(url: string, init: RequestInit, schema: z.ZodType<T>): Promise<T> {
-  if (init.method && init.method !== 'GET') return queuedRequest(url, init, schema);
+function request<T>(url: string, init: RequestInit, schema: z.ZodType<T>, options: DiscordRequestOptions = {}): Promise<T> {
+  if (init.method && init.method !== 'GET') return queuedRequest(url, init, schema, options);
   const key = `${new Headers(init.headers).get('authorization') ?? ''}:${url}`;
   const pending = pendingGets.get(key);
-  if (pending) return pending as Promise<T>;
-  const result = queuedRequest(url, init, schema);
+  if (pending) {
+    if (options.priority === 'interactive') {
+      const call = routeQueues.get(rateLimitKey(url, init).route)?.calls.find((queued) => queued.url === url);
+      if (call) call.priority = 'interactive';
+    }
+    return pending as Promise<T>;
+  }
+  const result = queuedRequest(url, init, schema, options);
   pendingGets.set(key, result);
   void result.finally(() => { if (pendingGets.get(key) === result) pendingGets.delete(key); }).catch(() => {});
   return result;
@@ -201,7 +227,7 @@ export function directoryMember(guildId: string, member: BotGuildMember): Direct
   return { id: member.user.id, username: member.user.username, globalName: member.user.global_name ?? null, nick: member.nick ?? null, avatarUrl: memberAvatarUrl(guildId, member), roleIds: member.roles };
 }
 const guildSchema = z.object({ id: z.string(), owner_id: z.string(), name: z.string(), icon: z.string().nullable() });
-export function botGuild(botToken: string, guildId: string) { return request(`${api}/guilds/${guildId}`, { headers: { authorization: `Bot ${botToken}` } }, guildSchema); }
+export function botGuild(botToken: string, guildId: string, options?: DiscordRequestOptions) { return request(`${api}/guilds/${guildId}`, { headers: { authorization: `Bot ${botToken}` } }, guildSchema, options); }
 export function currentGuildMember(accessToken: string, guildId: string) { return request(`${api}/users/@me/guilds/${guildId}/member`, { headers: { authorization: `Bearer ${accessToken}` } }, memberSchema); }
 
 const channelSchema = z.object({ id: z.string(), guild_id: z.string().optional(), name: z.string().optional(), type: z.number(), parent_id: z.string().nullable().optional(), permission_overwrites: z.array(z.object({ id: z.string(), type: z.number(), allow: z.string(), deny: z.string() })).optional() });
@@ -223,7 +249,11 @@ export function administratorRoleIds(roles: readonly Pick<BotGuildRole, 'id' | '
   return roles.filter((role) => (BigInt(role.permissions) & PermissionFlagsBits.Administrator) !== 0n).map((role) => role.id);
 }
 export function botSelf(botToken: string) { return request(`${api}/users/@me`, { headers: { authorization: `Bot ${botToken}` } }, z.object({ id: z.string() })); }
-export function botGuildMember(botToken: string, guildId: string, userId: string) { return request(`${api}/guilds/${snowflakeSchema.parse(guildId)}/members/${snowflakeSchema.parse(userId)}`, { headers: { authorization: `Bot ${botToken}` } }, guildMemberSchema); }
+export async function botPresenceIntentAvailable(botToken: string): Promise<boolean> {
+  const application = await request(`${api}/oauth2/applications/@me`, { headers: { authorization: `Bot ${botToken}` } }, z.object({ flags: z.number().int().nonnegative().default(0) }));
+  return (application.flags & (ApplicationFlags.GatewayPresence | ApplicationFlags.GatewayPresenceLimited)) !== 0;
+}
+export function botGuildMember(botToken: string, guildId: string, userId: string, options?: DiscordRequestOptions) { return request(`${api}/guilds/${snowflakeSchema.parse(guildId)}/members/${snowflakeSchema.parse(userId)}`, { headers: { authorization: `Bot ${botToken}` } }, guildMemberSchema, options); }
 export function botListGuildMembers(botToken: string, guildId: string, after?: string) {
   const params = new URLSearchParams({ limit: '1000' });
   if (after) params.set('after', snowflakeSchema.parse(after));

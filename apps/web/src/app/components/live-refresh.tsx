@@ -5,7 +5,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { useUnsavedChanges } from './unsaved-changes';
 
 function affectsPage(kind: string, pathname: string): boolean {
-  if (kind === 'guild' || kind === 'access' || kind === 'guilds') return true;
+  if (kind === 'guild' || kind === 'access' || kind === 'guilds' || kind === 'settings') return true;
   const voice = pathname.split('/voice')[1];
   if (voice === undefined) return false;
   if (voice === '' || voice === '/') return ['rooms', 'creators', 'settings'].includes(kind);

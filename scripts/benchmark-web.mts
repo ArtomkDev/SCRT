@@ -5,6 +5,7 @@ import { sharedReads } from '../packages/database/src/shared-reads';
 import { sharedSubscriptions } from '../packages/database/src/shared-subscriptions';
 import { memberSearchIndex, searchMemberIndex } from '../apps/web/src/app/servers/[guildId]/settings/access-control/member-search-utils';
 import { membersByHighestAccessRole } from '../apps/web/src/app/servers/[guildId]/settings/access-control/role-members';
+import { botGuildMember } from '../packages/discord/src/index';
 
 // Synthetic, repeatable work; no credentials, Discord calls or database writes.
 const guildId = '100000000000000000';
@@ -55,7 +56,33 @@ assert.equal(listeners, 1);
 assert.equal(notifications, 1000);
 assert.equal(released, 1);
 
+// Exercise the real Discord scheduler with simulated network delay, without
+// credentials. This measures contention rather than page-cache performance.
+const fetchBeforeBenchmark = globalThis.fetch;
+const simulatedReadMs = 30;
+let simulatedRequests = 0;
+let fifoAccessMs = 0;
+let priorityAccessMs = 0;
+try {
+  globalThis.fetch = async (input) => {
+    simulatedRequests++;
+    await new Promise((resolve) => setTimeout(resolve, simulatedReadMs));
+    return new Response(JSON.stringify({ roles: [], user: { id: String(input).split('/').at(-1), username: 'Benchmark' } }));
+  };
+  for (const priority of ['normal', 'interactive'] as const) {
+    const token = `synthetic-queue-${priority}`;
+    const readers = Array.from({ length: 8 }, (_, index) => botGuildMember(token, guildId, members[index]!.id));
+    const accessStarted = performance.now();
+    await botGuildMember(token, guildId, '99999999999999999', { priority });
+    const accessMs = elapsed(accessStarted);
+    if (priority === 'normal') fifoAccessMs = accessMs; else priorityAccessMs = accessMs;
+    await Promise.all(readers);
+  }
+} finally { globalThis.fetch = fetchBeforeBenchmark; }
+assert.equal(simulatedRequests, 18);
+
 console.log(JSON.stringify({
   kind: 'synthetic-local-benchmark', members: members.length, roles: roles.length, concurrentVisitors: 1000,
   indexMs, searchMs, groupMs, readsMs, fanoutMs, upstreamReads: reads, upstreamListeners: listeners,
+  requestContention: { simulatedReadMs, queuedProfiles: 8, fifoAccessMs, priorityAccessMs, simulatedRequests },
 }, null, 2));

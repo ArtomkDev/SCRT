@@ -38,7 +38,15 @@ export async function saveVoiceSettings(guildId: string, form: FormData) {
   const value = voiceSettingsSchema.parse({ enabled: bool(form, 'enabled'), cleanupDelaySeconds: num(form, 'cleanupDelaySeconds'), ownerLeaveGraceSeconds: num(form, 'ownerLeaveGraceSeconds'), ownerExitBehavior: one(form, 'ownerExitBehavior'), duplicateRoomPolicy: one(form, 'duplicateRoomPolicy'), maxRoomsPerUser: num(form, 'maxRoomsPerUser'), defaultInterfaceMode: one(form, 'defaultInterfaceMode'), logChannelId, bypassRoleIds, schemaVersion: 1 });
   await voice().saveSettings(guildId, value);
   await audit(guildId, 'voice.settings_updated');
-  refresh(guildId);
+  revalidatePath(`/servers/${guildId}`, 'layout');
+}
+
+export async function enableVoice(guildId: string): Promise<void> {
+  await requireGuildAccess(guildId, 'voice.manage');
+  const settings = await voice().getSettings(guildId);
+  await voice().saveSettings(guildId, { ...settings, enabled: true });
+  await audit(guildId, 'voice.settings_updated');
+  revalidatePath(`/servers/${guildId}`, 'layout');
 }
 
 export async function saveVoiceCreator(guildId: string, form: FormData) {

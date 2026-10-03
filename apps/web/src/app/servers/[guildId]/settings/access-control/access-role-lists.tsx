@@ -6,6 +6,9 @@ import type { BotGuildRole } from '@scrt/discord';
 import { canEditAccessGrant, type AccessActor, type RoleMapping } from '@scrt/permissions';
 import type { DirectoryMember } from '@scrt/validation';
 import { ActionForm } from '@/app/components/action-form';
+import { AccessMappingActions } from './access-mapping-actions';
+import { AccessLevelSelect, PermissionBadge } from './access-level';
+import { Button } from '@/app/components/controls';
 import { useMemberDirectory } from './member-directory';
 import { membersByHighestAccessRole } from './role-members';
 
@@ -24,15 +27,13 @@ function roleBadgeStyle(role: BotGuildRole | undefined): CSSProperties {
 }
 
 function RoleBadge({ role }: { role: BotGuildRole | undefined }) {
-  const animated = role?.colors?.secondary_color !== null && role?.colors?.secondary_color !== undefined;
-  return <span className={animated ? 'access-role-badge access-role-badge-animated' : 'access-role-badge'} style={roleBadgeStyle(role)}>
+  return <span className="access-role-badge" style={roleBadgeStyle(role)} title={role?.id}>
     {role?.icon ? <Image src={`https://cdn.discordapp.com/role-icons/${role.id}/${role.icon}.webp?size=64`} alt="" width={18} height={18} unoptimized /> : role?.unicode_emoji ? <span aria-hidden="true">{role.unicode_emoji}</span> : null}
     {role?.name ?? 'Роль видалено'}
   </span>;
 }
 
-function RoleMembers({ members, mode }: { members: DirectoryMember[]; mode: string }) {
-  const [expanded, setExpanded] = useState(false);
+function RoleMembers({ members, mode, expanded, setExpanded }: { members: DirectoryMember[]; mode: string; expanded: boolean; setExpanded: React.Dispatch<React.SetStateAction<boolean>> }) {
   const [visible, setVisible] = useState(40);
   const note = mode === 'loading' && !members.length ? 'Завантаження учасників…'
     : mode === 'fallback' ? 'Список учасників недоступний. У налаштуваннях бота в Discord увімкніть Server Members Intent.'
@@ -56,15 +57,13 @@ function AccessRoleCard({ guildId, mapping, role, members, mode, editable, saveA
   guildId: string; mapping: RoleMapping; role: BotGuildRole | undefined; members: DirectoryMember[]; mode: string; editable: boolean;
   saveAction: (form: FormData) => Promise<void>; removeAction: (form: FormData) => Promise<void>;
 }) {
+  const [expanded, setExpanded] = useState(false);
   return <li className="detail-panel access-role-card">
-    <div className="access-role-card-head"><div className="access-role-card-identity"><RoleBadge role={role} /><span className="mono-line">{mapping.discordRoleId}</span></div>
-      {editable && <div className="access-role-actions">
-        {mapping.discordRoleId === guildId ? <span className="muted">Перегляд для всіх</span> : role && <ActionForm trackChanges={false} action={saveAction} className="access-role-update" successMessage="Рівень доступу змінено." feedbackPlacement="toast"><input type="hidden" name="roleId" value={mapping.discordRoleId} /><label>Рівень доступу<select name="appRole" defaultValue={mapping.appRole}><option value="SUPER_ADMIN">Повний доступ</option><option value="ADMIN">Налаштування бота</option><option value="VIEWER">Лише перегляд</option></select></label><button type="submit" className="action-link">Змінити</button></ActionForm>}
-        <ActionForm trackChanges={false} action={removeAction} feedbackPlacement="toast" confirmation={{ title: 'Скасувати доступ?', description: 'Доступ за цією роллю буде скасовано. Інші призначення залишаться чинними.', actionLabel: 'Скасувати доступ' }}><input type="hidden" name="roleId" value={mapping.discordRoleId} /><button type="submit" className="danger-button">Скасувати доступ</button></ActionForm>
-      </div>}
+    <div className="access-role-card-head"><div className="access-role-card-identity"><RoleBadge role={role} /><PermissionBadge role={mapping.appRole} /></div>
+      {editable && <AccessMappingActions label={role?.name ?? 'Роль видалено'} onMembers={() => setExpanded(true)} edit={mapping.discordRoleId !== guildId && role ? <ActionForm trackChanges={false} action={saveAction} className="access-role-update" successMessage="Рівень доступу змінено." feedbackPlacement="toast"><input type="hidden" name="roleId" value={mapping.discordRoleId} /><label>Рівень доступу<AccessLevelSelect defaultValue={mapping.appRole} /></label><Button type="submit">Зберегти</Button></ActionForm> : undefined} remove={<ActionForm trackChanges={false} action={removeAction} feedbackPlacement="toast" confirmation={{ title: 'Скасувати доступ?', description: `Роль «${role?.name ?? 'Роль видалено'}» втратить доступ за цим призначенням. Інші призначення залишаться чинними.`, actionLabel: 'Скасувати доступ' }}><input type="hidden" name="roleId" value={mapping.discordRoleId} /><Button type="submit" variant="danger" tabIndex={-1}>Скасувати доступ</Button></ActionForm>} />}
     </div>
     {!editable && mapping.appRole === 'SUPER_ADMIN' && <p className="muted">Змінювати цей доступ може лише власник сервера або адміністратор, який його надав.</p>}
-    <RoleMembers members={members} mode={mode} />
+    <RoleMembers members={members} mode={mode} expanded={expanded} setExpanded={setExpanded} />
   </li>;
 }
 

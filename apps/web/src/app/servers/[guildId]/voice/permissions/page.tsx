@@ -1,11 +1,13 @@
 import { installUrl } from '@scrt/discord';
+import { Suspense } from 'react';
+import { DataLoading } from '@/app/components/data-loading';
 import { requireGuildAccess } from '@/lib/guards';
 import { env } from '@/lib/server';
 import { permissionStatus, voiceCreators, voiceInterfaces, voicePermissionResources } from '@/lib/voice-data';
 
 const names = ['Перегляд каналів', 'Керування каналами', 'Керування ролями', 'Переміщення учасників', 'Підключення', 'Надсилання повідомлень', 'Вбудовування посилань', 'Історія повідомлень'];
 
-export default async function VoicePermissionsPage({ params }: { params: Promise<{ guildId: string }> }) {
+async function PermissionsContent({ params }: { params: Promise<{ guildId: string }> }) {
   const { guildId } = await params;
   const access = await requireGuildAccess(guildId, 'voice.view');
   const [creators, resources, interfaces] = await Promise.all([voiceCreators(guildId), voicePermissionResources(guildId, access.guild.resourceRevision), voiceInterfaces(guildId)]);
@@ -21,4 +23,8 @@ export default async function VoicePermissionsPage({ params }: { params: Promise
     {groups.map((group) => <section key={group.label} className="voice-item"><h3>{group.label}</h3><ul className="voice-permission-list">{permissionStatus(guildId, resources, group.channel).map((item, index) => <li key={item.flag.toString()} className={item.granted ? 'voice-ok' : 'voice-missing'}>{item.granted ? '✓' : '✕'} {names[index]}</li>)}</ul></section>)}
     <p className="muted">Права окремого каналу можуть перевизначати права ролі бота. Для роботи з категоріями перевірте також права бота на сервері.</p>
   </section>;
+}
+
+export default function VoicePermissionsPage(props: Parameters<typeof PermissionsContent>[0]) {
+  return <Suspense fallback={<section><h2 className="subheading">Дозволи бота</h2><DataLoading label="Завантаження дозволів…" /></section>}><PermissionsContent {...props} /></Suspense>;
 }

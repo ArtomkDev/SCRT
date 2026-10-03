@@ -1,16 +1,23 @@
 import { Suspense, type ReactNode } from 'react';
-import Link from 'next/link';
 import { requireGuildAccess } from '@/lib/guards';
 import { GuildIcon } from '../../components/guild-icon';
 import { DashboardNav } from '../../components/dashboard-nav';
 import { LiveRefresh } from '../../components/live-refresh';
+import { voiceSettings } from '@/lib/voice-data';
+import { activitySettings } from '@/lib/activity-data';
 
-async function GuildWorkspace({ children, params }: { children: ReactNode; params: Promise<{ guildId: string }> }) {
+async function ModuleNavigation({ guildId, showVoice, showActivity, showAccess }: { guildId: string; showVoice: boolean; showActivity: boolean; showAccess: boolean }) {
+  const [voice, activity] = await Promise.all([showVoice ? voiceSettings(guildId) : null, showActivity ? activitySettings(guildId) : null]);
+  return <DashboardNav guildId={guildId} showVoice={showVoice} showActivity={showActivity} showAccess={showAccess} voiceState={voice ? voice.enabled ? 'enabled' : 'disabled' : undefined} activityState={activity ? activity.enabled ? 'enabled' : 'disabled' : undefined} />;
+}
+
+async function GuildSidebar({ params }: { params: Promise<{ guildId: string }> }) {
   const { guildId } = await params;
   const { discordGuild, permissions } = await requireGuildAccess(guildId);
-  return <div className="guild-workspace"><aside className="guild-sidebar"><Link href="/servers" className="back-link">← Усі сервери</Link><div className="guild-context"><GuildIcon id={guildId} name={discordGuild.name} icon={discordGuild.icon} size={40} /><span className="guild-context-name">{discordGuild.name}</span></div><span className="sidebar-label">Налаштування сервера</span><DashboardNav guildId={guildId} showVoice={permissions.has('voice.view')} showAccess={permissions.has('settings.view')} /><LiveRefresh endpoint={`/api/guilds/${guildId}/events`} /></aside><div className="guild-content">{children}</div></div>;
+  const navigation = { guildId, showVoice: permissions.has('voice.view'), showActivity: permissions.has('activity.view'), showAccess: permissions.has('settings.view') };
+  return <aside className="guild-sidebar"><div className="guild-context"><GuildIcon id={guildId} name={discordGuild.name} icon={discordGuild.icon} size={32} /><span className="guild-context-name">{discordGuild.name}</span></div><span className="sidebar-label">Сервер</span><Suspense fallback={<DashboardNav {...navigation} />}><ModuleNavigation {...navigation} /></Suspense><LiveRefresh endpoint={`/api/guilds/${guildId}/events`} /></aside>;
 }
 
 export default function GuildLayout(props: { children: ReactNode; params: Promise<{ guildId: string }> }) {
-  return <Suspense fallback={<div className="content-page" role="status" aria-busy="true"><p className="muted">Завантаження сервера…</p></div>}><GuildWorkspace {...props} /></Suspense>;
+  return <div className="guild-workspace"><Suspense fallback={<aside className="guild-sidebar" aria-busy="true"><p className="muted" role="status">Завантаження сервера…</p><div className="skeleton skeleton-card" aria-hidden="true" /></aside>}><GuildSidebar params={props.params} /></Suspense><div className="guild-content">{props.children}</div></div>;
 }

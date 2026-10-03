@@ -1,4 +1,6 @@
 'use client';
+import { Select } from '@/app/components/select';
+
 
 import { useDeferredValue, useEffect, useMemo, useState } from 'react';
 import Image from 'next/image';
@@ -62,6 +64,6 @@ export function MemberSearch({ guildId, ownerId, mappings, action }: {
       </button></li>)}</ul>
       {mode === 'directory' && result.total === 0 && <p className="empty-state">Учасників не знайдено.</p>}
     </>}
-    {selected && <ActionForm trackChanges={false} key={selected.id} action={action} className="access-role-update member-search-grant" successMessage="Доступ надано." feedbackPlacement="toast"><input type="hidden" name="userId" value={selected.id} /><label>Рівень доступу<select name="appRole" defaultValue="ADMIN"><option value="SUPER_ADMIN">Повний доступ</option><option value="ADMIN">Налаштування бота</option><option value="VIEWER">Лише перегляд</option></select></label><button type="submit" className="action-link">Надати доступ</button></ActionForm>}
+    {selected && <ActionForm trackChanges={false} key={selected.id} action={action} className="access-role-update member-search-grant" successMessage="Доступ надано." feedbackPlacement="toast"><input type="hidden" name="userId" value={selected.id} /><label>Рівень доступу<Select aria-label="Рівень доступу" name="appRole" defaultValue="ADMIN"><option value="SUPER_ADMIN">Повний доступ</option><option value="ADMIN">Налаштування бота</option><option value="VIEWER">Лише перегляд</option></Select></label><button type="submit" className="action-link">Надати доступ</button></ActionForm>}
   </section>;
 }

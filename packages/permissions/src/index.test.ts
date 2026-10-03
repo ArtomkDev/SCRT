@@ -3,6 +3,16 @@ import { canEditAccessGrant, PermissionService, resolvePermissions } from './ind
 
 const base = { guildId: 'guild', userId: 'user', ownerId: 'owner', discordRoleIds: [] as string[], mappings: [], memberMappings: [] };
 describe('guild permissions', () => {
+  it('keeps Activity management separate from viewing and respects live roles', () => {
+    const viewer = { ...base, discordRoleIds: ['123'], mappings: [{ discordRoleId: '123', appRole: 'VIEWER' as const }] };
+    expect(resolvePermissions(viewer).has('activity.view')).toBe(true);
+    expect(resolvePermissions(viewer).has('activity.manage')).toBe(false);
+    const admin = { ...viewer, mappings: [{ discordRoleId: '123', appRole: 'ADMIN' as const }] };
+    expect(resolvePermissions(admin).has('activity.manage')).toBe(true);
+    expect(resolvePermissions({ ...admin, discordRoleIds: [] }).has('activity.manage')).toBe(false);
+    expect(resolvePermissions({ ...base, userId: 'owner' }).has('activity.manage')).toBe(true);
+    expect(() => new PermissionService().require(base, 'activity.view')).toThrow('Forbidden');
+  });
   it('gives level three access management through personal and role grants', () => {
     expect(resolvePermissions({ ...base, memberMappings: [{ discordUserId: 'user', appRole: 'SUPER_ADMIN' }] }).has('settings.manage')).toBe(true);
     expect(resolvePermissions({ ...base, discordRoleIds: ['123'], mappings: [{ discordRoleId: '123', appRole: 'SUPER_ADMIN' }] }).has('settings.manage')).toBe(true);

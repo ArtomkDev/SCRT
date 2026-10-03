@@ -1,16 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
-  requireGuildAccess: vi.fn(), saveSettings: vi.fn(), saveCreator: vi.fn(), getCreator: vi.fn(), getRoom: vi.fn(), deleteCreator: vi.fn(), audit: vi.fn(),
+  requireGuildAccess: vi.fn(), getSettings: vi.fn(), saveSettings: vi.fn(), saveCreator: vi.fn(), getCreator: vi.fn(), getRoom: vi.fn(), deleteCreator: vi.fn(), audit: vi.fn(),
   channels: vi.fn(), roles: vi.fn(), regions: vi.fn(), createChannel: vi.fn(), renameChannel: vi.fn(), deleteChannel: vi.fn(), revalidatePath: vi.fn(), updateTag: vi.fn(),
 }));
 vi.mock('@/lib/guards', () => ({ requireGuildAccess: mocks.requireGuildAccess }));
-vi.mock('@/lib/server', () => ({ env: () => ({ DISCORD_BOT_TOKEN: 'test' }), voice: () => ({ saveSettings: mocks.saveSettings, saveCreator: mocks.saveCreator, getCreator: mocks.getCreator, getRoom: mocks.getRoom, deleteCreator: mocks.deleteCreator, audit: mocks.audit }) }));
+vi.mock('@/lib/server', () => ({ env: () => ({ DISCORD_BOT_TOKEN: 'test' }), voice: () => ({ getSettings: mocks.getSettings, saveSettings: mocks.saveSettings, saveCreator: mocks.saveCreator, getCreator: mocks.getCreator, getRoom: mocks.getRoom, deleteCreator: mocks.deleteCreator, audit: mocks.audit }) }));
 vi.mock('@scrt/discord', () => ({ botGuildChannels: mocks.channels, botGuildRoles: mocks.roles, botVoiceRegions: mocks.regions, botCreateVoiceChannel: mocks.createChannel, botRenameVoiceChannel: mocks.renameChannel, botDeleteChannel: mocks.deleteChannel }));
 vi.mock('next/cache', () => ({ revalidatePath: mocks.revalidatePath, updateTag: mocks.updateTag }));
 
-import { deleteVoiceCreator, saveVoiceCreator, saveVoiceSettings } from './actions';
-import { defaultCreatorChannelName } from '@scrt/validation';
+import { deleteVoiceCreator, enableVoice, saveVoiceCreator, saveVoiceSettings } from './actions';
+import { defaultCreatorChannelName, voiceSettingsSchema } from '@scrt/validation';
 
 const guildId = '12345678901234567';
 function form(roleId?: string) {
@@ -21,6 +21,19 @@ function form(roleId?: string) {
   return data;
 }
 describe('Voice dashboard mutations', () => {
+  it('enables Voice only after manage authorization and preserves existing settings', async () => {
+    const settings = voiceSettingsSchema.parse({ enabled: false, cleanupDelaySeconds: 60 });
+    mocks.getSettings.mockResolvedValue(settings);
+    await enableVoice(guildId);
+    expect(mocks.requireGuildAccess).toHaveBeenCalledWith(guildId, 'voice.manage');
+    expect(mocks.saveSettings).toHaveBeenCalledWith(guildId, { ...settings, enabled: true });
+    expect(mocks.revalidatePath).toHaveBeenCalledWith(`/servers/${guildId}`, 'layout');
+  });
+  it('denies enabling before reading settings when manage permission is missing', async () => {
+    mocks.requireGuildAccess.mockRejectedValue(new Error('Forbidden'));
+    await expect(enableVoice(guildId)).rejects.toThrow('Forbidden');
+    expect(mocks.getSettings).not.toHaveBeenCalled(); expect(mocks.saveSettings).not.toHaveBeenCalled();
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.requireGuildAccess.mockResolvedValue({ permissions: new Set(['voice.manage']) });
@@ -52,7 +65,7 @@ describe('Voice dashboard mutations', () => {
     expect(mocks.channels).not.toHaveBeenCalled();
     expect(mocks.roles).not.toHaveBeenCalled();
     expect(mocks.updateTag).not.toHaveBeenCalled();
-    expect(mocks.revalidatePath).toHaveBeenCalledWith(`/servers/${guildId}/voice`, 'layout');
+    expect(mocks.revalidatePath).toHaveBeenCalledWith(`/servers/${guildId}`, 'layout');
   });
   it('does not report a completed settings write as failed when auditing fails', async () => {
     mocks.audit.mockRejectedValue(new Error('audit unavailable'));

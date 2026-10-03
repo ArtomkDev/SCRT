@@ -1,0 +1,87 @@
+.auth-screen {
+  --auth-bg: #0b0d10;
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  flex-direction: column;
+  min-height: 100svh;
+  overflow: clip;
+  background: var(--auth-bg);
+}
+.auth-screen::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(90deg, #080a0e38 0%, #080a0e66 42%, #080a0edb 68%, #080a0ee6 100%), radial-gradient(ellipse at 35% 48%, transparent 20%, #080a0e90 100%);
+}
+.auth-environment { position: absolute; z-index: -2; inset: 0; overflow: hidden; pointer-events: none; opacity: .38; }
+.auth-environment-image { object-fit: cover; object-position: center; }
+.auth-header { display: flex; align-items: center; justify-content: space-between; gap: 20px; min-height: 92px; padding: 24px clamp(24px, 4vw, 80px); }
+.auth-header .brand { font-size: 20px; }
+.auth-header .brand-control { font-size: 11px; }
+.auth-system-label { color: #787f8b; font: 500 10px ui-monospace, monospace; letter-spacing: .16em; }
+.auth-composition { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); align-items: center; flex: 1; width: min(100%, 1900px); margin: 0 auto; padding: 0 clamp(32px, 6vw, 140px) 92px 0; }
+.auth-visual { position: relative; display: grid; place-items: center; min-width: 0; height: min(900px, calc(100svh - 184px)); animation: auth-awake 600ms ease-out both; }
+.auth-face-motion { width: min(116%, calc((100svh - 184px) * 1.03), 1000px); transform: translate3d(var(--face-x, 0px), var(--face-y, 0px), 0); transition: transform 240ms cubic-bezier(.2, .65, .3, 1); }
+.auth-face-artwork { animation: auth-breathe 8s ease-in-out infinite; }
+.auth-face-svg { display: block; width: 100%; height: auto; overflow: visible; }
+.auth-face-halo { opacity: .26; animation: auth-pulse 8s ease-in-out infinite; }
+.auth-face-eye { transform: translate(var(--eye-x, 0px), var(--eye-y, 0px)); transition: transform 220ms cubic-bezier(.2, .65, .3, 1); }
+.auth-face-mouth { transform: translate(calc(var(--eye-x, 0px) * .6), calc(var(--eye-y, 0px) * .6 + var(--mouth-lift, 0px))); transition: transform 280ms cubic-bezier(.2, .65, .3, 1); }
+.auth-visual:hover, .auth-composition:has(.auth-discord-button:is(:hover, :focus-visible)) { --glow-strength: .38; }
+.auth-composition:has(.auth-discord-button:is(:hover, :focus-visible)) .auth-face-mouth { --mouth-lift: -1px; }
+.auth-content { position: relative; width: min(100%, 390px); margin: -16px auto 0; }
+.auth-eyebrow { display: block; margin-bottom: 16px; color: #9098a5; font-size: 11px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; }
+.auth-content h1 { margin: 0 0 16px; font-size: clamp(28px, 2.3vw, 36px); font-weight: 650; letter-spacing: -.04em; line-height: 1.16; }
+.auth-description { max-width: 340px; margin-bottom: 30px; color: #b1b7c2; font-size: 15px; line-height: 1.65; }
+.auth-discord-button { display: flex; align-items: center; justify-content: center; gap: 11px; width: 100%; min-height: 52px; padding: 12px 16px; border: 1px solid #ffffff0d; border-radius: var(--radius-medium); background: var(--accent); color: #fff; font-size: 14px; font-weight: 650; line-height: 1.4; transition: background-color 120ms ease, border-color 120ms ease; }
+.auth-discord-button:hover { background: #6370f4; border-color: #ffffff24; }
+.auth-discord-button:focus-visible { outline: 2px solid #b5bdff; outline-offset: 4px; }
+.auth-discord-button[aria-disabled="true"] { cursor: progress; background: var(--accent-hover); }
+.auth-discord-button svg { flex: none; }
+.auth-privacy { max-width: 335px; margin: 18px 0 0; color: #848d9b; font-size: 11px; line-height: 1.65; }
+.auth-error { margin: 0 0 20px; padding: 10px 12px; border-left: 2px solid #c4a788; border-radius: 0 var(--radius-small) var(--radius-small) 0; background: #b89a7010; color: #d6c4ad; font-size: 12px; line-height: 1.55; }
+.auth-spinner { animation: auth-spin 800ms linear infinite; }
+@keyframes auth-awake { from { opacity: .75; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes auth-breathe { 0%, 100% { transform: translateY(0) scale(1); } 50% { transform: translateY(-5px) scale(1.006); } }
+@keyframes auth-pulse { 0%, 100% { opacity: var(--glow-strength, .26); } 50% { opacity: calc(var(--glow-strength, .26) * 1.3); } }
+@keyframes auth-spin { to { transform: rotate(360deg); } }
+@media (max-width: 1100px) {
+  .auth-header { min-height: 80px; }
+  .auth-composition { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); padding: 0 40px 70px 0; }
+  .auth-face-motion { width: min(112%, calc((100svh - 150px) * 1.03), 740px); }
+  .auth-content { max-width: 340px; }
+}
+@media (max-width: 900px) {
+  .auth-header { min-height: 72px; padding: 20px 24px; }
+  .auth-header .brand { font-size: 18px; }
+  .auth-header .brand-control { font-size: 10px; }
+  .auth-system-label { font-size: 8px; letter-spacing: .1em; }
+  .auth-composition { display: flex; flex-direction: column; justify-content: center; gap: 0; flex: 1; padding: 0 24px 36px; }
+  .auth-visual { flex: none; width: min(88vw, 370px); height: auto; aspect-ratio: 1.15; margin: -14px 0 -10px; }
+  .auth-face-motion { width: 100%; }
+  .auth-content { max-width: 370px; margin: 0; }
+  .auth-content h1 { font-size: 28px; margin-bottom: 12px; }
+  .auth-eyebrow { margin-bottom: 12px; font-size: 10px; }
+  .auth-description { margin-bottom: 24px; font-size: 14px; }
+  .auth-discord-button { font-size: 13px; }
+  .auth-privacy { margin-top: 15px; }
+  .auth-screen::before { background: linear-gradient(180deg, #080a0e55 0%, #080a0e99 36%, #080a0ee8 65%, #080a0eef 100%); }
+}
+@media (max-width: 900px) and (max-height: 740px) {
+  .auth-visual { width: min(76vw, 280px); margin-top: -12px; }
+  .auth-composition { padding-bottom: 28px; }
+}
+@media (min-width: 901px) and (max-height: 720px) {
+  .auth-header { min-height: 72px; }
+  .auth-composition { padding-bottom: 48px; }
+  .auth-visual { max-height: calc(100svh - 120px); }
+  .auth-face-motion { max-width: min(100%, 570px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .auth-visual, .auth-face-artwork, .auth-face-halo, .auth-spinner { animation: none; }
+  .auth-face-motion, .auth-face-eye, .auth-face-mouth { transform: none; transition: none; }
+  .auth-discord-button { transition: none; }
+}

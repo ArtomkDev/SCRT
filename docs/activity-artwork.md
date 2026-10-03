@@ -1,0 +1,76 @@
+# Activity artwork
+
+Artwork is presentation metadata. Existing `gameKey`, sessions, statistics, contributors and leaderboard queries are unchanged. Discord Playing includes games and software; recognizable software skips game APIs unless an administrator confirms an exact provider ID.
+
+## Ownership and resolution
+
+`packages/shared` owns the browser-safe model and deterministic initials/colors; `packages/validation` validates identity, URLs and mappings; `packages/artwork` owns the server provider chain; `packages/database` persists guild-scoped records. The bot captures assets through the installed discord.js `smallImageURL` / `largeImageURL` methods after session persistence, then starts enrichment without awaiting it. Provider failure cannot fail tracking.
+
+The web reads artwork in a single Firestore batch for each list. It returns cached/stale artwork immediately and uses Next `after` with two workers for missing/expired records. No external providers run during page rendering. Existing observed games enrich lazily, or through the administrator bulk action; no data deletion/migration is required.
+
+Icon priority: manual field → Discord small/large asset → SteamGridDB icon → SteamGridDB logo → IGDB game logo → IGDB small cover → Simple Icons → publisher brand icon where Simple Icons no longer supports it → generated initials.
+
+Hero priority: manual field → Discord large asset → SteamGridDB landscape hero → IGDB artwork → IGDB screenshot → generated CSS banner. Different providers can supply different fields. Automatic refresh keeps trusted stale images when that provider is temporarily unavailable. Wrong fuzzy matches are rejected; exact normalized names and a small explicit alias table are accepted, and equally strong ambiguous results are rejected. No arbitrary substring or edit-distance acceptance.
+
+Simple Icons is resolved server-side using the official current package. Only the selected SVG data URL is sent to the browser, not its catalog. Microsoft icons were [removed upstream](https://github.com/simple-icons/simple-icons/issues/11236); VS Code uses the [publisher's blue icon](https://code.visualstudio.com/brand) directly with publisher attribution, not an obsolete Simple Icons release. This is a provider catalog entry, not an Activity identity/statistics mapping. Crosshair X can be matched by configured game metadata providers; without evidence it retains a generated identity.
+
+## Optional provider setup
+
+Configure these in root `.env` locally and in **both bot and web** production environments. Never use a `NEXT_PUBLIC_` prefix. Blank/missing credentials disable that provider without preventing startup. Restart both processes after configuring keys.
+
+* SteamGridDB: sign in at [SteamGridDB](https://www.steamgriddb.com), open [Preferences → API](https://www.steamgriddb.com/profile/preferences/api), generate/copy your API key, and set `STEAMGRIDDB_API_KEY`.
+* IGDB: create a Twitch account and enable 2FA. Open [Twitch Developer Console → Applications](https://dev.twitch.tv/console/apps), register an application with **Confidential** client type. IGDB does not use the redirect URL; enter `http://localhost` as the registration placeholder. Manage the application, copy Client ID, click **New Secret**, and set `IGDB_TWITCH_CLIENT_ID` and `IGDB_TWITCH_CLIENT_SECRET`. See [IGDB setup](https://api-docs.igdb.com/#account-creation). SCRT obtains and renews the app token automatically; no temporary access token is needed.
+
+Never paste credentials into chat. The settings provider panel reports configured/unconfigured and recent operational errors; it never displays credential values. "Configured" is not a successful connection check.
+
+## Cache and failure handling
+
+Documents are `guilds/{guildId}/activityArtwork/{sha256(gameKey)}`. A hashed document ID supports slashes/Unicode in the existing identity without changing it. Documents contain per-field URLs/types/sources, classification, confidence, timestamps, status, field overrides, optional confirmed mapping, captured Discord URLs, schema version and edit revision. Provider tokens are never persisted.
+
+Central TTLs: successful artwork **30 days**; not found **7 days**; provider error **3 hours**. Fresh negative records prevent repeated misses. Each provider has a **5 second** chain deadline including throttled requests. Requests are paced at one every **300 ms** per provider/process (below IGDB's four requests/sec), with no immediate retries. 429 honors `Retry-After`; auth errors cool down for one hour; other network failures cool down for one minute. Twitch token acquisition uses a shared in-process promise and refreshes before expiration.
+
+`resolutionVersion` identifies the resolution rules and enabled provider set without storing credentials. Old records and records created before a provider was connected refresh lazily even while their TTL is fresh. Manual field selections survive this refresh. This also invalidates previous misses caused by older banner filters.
+
+Resolution deduplicates by **guild ID + gameKey**, with at most **two active chains** and **200 pending identities** per process. Bot observation requests are additionally coalesced by identity/asset signature for one hour. The bot and web maintain separate in-process gates; Firestore transactions guard refreshes racing with overrides, mappings and other refreshes. There is no Redis or distributed API quota coordinator; deployments with many replicas must account for combined provider quotas.
+
+## Administrator controls
+
+The game list and individual game page expose one compact action menu. Viewers can open details or contributors; users with `activity.manage` can also open **Оформлення**, refresh artwork, or ignore/restore tracking. Activity Settings uses the same editor. The native dialog separates **Іконка** and **Банер**, keeps current artwork visible, and presents one provider-ranked result grid with an optional source filter. SteamGridDB icon/logo/grid variants and paginated heroes, IGDB covers/logos/artwork, Discord and local icons retain their existing behavior. Correct the search name or refine a returned game match when needed; search never changes Activity identity or statistics.
+
+Gallery lookups run only after explicit interaction, independently of automatic priority and negative artwork caches. Each source has a 12-second deadline, with the existing HTTP quota gates. Results are coalesced and cached for five minutes (errors 30 seconds), with 100 cached pages and 20 pending lookups per process. SteamGridDB pagination is capped at 101 pages per search; provider responses are bounded. Choices are signed server-side, bound to guild, game and image field, and expire after 30 minutes. Selection preserves source attribution and transactionally changes only its chosen field.
+
+The editor is loaded on demand and rendered outside table cells using a body portal. Its header, icon/banner tabs and Apply/Cancel footer remain visible around one scroll area. Candidate clicks only select a draft. Own URLs have explicit previews, uploads use temporary object URLs, and automatic selection previews the cached recommendation or generated fallback. Only **Застосувати** persists the active field; closing discards drafts. Switching asset tabs discards the active draft and retains search results. The native dialog traps focus, closes with Escape and restores trigger focus; tabs support arrow keys, Home and End.
+
+Opening the editor automatically loads the first gallery for both fields once per provider unless fresh results already exist in the browser cache. Corrected searches use explicit form submission, and streamed UI updates are batched for 180ms. A bounded browser-memory cache retains completed galleries for five minutes (failed providers for 30 seconds), scoped by guild, activity, artwork revision and query, shorter than signed selection expiry. Source filters and asset tabs do not trigger lookups. Changed queries and closing abort requests and ignore late updates. Provider failures use quiet availability messages, and broken previews retain generated identities. Banner previews measure the actual page hero's crop ratio and scroll with the content; list images are lazy and only the detail hero has high fetch priority. The dialog uses the available viewport up to 1920px wide with adaptive galleries, one scroll area and pinned controls; on phones it fills the screen.
+
+Search uses the protected read-only `/api/guilds/{guildId}/activity/artwork-search` route instead of serialized Server Actions. All sources start concurrently; each source starts icon and banner lookups concurrently and streams each completed field as NDJSON. Slow or failed sources cannot delay ready results. Pagination loads only the active field; a changed game selection reloads both fields. SteamGridDB/IGDB share public game metadata searches across fields in a bounded 32-entry, five-minute cache; authorization, observed game checks and signed selections remain guild-specific.
+
+Every lookup/mutation requires live backend `activity.manage` and verifies the activity belongs to the authorized guild. Individual refresh preserves overrides and has a one-minute refresh guard. Each modal can return its field to automatic selection. "Повернути автоматичний пошук" clears both overrides and a confirmed mapping.
+
+The optional provider/ID settings also let an administrator confirm a game's numeric SteamGridDB or IGDB entity ID for future automatic refreshes. Updating this mapping preserves manually selected or uploaded images. Choosing a gallery image pins that individual image; it does not remap the other image field.
+
+## Own files and URLs
+
+Both image dialogs accept a public HTTPS URL or **Завантажити своє**. Uploaded PNG/JPEG/WebP files are limited to 4 MiB and 20 million decoded pixels. Server-side Sharp checks actual bytes, rejects animation/markup, removes metadata, applies orientation, and encodes static WebP at up to 256×256 for icons or 1600×900 for banners. The persisted result must fit 400,000 bytes.
+
+This repository already uses Firestore and has no configured object bucket. Small custom images use `guilds/{guildId}/activityArtworkUploads/{contentHash}`, separately from artwork metadata so list batch reads never pull image bytes. No additional storage credentials or local disk persistence are needed. Upload, field update and audit commit atomically; replacing or clearing an upload removes its previous document. At most two active upload documents belong to one game. `firestore.indexes.json` exempts the binary `bytes` field from indexing; apply the existing index deployment workflow when deploying.
+
+The `/servers/{guildId}/activity/artwork/{imageId}` route requires live `activity.view` for that guild and returns WebP with private browser caching, `nosniff`, and a restrictive content policy. One image request reads one upload document. Upload bytes never enter the game list query or statistics documents. Provider candidates and manual external URLs remain browser-loaded references; arbitrary URLs are never fetched by the server.
+
+"Оновити відсутнє оформлення" processes all observed documents via bounded eight-item batches, two concurrent chains, and live scanned/resolved/fallback/skipped/error counts. It skips manually overridden records and respects fresh negative/error caches. Interrupting the page keeps completed cache writes; restarting the operation safely scans again. Providers may return no banner for software; the generated banner is an intentional final visual, not a tracking failure.
+
+## Browser images and security
+
+`ActivityIcon` reserves 40px (64px in the hero), uses contain for logos and cover for cover art, lazy-loads list assets, and replaces failed URLs with stable initials. The hero is 220–300px desktop / 180px mobile, loads eagerly only on detail pages, uses cover plus a dark text overlay, and always retains a generated CSS composition. No animated background, image generation, or fallback bitmap files.
+
+Images load directly in the browser with no-referrer policy. No arbitrary proxy/download endpoint or broad Next Image host configuration exists. Administrator URLs require bounded HTTPS URLs, public domain names, no credentials/nonstandard ports, and reject local names, network address literals and known animated file extensions. Stored upload paths are restricted to the current guild; SVG data URLs are produced only by the trusted local catalog and accepted as selections through signed tokens. Server fetches target fixed provider endpoints only and reject redirects. SteamGridDB accepts static PNG/JPEG/WebP, string or array style metadata, and landscape heroes up to 7680px wide (including common 3840px variants), while rejecting unsafe tags and animation. IGDB uses small cover/logo variants and 720p heroes. Runtime 404/error fallbacks apply even to manual images.
+
+## Sources and terms
+
+Use documented APIs/CDNs; do not scrape. Artwork links point to their provider/game or publisher where applicable. Consult [SteamGridDB API](https://www.steamgriddb.com/api/v2) and [terms](https://www.steamgriddb.com/terms). SteamGridDB artwork remains owned by its rights holders; SCRT stores references rather than redistributing bitmap files.
+
+[IGDB documentation](https://api-docs.igdb.com/) permits caching and requires a commercial partnership for monetized use, with user-facing attribution. SCRT displays IGDB attribution on detail artwork. Consult those current terms before monetizing an integration. [Simple Icons disclaimer](https://github.com/simple-icons/simple-icons/blob/develop/DISCLAIMER.md) states that individual brand rights and licenses apply; catalog availability does not grant trademark ownership. The publisher-brand entry uses VS Code's official identification icon according to its brand guidelines.
+
+## Verification
+
+Run `pnpm typecheck`, `pnpm lint`, `pnpm test`, `pnpm build`. Resolver, provider contract, cache, guild isolation, authorization, bulk progress and DOM image-error tests use controlled inputs. Run `corepack pnpm exec tsx scripts/verify-artwork.mts` for live results for Dota 2, Valheim, Crosshair X, Rust and Visual Studio Code. It checks selected icon/banner CDN responses and probes IGDB independently even when SteamGridDB already supplied both fields. It uses an in-memory artwork store and never changes Activity statistics or writes Firebase. Missing provider credentials are reported as BLOCKED, not passed live checks. SteamGridDB icons/logos reject some MIME query values accepted by grids/heroes; requests use static/tag filters and validate MIME locally instead of sending a common MIME list. Resolution version 3 invalidates records created by the incompatible query.
