@@ -58,7 +58,7 @@ Original message create counts +1. Edits and deletes have no effect. A bounded 1
 
 ## Write frequency and failure handling
 
-Messages accumulate by guild/user/date. Flush every 60 seconds, or at 1,000 occupied entries. At most 2,000 pending/snapshotted keys are held; capacity exhaustion rejects/logs new keys explicitly. Each transaction handles at most 80 increments, updates member/daily totals with increments and creates an immutable receipt token. Failed or ambiguous commits retain that same snapshot/token; new arrivals are separate. Receipts prevent retries from double-counting committed batches.
+Messages accumulate by guild/user/date. Flush every 60 seconds, or at 1,000 occupied entries. At most 2,000 pending/snapshotted keys are held; capacity exhaustion rejects/logs new keys explicitly. Each transaction handles at most 80 increments, updates member/daily totals with increments and creates an immutable receipt token. Failed or ambiguous commits retain that same snapshot/token; new arrivals are separate. A failed batch pauses only its guild for that flush; other guilds continue, and retries preserve each guild's order. Receipts prevent retries from double-counting committed batches.
 
 Sessions write at start, on meaningful transition/closure, and at five-minute checkpoints for currently active sessions. A checkpoint splits the uncommitted cursor-to-observation segment into guild-calendar days, updates aggregates and advances the cursor in one transaction. Before the minimum session threshold, a checkpoint only persists observation; once qualified, short later segments remain part of that already-qualified session. Game session count increases once when the session first qualifies and is assigned to its first aggregated day; time on subsequent days still counts. No per-second writes or historical session scans occur.
 
@@ -75,6 +75,8 @@ A voice day qualifies at the configured accumulated eligible voice threshold, de
 ## Restart, reconnect and shutdown
 
 Persisted active sessions are reconciled at startup/resume. The old record closes at **last durable observation**, then the currently visible eligible voice/stream/Playing state starts a fresh session at recovery time. Missing states are cleaned up. This deliberately undercounts unproven downtime; even an apparently unchanged game could have stopped and restarted while disconnected. Recovery never fabricates that gap.
+
+Guild availability is independent of the Gateway connection. An unavailable guild is suspended at its last observed session boundary and skipped by periodic checkpoints. When Discord emits `guildAvailable`, both modules recover from the now-visible guild state. Startup initializes guilds independently and does not wait for Temporary Voice recovery before initializing Activity. Profile enrichment and health-publishing failures cannot stop another guild's collection. Settings listeners are installed before session recovery so a failed recovery does not hide later enable/disable changes.
 
 SIGINT/SIGTERM stop accepting new Activity events, stop timers/listeners, drain queued member work, flush all remaining message generations, checkpoint active sessions and mark worker health disconnected. The bootstrap has a 12-second shutdown deadline. An unexpected kill can lose unflushed messages and the latest uncheckpointed session segment. Normal redeploy attempts to persist them; this does not promise zero loss during a Firestore outage or forced termination. The next worker restores from durable state. Use a single Railway worker/replica; no Redis, cron service or second Activity worker is needed.
 
@@ -93,6 +95,16 @@ firebase deploy --only firestore:indexes --project YOUR_FIREBASE_PROJECT_ID
 Alternatively, an index-admin credential can run `pnpm --filter @scrt/bot verify:activity --apply-indexes`. That script only creates the declared indexes and never deletes existing indexes. Firestore index creation needs index-management permission, separate from normal document read/write access. [Official index creation API](https://docs.cloud.google.com/firestore/docs/reference/rest/v1/projects.databases.collectionGroups.indexes/create).
 
 ## Verification
+
+### Diagnosing an empty dashboard
+
+Check the bot worker deployment separately from the web deployment. A web rollout does not update the persistent Discord worker. The worker must build the current repository with `pnpm --filter @scrt/bot build` and start `pnpm --filter @scrt/bot start`.
+
+The `bot/ready` log includes `activityInitialized`, `presenceAvailable`, and Railway's commit `revision` when provided. Each guild emits `activity/recovery.complete` with its `enabled` flag and tracker settings; later settings changes emit `activity/config.updated`. If there is no Activity startup entry, verify that the worker runs the version containing Activity. A failed recovery is logged separately. Enable Activity for the intended guild; Presence availability affects games only, while messages, voice and screen sharing continue without it. Send a new eligible message and allow the 60-second flush; voice/stream/game sessions must pass their minimum duration before aggregation.
+
+Structured logs include a readable `message` with module/action, context and failure reason, so hosted log exports retain guild IDs and diagnostics instead of blank informational lines. A stale `activityHealth/worker` means there is no recent worker observation in that Firestore project; check the deployed revision, running worker and its Firebase/Discord application configuration before attributing missing counts to channel permissions.
+
+Voice audit records use `null` for missing optional actor, target, channel and creator identifiers. This handles automatic deletion/recovery events and room controls without passing `undefined` into Firestore. These audit records are separate from Activity counters; an audit failure alone does not establish why analytics are empty.
 
 `pnpm --filter @scrt/bot verify:activity` writes a marked, synthetic guild namespace, verifies batch retries, voice/stream/game totals, session cleanup, streaks, conservative restart recovery and real period leaderboard queries, then recursively deletes only that marked test namespace. It also verifies Gateway authentication with the detected intents. It never enables Activity on a real guild or changes a real member's statistics.
 

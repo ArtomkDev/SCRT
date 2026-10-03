@@ -20,7 +20,7 @@ function fixture(presence = true, artwork?: ActivityArtworkResolver) {
       if (close) { persisted.delete(id); return null; }
       const next = { ...session, cursorAt: end, lastObservedAt: end }; persisted.set(id, next); return next;
     }),
-    listSessions: vi.fn(async () => [...persisted.values()]), flushMessages: vi.fn<(guildId: string, token: string, values: readonly MessageIncrement[]) => Promise<void>>(async () => undefined), saveProfile: vi.fn(async () => undefined), saveHealth: vi.fn(async () => undefined), cleanupReceipts: vi.fn(async () => undefined),
+    listSessions: vi.fn(async (id: string) => [...persisted.values()].filter((session) => session.guildId === id)), flushMessages: vi.fn<(guildId: string, token: string, values: readonly MessageIncrement[]) => Promise<void>>(async () => undefined), saveProfile: vi.fn(async () => undefined), saveHealth: vi.fn(async () => undefined), cleanupReceipts: vi.fn<(guildId: string) => Promise<void>>(async () => undefined),
   };
   const member = { id: userId, user: { bot: false, username: 'Human' }, roles: { cache: new Map() }, displayName: 'Human', displayAvatarURL: () => 'https://cdn.discordapp.com/embed/avatars/0.png' } as unknown as GuildMember;
   const guild = { id: guildId, afkChannelId: '42345678901234567', channels: { cache: new Map([[channelId, { id: channelId, parentId: null, isThread: () => false }], ['42345678901234567', { id: '42345678901234567', parentId: null, isThread: () => false }]]) }, members: { cache: new Map([[userId, member]]), fetch: vi.fn(async () => member) }, voiceStates: { cache: new Map() }, presences: { cache: new Map() } } as unknown as Guild;
@@ -28,7 +28,7 @@ function fixture(presence = true, artwork?: ActivityArtworkResolver) {
   const client = { guilds: { cache: new Map([[guildId, guild]]) } } as unknown as Client;
   const module = new ActivityModule(client, repo as unknown as ActivityRepository, presence, artwork);
   module.setConnected(true); modules.push(module);
-  return { module, repo, guild, member, persisted, settingsChanged: (value: ActivitySettings) => settingsChanged(value) };
+  return { module, repo, guild, member, persisted, client, settingsChanged: (value: ActivitySettings) => settingsChanged(value) };
 }
 beforeEach(() => vi.useFakeTimers());
 afterEach(async () => { for (const module of modules.splice(0)) await module.shutdown(); vi.useRealTimers(); });
@@ -110,6 +110,86 @@ describe('Activity event orchestration', () => {
     await vi.advanceTimersByTimeAsync(120000); module.setConnected(true); await module.recover(guild);
     expect(persisted.size).toBe(3);
     expect([...persisted.values()].every((session) => session.startedAt === Date.now())).toBe(true);
+  });
+});
+
+describe('Guild recovery failure isolation', () => {
+  it('completes recovery while profile enrichment is still pending', async () => {
+    const { module, guild, member, repo } = fixture();
+    guild.voiceStates.cache.set(userId, { guild, id: userId, member, channelId, streaming: false } as unknown as VoiceState);
+    let release!: () => void;
+    repo.saveProfile.mockImplementationOnce(() => new Promise<undefined>((resolve) => { release = () => resolve(undefined); }));
+    let recovered = false;
+    const recovery = module.recover(guild).then(() => { recovered = true; });
+    await vi.advanceTimersByTimeAsync(1);
+    try { expect(recovered).toBe(true); }
+    finally { release(); await recovery; }
+  });
+  it('keeps observing settings after session recovery fails and retries when settings change', async () => {
+    const { module, guild, member, repo, persisted, settingsChanged } = fixture();
+    const voice = { guild, id: userId, member, channelId, streaming: false } as unknown as VoiceState;
+    guild.voiceStates.cache.set(userId, voice);
+    repo.startSession.mockRejectedValueOnce(new Error('session unavailable'));
+    await expect(module.recover(guild)).rejects.toThrow('session unavailable');
+    expect(repo.watchSettings).toHaveBeenCalledOnce();
+    repo.getSettings.mockResolvedValue(activitySettingsSchema.parse({ enabled: false }));
+    settingsChanged(activitySettingsSchema.parse({ enabled: false }));
+    await vi.waitFor(() => expect(repo.saveHealth).toHaveBeenCalledWith(guildId, expect.objectContaining({ recovery: true })));
+    expect(persisted.size).toBe(0);
+    settingsChanged(activitySettingsSchema.parse({ enabled: true }));
+    await vi.waitFor(() => expect(persisted.size).toBe(1));
+  });
+  it('keeps tracking and the settings listener alive when a profile write fails during recovery', async () => {
+    const { module, guild, member, repo, persisted, settingsChanged } = fixture();
+    const voice = { guild, id: userId, member, channelId, streaming: false } as unknown as VoiceState;
+    guild.voiceStates.cache.set(userId, voice);
+    repo.saveProfile.mockRejectedValueOnce(new Error('profile unavailable'));
+    await module.recover(guild);
+    expect(repo.watchSettings).toHaveBeenCalledOnce();
+    expect(repo.saveHealth).toHaveBeenCalledWith(guildId, expect.objectContaining({ recovery: true }));
+    const stream = { ...voice, streaming: true } as VoiceState;
+    await module.onVoiceState(voice, stream);
+    expect(persisted.size).toBe(2);
+    settingsChanged(activitySettingsSchema.parse({ enabled: false }));
+    await vi.waitFor(() => expect(persisted.size).toBe(0));
+  });
+  it('pauses an unavailable guild and waits for suspension before restarting visible sessions', async () => {
+    const { module, guild, member, repo, persisted } = fixture();
+    const voice = { guild, id: userId, member, channelId, streaming: false } as unknown as VoiceState;
+    guild.voiceStates.cache.set(userId, voice);
+    await module.recover(guild);
+    const observedAt = Date.now();
+    Object.assign(guild, { available: false });
+    await vi.advanceTimersByTimeAsync(300000);
+    expect(repo.settleSession).not.toHaveBeenCalled();
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const settle = repo.settleSession.getMockImplementation()!;
+    repo.settleSession.mockImplementationOnce(async (...args) => { await blocked; return settle(...args); });
+    const suspension = module.suspendGuild(guildId);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(repo.settleSession).toHaveBeenCalledWith(guildId, expect.any(String), observedAt, true);
+    Object.assign(guild, { available: true });
+    const recovery = module.recover(guild);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(repo.startSession).toHaveBeenCalledOnce();
+    release();
+    await Promise.all([suspension, recovery]);
+    expect(persisted.size).toBe(1);
+    expect([...persisted.values()][0]?.startedAt).toBe(Date.now());
+    expect(repo.startSession).toHaveBeenCalledTimes(2);
+  });
+  it('continues periodic recovery for other guilds when publishing one guild health fails', async () => {
+    const { module, guild, client, repo } = fixture();
+    const otherId = '92345678901234567';
+    const other = { ...guild, id: otherId } as Guild;
+    client.guilds.cache.set(otherId, other);
+    await module.recover(guild);
+    await module.recover(other);
+    repo.cleanupReceipts.mockClear();
+    repo.saveHealth.mockRejectedValueOnce(new Error('health unavailable'));
+    await vi.advanceTimersByTimeAsync(300000);
+    expect(repo.cleanupReceipts.mock.calls.map(([id]) => id)).toEqual([guildId, otherId]);
   });
 });
 

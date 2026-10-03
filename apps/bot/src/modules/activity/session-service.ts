@@ -20,7 +20,7 @@ export class ActivitySessionService {
     await prior;
     try { return await work(); } finally { release(); if (this.locks.get(key) === pending) this.locks.delete(key); }
   }
-  async drain(): Promise<void> { await Promise.all([...this.locks.values()]); }
+  async drain(guildId?: string): Promise<void> { await Promise.all([...this.locks].filter(([key]) => !guildId || key.startsWith(`${guildId}:`)).map(([, pending]) => pending)); }
   sessions(guildId?: string): ActivitySession[] { return [...this.active.values()].map((entry) => entry.session).filter((session) => !guildId || session.guildId === guildId); }
   private minimum(settings: ActivitySettings, tracker: ActivitySession['tracker']) { return tracker === 'voice' ? settings.voice.minimumSessionSeconds : tracker === 'stream' ? settings.streaming.minimumSessionSeconds : settings.games.minimumSessionSeconds; }
   async reconcile(guildId: string, userId: string, desired: DesiredSession[], settings: ActivitySettings, now: number): Promise<void> {

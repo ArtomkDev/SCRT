@@ -39,16 +39,26 @@ async function runBot(presenceAvailable: boolean): Promise<void> {
     await repository.upsertInstalled({ guildId: guild.id, name: guild.name, icon: guild.icon, ownerId: guild.ownerId }, administratorRoleIds);
     log('info', 'bot', 'guild.synced', { guildId: guild.id });
   }
-  client.once(Events.ClientReady, async (ready) => {
+  async function initializeGuild(guild: Guild) {
+    if (stopping || !guild.available) return;
+    const results = await Promise.allSettled([syncGuild(guild), voice.recover(guild), activity.recover(guild)]);
+    results.forEach((result, index) => {
+      if (result.status === 'rejected') log('error', ['bot', 'voice', 'activity'][index]!, index === 0 ? 'guild.sync.failed' : 'recovery.failed', { guildId: guild.id }, result.reason);
+    });
+  }
+  client.once(Events.ClientReady, (ready) => {
     activity.setConnected(true);
-    log('info', 'bot', 'ready', { userId: ready.user.id, guildCount: ready.guilds.cache.size });
+    log('info', 'bot', 'ready', { userId: ready.user.id, guildCount: ready.guilds.cache.size, activityInitialized: true, presenceAvailable, revision: process.env.RAILWAY_GIT_COMMIT_SHA ?? null });
     for (const guild of ready.guilds.cache.values()) {
-      try { await syncGuild(guild); } catch (error) { log('error', 'bot', 'guild.sync.failed', { guildId: guild.id }, error); }
-      try { await voice.recover(guild); } catch (error) { log('error', 'voice', 'recovery.failed', { guildId: guild.id }, error); }
-      try { await activity.recover(guild); } catch (error) { log('error', 'activity', 'recovery.failed', { guildId: guild.id }, error); }
+      void initializeGuild(guild);
     }
   });
-  client.on(Events.GuildCreate, (guild) => { void syncGuild(guild).then(async () => { await Promise.allSettled([voice.recover(guild), activity.recover(guild)]).then((results) => { results.forEach((result, index) => { if (result.status === 'rejected') log('error', index === 0 ? 'voice' : 'activity', 'recovery.failed', { guildId: guild.id }, result.reason); }); }); }).catch((error: unknown) => log('error', 'bot', 'guild.join.failed', { guildId: guild.id }, error)); });
+  client.on(Events.GuildCreate, (guild) => { void initializeGuild(guild); });
+  client.on(Events.GuildAvailable, (guild) => { if (client.isReady()) void initializeGuild(guild); });
+  client.on(Events.GuildUnavailable, (guild) => {
+    voice.stopGuild(guild.id);
+    void activity.suspendGuild(guild.id).catch((error: unknown) => log('error', 'activity', 'guild.suspend.failed', { guildId: guild.id }, error));
+  });
   client.on(Events.GuildUpdate, (_previous, guild) => { void syncGuild(guild).catch((error: unknown) => log('error', 'bot', 'guild.update.failed', { guildId: guild.id }, error)); });
   client.on(Events.GuildDelete, (guild) => { const pending = resourceSignals.get(guild.id); if (pending) clearTimeout(pending); resourceSignals.delete(guild.id); voice.stopGuild(guild.id); void activity.stopGuild(guild.id).catch((error: unknown) => log('error', 'activity', 'guild.leave.failed', { guildId: guild.id }, error)); void repository.markDisconnected(guild.id).catch((error: unknown) => log('error', 'bot', 'guild.leave.failed', { guildId: guild.id }, error)); });
   client.on(Events.VoiceStateUpdate, (oldState, newState) => {

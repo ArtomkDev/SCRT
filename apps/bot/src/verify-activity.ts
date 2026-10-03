@@ -5,7 +5,7 @@ import { config } from 'dotenv';
 import { cert } from 'firebase-admin/app';
 import { Client } from 'discord.js';
 import { botEnv } from '@scrt/config';
-import { ActivityLeaderboardService, ActivityRepository, firestore } from '@scrt/database';
+import { ActivityLeaderboardService, ActivityRepository, VoiceRepository, firestore } from '@scrt/database';
 import { activitySessionSchema, activitySettingsSchema } from '@scrt/validation';
 import { activityDate, activityStreakEpoch } from '@scrt/shared';
 import { activityGatewayIntents, presenceIntentAvailable } from './modules/activity/gateway';
@@ -41,6 +41,19 @@ try {
   if (process.argv.includes('--apply-indexes')) await ensureIndexes();
   assert.equal((await root.get()).exists, false, 'Verification namespace must not exist');
   await root.create({ purpose: 'SCRT isolated activity verification', createdAt: new Date() });
+  const voice = new VoiceRepository(db);
+  await voice.audit({ guildId, action: 'room.created', source: 'discord', actorId: userId, targetUserId: undefined });
+  await voice.audit({ guildId, action: 'room.deleted', source: 'discord', actorId: undefined });
+  await voice.audit({ guildId, action: 'voice.recovery', source: 'recovery' });
+  const audits = await root.collection('voiceAudit').get();
+  assert.equal(audits.size, 3);
+  for (const audit of audits.docs) {
+    assert.equal(audit.get('targetUserId'), null);
+    assert.equal(audit.get('channelId'), null);
+    assert.equal(audit.get('creatorId'), null);
+    assert.equal(audit.get('actorId'), audit.get('action') === 'room.created' ? userId : null);
+  }
+  console.info('Voice audit omitted/undefined optional fields: PASS');
   await repository.saveSettings(guildId, settings, userId);
   const date = activityDate(now, settings.streak.timezone);
   await repository.flushMessages(guildId, 'live-batch', [{ userId, date, count: 3, observedAt: now }]);

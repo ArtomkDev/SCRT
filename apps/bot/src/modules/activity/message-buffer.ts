@@ -26,7 +26,21 @@ export class MessageActivityBuffer {
     for (const { guildId, ...value } of this.pending.values()) { const group = groups.get(guildId) ?? []; group.push(value); groups.set(guildId, group); }
     this.pending.clear();
     for (const [guildId, values] of groups) for (let offset = 0; offset < values.length; offset += 80) this.batches.push({ guildId, token: randomUUID(), values: values.slice(offset, offset + 80) });
-    // A failed commit leaves the immutable snapshot at the front for retry.
-    while (this.batches.length) { const batch = this.batches[0]!; await this.commit(batch.guildId, batch.token, batch.values); this.batches.shift(); }
+    const blockedGuilds = new Set<string>();
+    const failures: Error[] = [];
+    for (let index = 0; index < this.batches.length;) {
+      const batch = this.batches[index]!;
+      if (blockedGuilds.has(batch.guildId)) { index++; continue; }
+      try {
+        await this.commit(batch.guildId, batch.token, batch.values);
+        this.batches.splice(index, 1);
+      } catch (error) {
+        // Preserve ordering and retry tokens within a guild without blocking other guilds.
+        blockedGuilds.add(batch.guildId);
+        failures.push(new Error(`Activity message flush failed for guild ${batch.guildId}: ${error instanceof Error ? error.message : String(error)}`, { cause: error }));
+        index++;
+      }
+    }
+    if (failures.length) throw new AggregateError(failures, failures.map((failure) => failure.message).join('; '));
   }
 }

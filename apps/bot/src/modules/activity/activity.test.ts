@@ -45,7 +45,7 @@ describe('message buffering', () => {
     const commit = vi.fn().mockRejectedValueOnce(new Error('offline')).mockResolvedValue(undefined);
     const buffer = new MessageActivityBuffer(commit);
     buffer.add(guildId, userId, '2026-10-01', 100);
-    await expect(buffer.flush()).rejects.toThrow('offline');
+    await expect(buffer.flush()).rejects.toThrow(guildId);
     const token = commit.mock.calls[0]?.[1];
     buffer.add(guildId, userId, '2026-10-01', 200);
     await buffer.flush();
@@ -61,6 +61,23 @@ describe('message buffering', () => {
     expect(() => buffer.add(guildId, '72345678901234567', '2026-10-01', 100)).toThrow('full');
     const a = buffer.flush(); const b = buffer.flush();
     expect(a).toBe(b); release(); await a;
+  });
+  it('flushes other guilds while retaining failed snapshots and their order for retry', async () => {
+    const otherGuild = '92345678901234567';
+    const commit = vi.fn<(id: string, token: string) => Promise<void>>(async (id) => { if (id === guildId) throw new Error('unavailable'); });
+    const buffer = new MessageActivityBuffer(commit);
+    for (let index = 0; index < 81; index++) buffer.add(guildId, String(BigInt(userId) + BigInt(index)), '2026-10-01', 100);
+    buffer.add(otherGuild, userId, '2026-10-01', 100);
+    await expect(buffer.flush()).rejects.toThrow(guildId);
+    expect(commit.mock.calls.map(([id]) => id)).toEqual([guildId, otherGuild]);
+    expect(buffer.size).toBe(81);
+    const failedToken = commit.mock.calls[0]?.[1];
+    buffer.add(otherGuild, userId, '2026-10-01', 200);
+    commit.mockImplementation(async () => undefined);
+    await buffer.flush();
+    expect(commit.mock.calls[2]?.[1]).toBe(failedToken);
+    expect(commit.mock.calls.map(([id]) => id)).toEqual([guildId, otherGuild, guildId, guildId, otherGuild]);
+    expect(buffer.size).toBe(0);
   });
 });
 describe('voice, stream and Playing transitions', () => {

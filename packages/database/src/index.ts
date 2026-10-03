@@ -330,6 +330,13 @@ export class VoiceRepository {
     });
   }
   async audit(input: { guildId: string; action: string; actorId?: string | null; targetUserId?: string | null; channelId?: string | null; creatorId?: string | null; source: 'discord' | 'dashboard' | 'recovery' }): Promise<void> {
-    await this.root(input.guildId).collection('voiceAudit').add({ ...input, timestamp: FieldValue.serverTimestamp() });
+    await this.root(input.guildId).collection('voiceAudit').add({
+      ...input,
+      actorId: input.actorId ?? null,
+      targetUserId: input.targetUserId ?? null,
+      channelId: input.channelId ?? null,
+      creatorId: input.creatorId ?? null,
+      timestamp: FieldValue.serverTimestamp(),
+    });
   }
 }
