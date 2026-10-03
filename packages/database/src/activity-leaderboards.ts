@@ -62,7 +62,7 @@ export class ActivityLeaderboardService {
         if (!this.missingIndex(error)) throw error;
         rows = (await this.bounded(this.repository.collection(guildId, 'activityMembers').where('lastQualifiedVoiceDate', 'in', dates))).filter((row) => row.streakEpoch === activityStreakEpoch(settings)).map((row) => ({ userId: String(row.userId), value: counter(row[metric]) }));
       }
-    } else if (period === 'all' || metric === 'longestVoiceStreak') {
+    } else if (period === 'all' || metric === 'longestVoiceStreak' || metric === 'longestVoiceRunSeconds') {
       const docs = await this.repository.collection(guildId, 'activityMembers').orderBy(metric, 'desc').limit(limit).get();
       rows = docs.docs.map((doc) => ({ userId: doc.id, value: counter(doc.get(metric)) }));
     } else {
@@ -149,7 +149,7 @@ export class ActivityLeaderboardService {
     }
     const date = typeof all.lastQualifiedVoiceDate === 'string' ? all.lastQualifiedVoiceDate : null;
     const matchingEpoch = all.streakEpoch === activityStreakEpoch(settings);
-    return { ...values, userId, currentVoiceStreak: matchingEpoch ? currentActivityStreak(counter(all.currentVoiceStreak), date, activityDate(this.now(), settings.streak.timezone)) : 0, longestVoiceStreak: counter(all.longestVoiceStreak), lastQualifiedVoiceDate: date, lastActivityAt: counter(all.lastActivityAt) };
+    return { ...values, userId, currentVoiceStreak: matchingEpoch ? currentActivityStreak(counter(all.currentVoiceStreak), date, activityDate(this.now(), settings.streak.timezone)) : 0, longestVoiceStreak: counter(all.longestVoiceStreak), longestVoiceRunSeconds: counter(all.longestVoiceRunSeconds), lastQualifiedVoiceDate: date, lastActivityAt: counter(all.lastActivityAt) };
   }
   async games(guildId: string, period: ActivityPeriod, limit = 25): Promise<ActivityGameSummary[]> {
     activityPeriodSchema.parse(period); this.limit(limit);

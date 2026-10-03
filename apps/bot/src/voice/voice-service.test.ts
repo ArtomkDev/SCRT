@@ -29,7 +29,7 @@ function harness(overrides: { enabled?: boolean; bot?: boolean; moveFails?: bool
     if (id === roomId) members.set(userId, member);
   }) } };
   const repository = {
-    getSettings: vi.fn(async () => settings), listCreators: vi.fn(async () => [configuredCreator]),
+    getSettings: vi.fn(async () => settings), listCreators: vi.fn(async () => [configuredCreator]), disableCreator: vi.fn(async () => undefined),
     watchCreators: vi.fn((_id: string, onChange: (value: typeof creator[]) => void) => { onChange([configuredCreator]); return () => undefined; }),
     listRooms: vi.fn(async () => [...rooms.values()]), getCreator: vi.fn(async () => configuredCreator),
     saveRoom: vi.fn(async (room: VoiceRoom) => { rooms.set(room.channelId, room); }),
@@ -118,6 +118,37 @@ describe('creator joins', () => {
     await expect(h.service.act({ member: stranger as unknown as GuildMember, action: 'unlock' })).rejects.toThrow('власником');
     h.service.stop();
   });
+  it('keeps room controls and fresh occupancy when a join overlaps a pending save', async () => {
+    const h = harness(); await h.service.recover(h.guild);
+    await h.service.onVoiceState(h.state(null), h.state(creatorId));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    h.repository.saveRoom.mockImplementationOnce(async (room) => { await gate; h.rooms.set(room.channelId, room); });
+    h.repository.saveRoom.mockClear();
+    const locking = h.service.act({ member: h.member as unknown as GuildMember, action: 'lock' });
+    await vi.waitFor(() => expect(h.repository.saveRoom).toHaveBeenCalledOnce());
+    h.members.set('72345678901234567', { id: '72345678901234567', user: { bot: false } });
+    const joining = h.service.onVoiceState(h.state(null), h.state(roomId));
+    release(); await Promise.all([locking, joining]);
+    expect(h.rooms.get(roomId)).toMatchObject({ locked: true, memberCount: 2 });
+    h.service.stop();
+  });
+  it('does not recreate a deleted room when a control save completes afterwards', async () => {
+    const h = harness(); await h.service.recover(h.guild);
+    await h.service.onVoiceState(h.state(null), h.state(creatorId));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    h.repository.saveRoom.mockImplementationOnce(async (room) => { await gate; h.rooms.set(room.channelId, room); });
+    h.repository.saveRoom.mockClear();
+    const locking = h.service.act({ member: h.member as unknown as GuildMember, action: 'lock' });
+    await vi.waitFor(() => expect(h.repository.saveRoom).toHaveBeenCalledOnce());
+    h.guild.channels.cache.delete(roomId);
+    const deletion = h.service.onChannelDelete(h.guild, roomId);
+    release(); await Promise.all([locking, deletion]);
+    expect(h.rooms.has(roomId)).toBe(false);
+    expect(h.service.roomForMember(h.member as unknown as GuildMember)).toBeNull();
+    h.service.stop();
+  });
   it('deletes an empty room after the configured delay', async () => {
     vi.useFakeTimers();
     try {
@@ -135,6 +166,26 @@ describe('creator joins', () => {
 
 describe('startup recovery', () => {
   const savedRoom = () => voiceRoomSchema.parse({ guildId, channelId: roomId, creatorId, ownerId: userId, state: 'active', locked: false, hidden: false, chatClosed: false, permittedUserIds: [], blockedUserIds: [], memberCount: 1, ownerLeftAt: null, createdAt: Date.now(), updatedAt: Date.now(), lastActivityAt: Date.now(), schemaVersion: 1 });
+  it('shares concurrent recovery and reuses loaded creator configuration', async () => {
+    const h = harness(); h.rooms.set(roomId, savedRoom()); h.members.set(userId, h.member);
+    await Promise.all([h.service.recover(h.guild), h.service.recover(h.guild)]);
+    expect(h.repository.listRooms).toHaveBeenCalledOnce();
+    expect(h.repository.watchCreators).toHaveBeenCalledOnce();
+    expect(h.repository.getCreator).not.toHaveBeenCalled();
+    h.service.stop();
+  });
+  it('does not install subscriptions or restore rooms after a pending recovery is stopped', async () => {
+    const h = harness(); h.rooms.set(roomId, savedRoom());
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    h.repository.listRooms.mockImplementationOnce(async () => { await gate; return [...h.rooms.values()]; });
+    const recovery = h.service.recover(h.guild);
+    await vi.waitFor(() => expect(h.repository.listRooms).toHaveBeenCalledOnce());
+    h.service.stopGuild(guildId); release(); await recovery;
+    expect(h.repository.watchCreators).not.toHaveBeenCalled();
+    expect(h.service.roomForMember({ ...h.member, voice: { channelId: roomId } } as unknown as GuildMember)).toBeNull();
+    h.service.stop();
+  });
   it('removes a record whose Discord channel disappeared', async () => {
     const h = harness(); h.rooms.set(roomId, savedRoom()); h.guild.channels.cache.delete(roomId);
     await h.service.recover(h.guild);

@@ -4,7 +4,7 @@ import { activitySettings } from '@/lib/activity-data';
 import { ModuleDisabledState, ModuleStatus } from '@/app/components/module-status';
 import { ActionForm } from '@/app/components/action-form';
 import { Button } from '@/app/components/controls';
-import { DataLoading } from '@/app/components/data-loading';
+import { ActivityPageLoading } from './loading-content';
 import { InlineAction } from '@/app/components/inline-action';
 import { enableActivity } from './actions';
 
@@ -23,6 +23,6 @@ async function ActivityState({ guildId, children }: { guildId: string; children:
   </ModuleDisabledState>;
 }
 
-export function ActivityModuleContent(props: { guildId: string; children: ReactNode }) {
-  return <Suspense fallback={<DataLoading label="Перевірка стану активності…" />}><ActivityState {...props} /></Suspense>;
+export function ActivityModuleContent({ fallback = <ActivityPageLoading />, ...props }: { guildId: string; children: ReactNode; fallback?: ReactNode }) {
+  return <Suspense fallback={fallback}><ActivityState {...props} /></Suspense>;
 }

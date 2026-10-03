@@ -1,7 +1,7 @@
 import { Select } from '@/app/components/select';
 import { requireGuildAccess } from '@/lib/guards';
 import { Suspense } from 'react';
-import { DataLoading } from '@/app/components/data-loading';
+import { VoicePageLoading } from '../loading-content';
 import { voiceChannels, voiceCreators, voiceInterfaces } from '@/lib/voice-data';
 import { deleteVoiceInterface, publishVoiceInterface, setVoiceInterfaceEnabled } from '../actions';
 import { ActionForm } from '@/app/components/action-form';
@@ -21,5 +21,5 @@ async function InterfacesContent({ params }: { params: Promise<{ guildId: string
 }
 
 export default function VoiceInterfacesPage(props: Parameters<typeof InterfacesContent>[0]) {
-  return <Suspense fallback={<section><h2 className="subheading">Панелі керування</h2><DataLoading label="Завантаження панелей…" /></section>}><InterfacesContent {...props} /></Suspense>;
+  return <Suspense fallback={<VoicePageLoading view="interfaces" />}><InterfacesContent {...props} /></Suspense>;
 }

@@ -80,6 +80,36 @@ describe('Activity event orchestration', () => {
     guild.voiceStates.cache.delete(userId); await module.onVoiceState(voice, leave);
     expect(persisted.size).toBe(0); expect(repo.settleSession).toHaveBeenCalledTimes(2);
   });
+  it('preserves a short return but breaks it after entering AFK during the return window', async () => {
+    const { module, guild, member, persisted } = fixture(); await module.recover(guild);
+    const voice = { guild, id: userId, member, channelId, streaming: false } as VoiceState;
+    const update = async (before: VoiceState, after: VoiceState) => { if (after.channelId) guild.voiceStates.cache.set(userId, after); else guild.voiceStates.cache.delete(userId); await module.onVoiceState(before, after); };
+    await update(voice, voice);
+    const epoch = [...persisted.values()][0]!.voiceRunEpoch;
+    vi.setSystemTime(Date.now() + 120000);
+    const leave = { ...voice, channelId: null } as VoiceState;
+    await update(voice, leave);
+    vi.setSystemTime(Date.now() + 10000);
+    await update(leave, voice);
+    expect([...persisted.values()][0]!.voiceRunEpoch).toBe(epoch);
+    await update(voice, leave);
+    const afk = { ...voice, channelId: guild.afkChannelId } as VoiceState;
+    await update(leave, afk);
+    await update(afk, voice);
+    expect([...persisted.values()][0]!.voiceRunEpoch).not.toBe(epoch);
+  });
+  it('clears pending returns when settings disable tracking while the member is disconnected', async () => {
+    const { module, guild, member, persisted, settingsChanged } = fixture(); await module.recover(guild);
+    const voice = { guild, id: userId, member, channelId, streaming: false } as VoiceState;
+    guild.voiceStates.cache.set(userId, voice); await module.onVoiceState(voice, voice);
+    const epoch = [...persisted.values()][0]!.voiceRunEpoch;
+    const leave = { ...voice, channelId: null } as VoiceState;
+    guild.voiceStates.cache.delete(userId); await module.onVoiceState(voice, leave);
+    settingsChanged(activitySettingsSchema.parse({ enabled: false })); await vi.advanceTimersByTimeAsync(1);
+    settingsChanged(activitySettingsSchema.parse({ enabled: true })); await vi.advanceTimersByTimeAsync(1);
+    guild.voiceStates.cache.set(userId, voice); await module.onVoiceState(leave, voice);
+    expect([...persisted.values()][0]!.voiceRunEpoch).not.toBe(epoch);
+  });
   it('reconciles exclusions promptly and starts new sessions after re-enabling', async () => {
     const { module, guild, member, persisted, settingsChanged } = fixture(); await module.recover(guild);
     const voice = { guild, id: userId, member, channelId, streaming: true } as unknown as VoiceState;
@@ -114,6 +144,31 @@ describe('Activity event orchestration', () => {
 });
 
 describe('Guild recovery failure isolation', () => {
+  it('does not install a settings listener after shutdown starts during a pending read', async () => {
+    const { module, guild, repo } = fixture();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const settings = await repo.getSettings(); repo.getSettings.mockClear();
+    repo.getSettings.mockImplementationOnce(async () => { await gate; return settings; });
+    const recovery = module.recover(guild);
+    await vi.waitFor(() => expect(repo.getSettings).toHaveBeenCalledOnce());
+    const shutdown = module.shutdown(); release(); await Promise.all([recovery, shutdown]);
+    expect(repo.watchSettings).not.toHaveBeenCalled();
+  });
+  it('cancels recovery when a guild is removed before its settings arrive', async () => {
+    const { module, guild, member, repo, persisted } = fixture();
+    guild.voiceStates.cache.set(userId, { guild, id: userId, member, channelId, streaming: false } as VoiceState);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const settings = await repo.getSettings(); repo.getSettings.mockClear();
+    repo.getSettings.mockImplementationOnce(async () => { await gate; return settings; });
+    const recovery = module.recover(guild);
+    await vi.waitFor(() => expect(repo.getSettings).toHaveBeenCalledOnce());
+    const removal = module.stopGuild(guildId); release(); await Promise.all([recovery, removal]);
+    expect(repo.watchSettings).not.toHaveBeenCalled();
+    expect(persisted.size).toBe(0);
+    expect(repo.startSession).not.toHaveBeenCalled();
+  });
   it('completes recovery while profile enrichment is still pending', async () => {
     const { module, guild, member, repo } = fixture();
     guild.voiceStates.cache.set(userId, { guild, id: userId, member, channelId, streaming: false } as unknown as VoiceState);
@@ -205,7 +260,7 @@ describe('Observed application exclusions', () => {
     const boundary = Date.now();
     settingsChanged(activitySettingsSchema.parse({ enabled: true, games: { ignoredGameKeys: ['name:visual studio code'] } }));
     await vi.waitFor(() => expect(persisted.size).toBe(0));
-    expect(repo.settleSession).toHaveBeenCalledWith(guildId, session.id, boundary, true);
+    expect(repo.settleSession).toHaveBeenCalledWith(guildId, session.id, boundary, true, 0);
     await module.onPresence(presence);
     expect(persisted.size).toBe(0);
     const resumedAt = Date.now();

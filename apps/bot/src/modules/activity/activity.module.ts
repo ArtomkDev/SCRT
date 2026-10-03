@@ -2,7 +2,7 @@ import { ActivityType, type Client, type Guild, type GuildMember, type Message, 
 import { ActivityRepository, type ActivityHealth } from '@scrt/database';
 import { activityDate, log, normalizeGame } from '@scrt/shared';
 import { activitySettingsSchema, type ActivitySettings } from '@scrt/validation';
-import { activityEligible, type ActivityChannel } from './eligibility';
+import { activityActorEligible, activityEligible, type ActivityChannel } from './eligibility';
 import { MessageActivityBuffer } from './message-buffer';
 import { ActivitySessionService } from './session-service';
 import { gameSessions, voiceSessions } from './trackers';
@@ -15,6 +15,7 @@ export class ActivityModule {
   private readonly profiles = new Map<string, number>();
   private readonly profileWrites = new Map<string, Promise<void>>();
   private readonly recovering = new Map<string, Promise<void>>();
+  private readonly recoveryTokens = new Map<string, { cancelled: boolean }>();
   private readonly suspending = new Map<string, Promise<void>>();
   private readonly messageIds = new Map<string, number>();
   private readonly artworkRequests = new Map<string, { at: number; signature: string }>();
@@ -35,6 +36,7 @@ export class ActivityModule {
     this.reconcileTimer = setInterval(() => { void this.tick().catch((error: unknown) => log('error', 'activity', 'reconcile.failed', {}, error)); }, 300_000);
   }
   private config(guildId: string) { return this.settings.get(guildId) ?? activitySettingsSchema.parse({}); }
+  private observing(guild: Guild): boolean { return !this.stopping && this.connected && guild.available !== false; }
   private channel(guild: Guild, channelId: string | null): ActivityChannel | null {
     const channel = channelId ? guild.channels.cache.get(channelId) : null;
     if (!channel) return null;
@@ -76,7 +78,7 @@ export class ActivityModule {
     if (this.stopping || !this.connected || !this.presenceAvailable || !presence.guild || !this.recoveryHealth.get(presence.guild.id)) return;
     await this.reconcileMember(presence.guild, presence.userId, Date.now(), presence.member ?? undefined, false, undefined, presence);
   }
-  private async reconcileMember(guild: Guild, userId: string, now: number, observedMember?: GuildMember, refreshRoles = false, observedVoice?: VoiceState, observedPresence?: Presence) {
+  private async reconcileMember(guild: Guild, userId: string, now: number, observedMember?: GuildMember, refreshRoles = false, observedVoice?: VoiceState, observedPresence?: Presence, current?: () => boolean) {
     const voice = observedVoice ?? guild.voiceStates.cache.get(userId);
     const state = voice ? { channelId: voice.channelId, streaming: voice.streaming } : undefined;
     const presence = observedPresence ?? guild.presences.cache.get(userId);
@@ -84,20 +86,26 @@ export class ActivityModule {
     const channel = this.channel(guild, state?.channelId ?? null);
     const eventRoles = observedMember ? [...observedMember.roles.cache.keys()] : null;
     const config = this.config(guild.id);
-    const hasSession = this.sessions.sessions(guild.id).some((session) => session.userId === userId);
+    const hasSession = this.sessions.hasSessions(guild.id, userId) || this.sessions.hasVoiceReturn(guild.id, userId);
     if (!hasSession && (!config.enabled || !state?.channelId && (!this.presenceAvailable || !config.tracking.games || !games?.activities.some((game) => game.type === ActivityType.Playing)))) return;
     await this.sessions.exclusive(guild.id, userId, async () => {
-      const settings = this.config(guild.id);
-      const hasSession = this.sessions.sessions(guild.id).some((session) => session.userId === userId);
+      if (!this.observing(guild) || current?.() === false) return;
+      let settings = this.config(guild.id);
+      const hasSession = this.sessions.hasSessions(guild.id, userId) || this.sessions.hasVoiceReturn(guild.id, userId);
       if (!settings.enabled && !hasSession) return;
       let member = observedMember ?? guild.members.cache.get(userId);
       if ((!member || refreshRoles && settings.exclusions.roleIds.length > 0) && settings.enabled) {
         try { member = await guild.members.fetch({ user: userId, force: true }); }
         catch (error) { log('warn', 'activity', 'member.unavailable', { guildId: guild.id, userId }, error); member = undefined; }
       }
+      if (!this.observing(guild) || current?.() === false) return;
+      settings = this.config(guild.id);
       const actor = { userId, bot: member?.user.bot ?? true, roleIds: eventRoles ?? (member ? [...member.roles.cache.keys()] : null) };
       const desired = this.connected ? [...voiceSessions(state, settings, actor, channel), ...gameSessions(games, settings, actor, this.presenceAvailable)] : [];
-      await this.sessions.reconcile(guild.id, userId, desired, settings, now);
+      // Only a disconnect from eligible Voice receives the return window.
+      // Exclusions/disabled tracking and unavailable observations break continuity.
+      const canReturn = this.connected && activityActorEligible(settings, 'voice', actor) && (!state?.channelId || desired.some((session) => session.tracker === 'voice'));
+      await this.sessions.reconcile(guild.id, userId, desired, settings, now, canReturn ? 'continue' : 'break');
       // Sessions are authoritative. Artwork starts after persistence and is never awaited here.
       for (const session of desired) if (session.game && this.artwork) {
         const activity = presence?.activities.find((item) => item.type === ActivityType.Playing && normalizeGame(item.name, item.applicationId)?.gameKey === session.game!.gameKey);
@@ -116,33 +124,39 @@ export class ActivityModule {
       if (desired.length && member) void this.profile(member).catch((error: unknown) => log('warn', 'activity', 'profile.failed', { guildId: guild.id, userId }, error));
     });
   }
-  private async reconcileGuild(guild: Guild, discoverGames = false, duringRecovery = false) {
+  private async reconcileGuild(guild: Guild, discoverGames = false, duringRecovery = false, current?: () => boolean) {
     if (this.stopping || !this.connected || guild.available === false || !duringRecovery && !this.recoveryHealth.get(guild.id)) return;
     const config = this.config(guild.id);
     const gameUsers = discoverGames && this.presenceAvailable && config.enabled && config.tracking.games ? [...guild.presences.cache.values()].filter((presence) => presence.status !== 'offline' && presence.activities.some((game) => game.type === ActivityType.Playing)).map((presence) => presence.userId) : [];
-    const users = new Set([...guild.voiceStates.cache.values()].filter((voice) => voice.channelId).map((voice) => voice.id).concat(this.sessions.sessions(guild.id).map((session) => session.userId), gameUsers));
+    const users = new Set([...guild.voiceStates.cache.values()].filter((voice) => voice.channelId).map((voice) => voice.id).concat(this.sessions.users(guild.id), gameUsers));
     for (const userId of users) {
-      if (this.stopping || !this.connected || !duringRecovery && !this.recoveryHealth.get(guild.id)) return;
-      await this.reconcileMember(guild, userId, Date.now(), undefined, true);
+      if (!this.observing(guild) || current?.() === false || !duringRecovery && !this.recoveryHealth.get(guild.id)) return;
+      await this.reconcileMember(guild, userId, Date.now(), undefined, true, undefined, undefined, current);
     }
   }
   async recover(guild: Guild): Promise<void> {
     if (this.stopping || guild.available === false) return;
     await this.disconnecting;
     await this.suspending.get(guild.id);
+    if (!this.observing(guild)) return;
     const prior = this.recovering.get(guild.id);
     if (prior) return prior;
-    const recovery = this.recoverGuild(guild).finally(() => { this.recovering.delete(guild.id); });
+    const token = { cancelled: false };
+    this.recoveryTokens.set(guild.id, token);
+    const recovery = this.recoverGuild(guild, token).finally(() => { this.recovering.delete(guild.id); this.recoveryTokens.delete(guild.id); });
     this.recovering.set(guild.id, recovery);
     return recovery;
   }
-  private async recoverGuild(guild: Guild) {
+  private async recoverGuild(guild: Guild, token: { cancelled: boolean }) {
+    const current = () => this.observing(guild) && !token.cancelled;
     this.recoveryHealth.set(guild.id, false);
     this.watches.get(guild.id)?.();
     this.watches.delete(guild.id);
-    this.settings.set(guild.id, await this.repository.getSettings(guild.id));
-    this.watches.set(guild.id, this.repository.watchSettings(guild.id, (next) => {
-      if (this.stopping) return;
+    const loaded = await this.repository.getSettings(guild.id);
+    if (!current()) return;
+    this.settings.set(guild.id, loaded);
+    const unsubscribe = this.repository.watchSettings(guild.id, (next) => {
+      if (this.stopping || token.cancelled) return;
       const previous = this.settings.get(guild.id);
       this.settings.set(guild.id, next);
       if (JSON.stringify(previous) !== JSON.stringify(next)) log('info', 'activity', 'config.updated', { guildId: guild.id, enabled: next.enabled, ...next.tracking });
@@ -150,11 +164,14 @@ export class ActivityModule {
         const reconciliation = this.recoveryHealth.get(guild.id) ? this.reconcileGuild(guild, true) : this.recover(guild);
         void reconciliation.then(() => this.publishHealth(guild.id)).catch((error: unknown) => log('error', 'activity', 'config.reconcile.failed', { guildId: guild.id }, error));
       }
-    }, (error) => { this.settings.set(guild.id, activitySettingsSchema.parse({})); this.recoveryHealth.set(guild.id, false); log('error', 'activity', 'config.watch.failed', { guildId: guild.id }, error); }));
+    }, (error) => { if (this.stopping || token.cancelled) return; this.settings.set(guild.id, activitySettingsSchema.parse({})); this.recoveryHealth.set(guild.id, false); log('error', 'activity', 'config.watch.failed', { guildId: guild.id }, error); });
+    this.watches.set(guild.id, () => { token.cancelled = true; unsubscribe(); });
     await this.sessions.drain(guild.id);
+    if (!current()) return;
     await this.sessions.recover(guild.id);
-    await this.reconcileGuild(guild, true, true);
-    if (this.stopping || guild.available === false) return;
+    if (!current()) return;
+    await this.reconcileGuild(guild, true, true, current);
+    if (!current()) return;
     this.recoveryHealth.set(guild.id, true);
     await this.publishHealth(guild.id);
     const settings = this.config(guild.id);
@@ -216,9 +233,14 @@ export class ActivityModule {
     await this.repository.saveHealth(guildId, health);
   }
   async stopGuild(guildId: string) {
+    const token = this.recoveryTokens.get(guildId);
+    if (token) token.cancelled = true;
+    this.recoveryHealth.set(guildId, false);
     this.watches.get(guildId)?.(); this.watches.delete(guildId);
     this.settings.set(guildId, activitySettingsSchema.parse({}));
-    for (const session of this.sessions.sessions(guildId)) await this.sessions.exclusive(guildId, session.userId, () => this.sessions.reconcile(guildId, session.userId, [], this.config(guildId), Date.now()));
+    await this.recovering.get(guildId)?.catch(() => undefined);
+    await this.sessions.drain(guildId);
+    for (const userId of this.sessions.users(guildId)) await this.sessions.exclusive(guildId, userId, () => this.sessions.reconcile(guildId, userId, [], this.config(guildId), Date.now()));
     await this.publishHealth(guildId);
     this.settings.delete(guildId); this.recoveryHealth.delete(guildId);
   }

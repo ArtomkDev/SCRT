@@ -90,10 +90,20 @@ export class ActivityRepository {
   async startSession(input: ActivitySession): Promise<void> {
     const value = activitySessionSchema.parse(input);
     // Stable id per attempt makes an uncertain network result safe to retry.
-    await this.collection(value.guildId, 'activitySessions').doc(value.id).set(value);
+    const ref = this.collection(value.guildId, 'activitySessions').doc(value.id);
+    await this.db.runTransaction(async (tx) => {
+      if ((await tx.get(ref)).exists) return;
+      let base = 0;
+      if (value.tracker === 'voice' && value.voiceRunEpoch) {
+        const member = await tx.get(this.collection(value.guildId, 'activityMembers').doc(value.userId));
+        if (member.get('voiceRunEpoch') === value.voiceRunEpoch && counter(member.get('voiceRunReturnUntil')) >= value.startedAt && counter(member.get('voiceRunEndedAt')) <= value.startedAt) base = counter(member.get('voiceRunMilliseconds'));
+      }
+      tx.create(ref, { ...value, voiceRunBaseMilliseconds: base });
+    });
   }
   /** Cursor advance / deletion and every affected aggregate commit atomically. */
-  async settleSession(guildId: string, id: string, end: number, close: boolean): Promise<ActivitySession | null> {
+  async settleSession(guildId: string, id: string, end: number, close: boolean, voiceReturnSeconds = 0): Promise<ActivitySession | null> {
+    if (!Number.isInteger(voiceReturnSeconds) || voiceReturnSeconds < 0 || voiceReturnSeconds > 86400) throw new Error('Invalid voice return grace');
     const ref = this.collection(guildId, 'activitySessions').doc(id);
     return this.db.runTransaction(async (tx) => {
       const persisted = await tx.get(ref);
@@ -106,6 +116,13 @@ export class ActivityRepository {
       const memberRef = this.collection(guildId, 'activityMembers').doc(session.userId);
       const dailyRefs = slices.map((slice) => this.collection(guildId, 'activityDailyMembers').doc(`${slice.date}_${session.userId}`));
       const member = await tx.get(memberRef);
+      const runMilliseconds = session.voiceRunBaseMilliseconds + boundary - session.startedAt;
+      const runSeconds = Math.floor(runMilliseconds / 1000);
+      const voiceRun = session.tracker === 'voice' && (runSeconds >= session.minimumSeconds || close && voiceReturnSeconds > 0) ? {
+        longestVoiceRunSeconds: Math.max(counter(member.get('longestVoiceRunSeconds')), runSeconds >= session.minimumSeconds ? runSeconds : 0),
+        voiceRunEpoch: session.voiceRunEpoch, voiceRunMilliseconds: runMilliseconds,
+        voiceRunEndedAt: close ? boundary : 0, voiceRunReturnUntil: close && voiceReturnSeconds > 0 ? boundary + voiceReturnSeconds * 1000 : 0,
+      } : null;
       const daily = dailyRefs.length ? await tx.getAll(...dailyRefs) : [];
       const gameId = session.game ? activityKey(session.game.gameKey) : null;
       const gameRef = gameId ? this.collection(guildId, 'activityGames').doc(gameId) : null;
@@ -138,13 +155,15 @@ export class ActivityRepository {
       }
       if (duration > 0) {
         const metric = session.tracker === 'voice' ? 'voiceSeconds' : session.tracker === 'stream' ? 'streamSeconds' : null;
-        tx.set(memberRef, { userId: session.userId, ...(metric ? { [metric]: FieldValue.increment(duration) } : {}), ...(session.tracker === 'voice' ? { ...streak, streakEpoch: session.streakEpoch } : {}), lastActivityAt: Math.max(counter(member.get('lastActivityAt')), boundary), updatedAt: FieldValue.serverTimestamp(), schemaVersion: 1 }, { merge: true });
+        tx.set(memberRef, { userId: session.userId, ...(metric ? { [metric]: FieldValue.increment(duration) } : {}), ...(session.tracker === 'voice' ? { ...streak, streakEpoch: session.streakEpoch, ...voiceRun } : {}), lastActivityAt: Math.max(counter(member.get('lastActivityAt')), boundary), updatedAt: FieldValue.serverTimestamp(), schemaVersion: 1 }, { merge: true });
         if (session.game && gameRef && playerRef) {
           // First observed spelling is canonical; presentation never oscillates with capitalization.
           const common = { ...session.game, totalSeconds: FieldValue.increment(duration), sessionCount: FieldValue.increment(session.qualified ? 0 : 1), lastPlayedAt: boundary, updatedAt: FieldValue.serverTimestamp(), schemaVersion: 1 };
           tx.set(gameRef, { ...common, displayName: game?.get('displayName') ?? session.game.displayName, uniquePlayers: FieldValue.increment(player?.exists ? 0 : 1) }, { merge: true });
           tx.set(playerRef, { ...common, userId: session.userId }, { merge: true });
         }
+      } else if (voiceRun) {
+        tx.set(memberRef, { userId: session.userId, ...voiceRun, updatedAt: FieldValue.serverTimestamp(), schemaVersion: 1 }, { merge: true });
       }
       if (close) { tx.delete(ref); return null; }
       const next = { ...session, cursorAt: qualifies ? boundary : session.cursorAt, qualified: qualifies, lastObservedAt: boundary };

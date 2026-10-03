@@ -1,0 +1,8 @@
+.recovery-page { margin: 0; min-height: 100dvh; box-sizing: border-box; display: grid; place-items: center; padding: 24px; background: #202225; color: #f5f5f5; font: 16px/1.6 system-ui, sans-serif; }
+.recovery-card { width: 100%; max-width: 540px; }
+.recovery-card h1 { font-size: clamp(24px, 4vw, 32px); line-height: 1.25; }
+.recovery-card p { color: #b9bbc1; }
+.recovery-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; margin-top: 24px; }
+.recovery-actions button { border: 0; border-radius: 8px; padding: 12px 18px; background: #5865f2; color: white; font: inherit; cursor: pointer; }
+.recovery-actions a { color: #b4bdff; }
+.recovery-actions button:focus-visible, .recovery-actions a:focus-visible { outline: 2px solid #b4bdff; outline-offset: 4px; }

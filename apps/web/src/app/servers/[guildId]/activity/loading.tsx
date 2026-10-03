@@ -1,1 +1,1 @@
-export default function Loading() { return <p className="muted" role="status">Завантаження статистики…</p>; }
+export { ActivityPageLoading as default } from './loading-content';

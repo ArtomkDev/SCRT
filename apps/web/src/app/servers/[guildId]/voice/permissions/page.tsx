@@ -1,11 +1,9 @@
 import { installUrl } from '@scrt/discord';
 import { Suspense } from 'react';
-import { DataLoading } from '@/app/components/data-loading';
+import { permissionNames as names, VoicePageLoading } from '../loading-content';
 import { requireGuildAccess } from '@/lib/guards';
 import { env } from '@/lib/server';
 import { permissionStatus, voiceCreators, voiceInterfaces, voicePermissionResources } from '@/lib/voice-data';
-
-const names = ['Перегляд каналів', 'Керування каналами', 'Керування ролями', 'Переміщення учасників', 'Підключення', 'Надсилання повідомлень', 'Вбудовування посилань', 'Історія повідомлень'];
 
 async function PermissionsContent({ params }: { params: Promise<{ guildId: string }> }) {
   const { guildId } = await params;
@@ -26,5 +24,5 @@ async function PermissionsContent({ params }: { params: Promise<{ guildId: strin
 }
 
 export default function VoicePermissionsPage(props: Parameters<typeof PermissionsContent>[0]) {
-  return <Suspense fallback={<section><h2 className="subheading">Дозволи бота</h2><DataLoading label="Завантаження дозволів…" /></section>}><PermissionsContent {...props} /></Suspense>;
+  return <Suspense fallback={<VoicePageLoading view="permissions" />}><PermissionsContent {...props} /></Suspense>;
 }

@@ -3,7 +3,7 @@ import { ResourceMultiSelect } from '@/app/components/resource-multiselect';
 import { Select } from '@/app/components/select';
 import { requireGuildAccess } from '@/lib/guards';
 import { Suspense } from 'react';
-import { DataLoading } from '@/app/components/data-loading';
+import { VoicePageLoading } from '../loading-content';
 import { voiceCreators, voiceRegions, voiceResources, voiceRooms } from '@/lib/voice-data';
 import { defaultCreatorChannelName, type VoiceCreator } from '@scrt/validation';
 import { ActionForm } from '@/app/components/action-form';
@@ -119,6 +119,6 @@ async function CreatorsContent({ params }: { params: Promise<{ guildId: string }
 }
 
 export default function CreatorsPage(props: Parameters<typeof CreatorsContent>[0]) {
-  return <Suspense fallback={<section className="creators-page"><h2 className="subheading">Канали створення</h2><DataLoading label="Завантаження каналів створення…" /></section>}><CreatorsContent {...props} /></Suspense>;
+  return <Suspense fallback={<VoicePageLoading view="creators" />}><CreatorsContent {...props} /></Suspense>;
 }
 

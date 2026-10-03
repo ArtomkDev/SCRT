@@ -1,6 +1,6 @@
 import { requireGuildAccess } from '@/lib/guards';
 import { Suspense } from 'react';
-import { DataLoading } from '@/app/components/data-loading';
+import { VoicePageLoading } from '../loading-content';
 import { voiceRoomChannels, voiceRooms } from '@/lib/voice-data';
 import { deleteVoiceRoom } from '../actions';
 import { ActionForm } from '@/app/components/action-form';
@@ -20,5 +20,5 @@ async function RoomsContent({ params }: { params: Promise<{ guildId: string }> }
 }
 
 export default function RoomsPage(props: Parameters<typeof RoomsContent>[0]) {
-  return <Suspense fallback={<section><h2 className="subheading">Активні кімнати</h2><DataLoading label="Завантаження кімнат…" /></section>}><RoomsContent {...props} /></Suspense>;
+  return <Suspense fallback={<VoicePageLoading view="rooms" />}><RoomsContent {...props} /></Suspense>;
 }

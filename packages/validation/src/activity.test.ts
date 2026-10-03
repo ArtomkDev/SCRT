@@ -6,7 +6,13 @@ describe('activity configuration', () => {
     expect(settings.enabled).toBe(false);
     expect(settings.exclusions.ignoreBots).toBe(true);
     expect(settings.voice.minimumSessionSeconds).toBe(60);
+    expect(settings.voice.returnGraceSeconds).toBe(60);
     expect(settings.streak.minimumVoiceSecondsPerDay).toBe(300);
+  });
+  it('supports legacy settings and a bounded, optional voice return window', () => {
+    expect(activitySettingsSchema.parse({ voice: { minimumSessionSeconds: 120 } }).voice.returnGraceSeconds).toBe(60);
+    for (const returnGraceSeconds of [0, 30, 86400]) expect(activitySettingsSchema.parse({ voice: { returnGraceSeconds } }).voice.returnGraceSeconds).toBe(returnGraceSeconds);
+    for (const returnGraceSeconds of [-1, 86401, 1.5, '60']) expect(activitySettingsSchema.safeParse({ voice: { returnGraceSeconds } }).success).toBe(false);
   });
   it('validates timezone, bounded exclusions and thresholds', () => {
     expect(activityTimezoneSchema.safeParse('Europe/Kyiv').success).toBe(true);

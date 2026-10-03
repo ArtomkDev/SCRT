@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useTransition } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { useUnsavedChanges } from './unsaved-changes';
 
@@ -22,18 +22,18 @@ export function LiveRefresh({ endpoint }: { endpoint: string }) {
   const pathname = usePathname();
   const { hasChanges } = useUnsavedChanges();
   const dirty = useRef(hasChanges);
-  const missedChange = useRef(false);
   dirty.current = hasChanges;
   const path = useRef(pathname);
   path.current = pathname;
   const [connected, setConnected] = useState(false);
+  const [isPending, startTransition] = useTransition();
+  const refreshing = useRef(false);
+  const flush = useRef(() => {});
 
   useEffect(() => {
-    if (!hasChanges && missedChange.current) {
-      missedChange.current = false;
-      router.refresh();
-    }
-  }, [hasChanges, router]);
+    refreshing.current = isPending;
+    if (!isPending) flush.current();
+  }, [hasChanges, isPending]);
 
   useEffect(() => {
     let active = true;
@@ -43,18 +43,28 @@ export function LiveRefresh({ endpoint }: { endpoint: string }) {
     let retryDelay = 1000;
     let lastRefresh = Date.now();
     let synced = false;
+    let queued = false;
+    let refreshVersion = 0;
 
-    function refreshSoon() {
-      if (dirty.current) { missedChange.current = true; return; }
-      if (document.hidden || refreshTimer !== null) return;
+    function flushRefresh() {
+      if (!active || !queued || dirty.current || refreshing.current || document.hidden || !navigator.onLine || refreshTimer !== null) return;
       const delay = Math.max(400, 1500 - (Date.now() - lastRefresh));
       refreshTimer = window.setTimeout(() => {
         refreshTimer = null;
-        if (!active || document.hidden) return;
-        if (dirty.current) { missedChange.current = true; return; }
+        if (!active || document.hidden || !navigator.onLine || dirty.current || refreshing.current) return;
+        queued = false;
+        refreshing.current = true;
         lastRefresh = Date.now();
-        router.refresh();
+        refreshVersion++;
+        // Keep revealed content interactive while the new server payload streams in.
+        startTransition(() => router.refresh());
       }, delay);
+    }
+    flush.current = flushRefresh;
+
+    function refreshSoon() {
+      queued = true;
+      flushRefresh();
     }
 
     function disconnect() {
@@ -66,51 +76,78 @@ export function LiveRefresh({ endpoint }: { endpoint: string }) {
     }
 
     function connect() {
-      if (!active || document.hidden || source) return;
+      if (!active || document.hidden || !navigator.onLine || source || reconnectTimer !== null) return;
       const events = new EventSource(endpoint);
       source = events;
+      const versionAtConnect = refreshVersion;
       events.addEventListener('sync', () => {
+        if (!active || source !== events) return;
         retryDelay = 1000;
         setConnected(true);
-        // The page was just rendered on the first connection. Reconcile after a reconnect.
-        if (synced) refreshSoon();
+        // A focus/visibility refresh may already have reconciled this connection.
+        if (synced && versionAtConnect === refreshVersion) refreshSoon();
         synced = true;
       });
       events.addEventListener('change', (event) => {
+        if (!active || source !== events) return;
         if (affectsPage((event as MessageEvent).data, path.current)) refreshSoon();
       });
-      events.onerror = () => {
+      const reconnect = () => {
+        if (!active || source !== events) return;
         disconnect();
-        if (!active || document.hidden) return;
-        reconnectTimer = window.setTimeout(connect, retryDelay + Math.random() * retryDelay * 0.5);
+        if (document.hidden || !navigator.onLine) return;
+        reconnectTimer = window.setTimeout(() => { reconnectTimer = null; connect(); }, retryDelay + Math.random() * retryDelay * 0.5);
         retryDelay = Math.min(retryDelay * 2, 30_000);
       };
+      events.onerror = reconnect;
+      events.addEventListener('fault', reconnect);
+    }
+
+    function pause() {
+      disconnect();
+      if (refreshTimer !== null) window.clearTimeout(refreshTimer);
+      refreshTimer = null;
+    }
+
+    function resume() {
+      if (document.hidden || !navigator.onLine) return;
+      // Do not wait for all database subscriptions to sync before showing fresh data.
+      refreshSoon();
+      connect();
     }
 
     function onVisibilityChange() {
-      if (document.hidden) disconnect();
-      else connect();
+      if (document.hidden) pause();
+      else resume();
     }
 
     function onFocus() {
       if (document.hidden) return;
       connect();
       if (Date.now() - lastRefresh > 30_000) refreshSoon();
+      else flushRefresh();
     }
 
     connect();
     document.addEventListener('visibilitychange', onVisibilityChange);
     window.addEventListener('focus', onFocus);
+    window.addEventListener('offline', pause);
+    window.addEventListener('online', resume);
+    window.addEventListener('pageshow', onPageShow);
+    function onPageShow(event: PageTransitionEvent) { if (event.persisted) resume(); }
     return () => {
       active = false;
-      disconnect();
-      if (refreshTimer !== null) window.clearTimeout(refreshTimer);
+      pause();
+      flush.current = () => {};
       document.removeEventListener('visibilitychange', onVisibilityChange);
       window.removeEventListener('focus', onFocus);
+      window.removeEventListener('offline', pause);
+      window.removeEventListener('online', resume);
+      window.removeEventListener('pageshow', onPageShow);
     };
-  }, [endpoint, router]);
+  }, [endpoint, router, startTransition]);
 
-  return <span className={`live-status ${connected ? 'live-status-connected' : ''}`} role="status">
-    <span aria-hidden="true" />{connected ? 'Автооновлення' : 'Відновлення з’єднання…'}
+  return <span className={`live-status ${connected ? 'live-status-connected' : ''}`} role="status" aria-busy={isPending}>
+    <span aria-hidden="true" />{isPending ? 'Оновлення даних…' : connected ? 'Автооновлення' : 'Відновлення з’єднання…'}
   </span>;
 }

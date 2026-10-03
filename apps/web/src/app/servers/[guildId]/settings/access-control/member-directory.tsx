@@ -27,6 +27,8 @@ export function useMemberDirectory(): DirectoryState {
 export function MemberDirectoryProvider({ guildId, scope, children }: { guildId: string; scope: 'full' | 'access-roles'; children: ReactNode }) {
   const [members, setMembers] = useState<DirectoryMember[]>([]);
   const [mode, setMode] = useState<DirectoryMode>('loading');
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
   const [loaded, setLoaded] = useState(0);
   const revision = useRef(0);
   const observedRevision = useRef(0);
@@ -44,7 +46,7 @@ export function MemberDirectoryProvider({ guildId, scope, children }: { guildId:
   const baseUrl = `/api/guilds/${guildId}/members${scope === 'access-roles' ? '/access-roles' : ''}`;
 
   const load = useCallback(async () => {
-    if (loading.current || !alive.current) return;
+    if (loading.current || !alive.current || document.hidden || !navigator.onLine) return;
     if (retryTimer.current) clearTimeout(retryTimer.current);
     retryTimer.current = null;
     loading.current = true;
@@ -59,7 +61,7 @@ export function MemberDirectoryProvider({ guildId, scope, children }: { guildId:
       const initial = !ready.current;
       const publish = () => {
         publishTimer = undefined;
-        if (!alive.current || abort.signal.aborted) return;
+        if (!alive.current || abort.signal.aborted || document.hidden) return;
         startTransition(() => { setLoaded(all.size); if (initial) setMembers([...all.values()]); });
       };
       const response = await fetch(`/api/guilds/${guildId}/members/snapshot`, { cache: 'no-store', signal: abort.signal });
@@ -94,14 +96,35 @@ export function MemberDirectoryProvider({ guildId, scope, children }: { guildId:
 
   useEffect(() => {
     alive.current = true;
-    void load();
-    return () => {
-      alive.current = false;
+    const pause = () => {
       controller.current?.abort();
       controller.current = null;
       loading.current = false;
       if (retryTimer.current) clearTimeout(retryTimer.current);
       retryTimer.current = null;
+    };
+    const resume = () => {
+      if (modeRef.current === 'fallback' || modeRef.current === 'error') return;
+      if (!ready.current || lastSnapshot.current === 0) void load();
+    };
+    const visibility = () => {
+      if (document.hidden) {
+        // A cancelled partial snapshot must be reconciled when the tab resumes.
+        if (loading.current) lastSnapshot.current = 0;
+        pause();
+      } else resume();
+    };
+    const offline = () => { if (loading.current) lastSnapshot.current = 0; pause(); };
+    document.addEventListener('visibilitychange', visibility);
+    window.addEventListener('offline', offline);
+    window.addEventListener('online', resume);
+    void load();
+    return () => {
+      alive.current = false;
+      pause();
+      document.removeEventListener('visibilitychange', visibility);
+      window.removeEventListener('offline', offline);
+      window.removeEventListener('online', resume);
     };
   }, [load]);
 
@@ -113,8 +136,16 @@ export function MemberDirectoryProvider({ guildId, scope, children }: { guildId:
     let retryDelay = 1000;
     let active = true;
     let publishTimer: ReturnType<typeof setTimeout> | undefined;
+    let publicationPending = false;
+    const publish = () => {
+      if (publishTimer) clearTimeout(publishTimer);
+      publishTimer = undefined;
+      if (!active || document.hidden || loading.current || !publicationPending) return;
+      publicationPending = false;
+      startTransition(() => { setMembers([...roster.current.values()]); setLoaded(roster.current.size); });
+    };
     const onChange = (message: Event) => {
-      if (!(message instanceof MessageEvent)) return;
+      if (!active || document.hidden || !(message instanceof MessageEvent)) return;
       let parsed: ReturnType<typeof directoryEventSchema.safeParse>;
       try { parsed = directoryEventSchema.safeParse(JSON.parse(message.data)); } catch { return; }
       if (!parsed.success) return;
@@ -134,10 +165,8 @@ export function MemberDirectoryProvider({ guildId, scope, children }: { guildId:
       revision.current = event.revision;
       if (event.kind === 'advance') return;
       applyMemberEvent(roster.current, event);
-      if (!publishTimer) publishTimer = setTimeout(() => {
-        publishTimer = undefined;
-        if (active && !loading.current) startTransition(() => { setMembers([...roster.current.values()]); setLoaded(roster.current.size); });
-      }, 150);
+      publicationPending = true;
+      if (!publishTimer) publishTimer = setTimeout(publish, 150);
     };
     const disconnect = () => {
       source?.close(); source = null;
@@ -145,42 +174,69 @@ export function MemberDirectoryProvider({ guildId, scope, children }: { guildId:
       reconnectTimer = undefined;
     };
     const connect = () => {
-      if (!active || document.hidden || source) return;
-      source = new EventSource(`${baseUrl}/events`);
-      source.onopen = () => { retryDelay = 1000; };
-      source.addEventListener('change', onChange);
-      source.onerror = () => {
+      if (!active || document.hidden || !navigator.onLine || source || reconnectTimer) return;
+      const events = new EventSource(`${baseUrl}/events`);
+      source = events;
+      events.onopen = () => { if (source === events) retryDelay = 1000; };
+      events.addEventListener('change', (message) => { if (source === events) onChange(message); });
+      events.onerror = () => {
+        if (!active || source !== events) return;
         disconnect();
-        if (!active || document.hidden) return;
-        reconnectTimer = setTimeout(connect, retryDelay + Math.random() * retryDelay * 0.5);
+        if (document.hidden || !navigator.onLine) return;
+        reconnectTimer = setTimeout(() => { reconnectTimer = undefined; connect(); }, retryDelay + Math.random() * retryDelay * 0.5);
         retryDelay = Math.min(30_000, retryDelay * 2);
       };
     };
-    const visibility = () => { if (document.hidden) disconnect(); else connect(); };
+    const visibility = () => {
+      if (document.hidden) {
+        disconnect();
+        if (publishTimer) clearTimeout(publishTimer);
+        publishTimer = undefined;
+      } else {
+        connect();
+        publish();
+      }
+    };
     connect();
     document.addEventListener('visibilitychange', visibility);
+    window.addEventListener('offline', disconnect);
+    window.addEventListener('online', connect);
     return () => {
       active = false;
       disconnect();
       if (publishTimer) clearTimeout(publishTimer);
       document.removeEventListener('visibilitychange', visibility);
+      window.removeEventListener('offline', disconnect);
+      window.removeEventListener('online', connect);
     };
   }, [baseUrl, disabled, load]);
 
   useEffect(() => {
     if (mode !== 'directory') return;
-    const abort = new AbortController();
+    let request: AbortController | null = null;
+    const pause = () => { request?.abort(); request = null; };
+    const visibility = () => { if (document.hidden) pause(); };
     const timer = window.setInterval(async () => {
-      if (document.hidden || loading.current) return;
+      if (document.hidden || !navigator.onLine || loading.current || request) return;
+      const abort = new AbortController();
+      request = abort;
       try {
         const data = await directoryJson(await fetch(`${baseUrl}?revision=1`, { cache: 'no-store', signal: abort.signal }));
-        if (abort.signal.aborted) return;
+        if (abort.signal.aborted || document.hidden) return;
         if (Date.now() - lastSnapshot.current >= 15 * 60_000 || (data && typeof data === 'object' && 'revision' in data && data.revision !== revision.current)) void load();
       } catch { /* The event stream will reconcile on reconnect. */ }
+      finally { if (request === abort) request = null; }
     }, 5 * 60_000);
-    return () => { window.clearInterval(timer); abort.abort(); };
+    document.addEventListener('visibilitychange', visibility);
+    window.addEventListener('offline', pause);
+    return () => {
+      window.clearInterval(timer);
+      pause();
+      document.removeEventListener('visibilitychange', visibility);
+      window.removeEventListener('offline', pause);
+    };
   }, [baseUrl, load, mode]);
 
-  const retry = () => { attempts.current = 0; setMode('loading'); void load(); };
+  const retry = () => { attempts.current = 0; if (!ready.current) setMode('loading'); void load(); };
   return <DirectoryContext.Provider value={{ members, mode, loaded, retry }}>{children}</DirectoryContext.Provider>;
 }

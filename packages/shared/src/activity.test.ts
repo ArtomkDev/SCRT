@@ -53,9 +53,11 @@ describe('canonical analytics presentation', () => {
   it('shares period labels, metric semantics, percentages and duration formatting', async () => {
     const { activityPeriods, activityMetrics, activityContributionPercent, formatActivityDuration, formatActivityRelativeDay } = await import('./activity');
     expect(activityPeriods.map(([, label]) => label)).toEqual(['Сьогодні', '7 днів', '30 днів', 'Увесь час']);
-    expect(Object.values(activityMetrics).map((metric) => metric.label)).toEqual(['Повідомлення', 'Voice', 'Демонстрація екрана', 'Поточна серія', 'Найдовша серія']);
+    expect(Object.values(activityMetrics).map((metric) => metric.label)).toEqual(['Повідомлення', 'Voice', 'Демонстрація екрана', 'Поточна серія', 'Найдовша серія', 'Безперервний Voice']);
     expect(activityMetrics.currentVoiceStreak.periodAware).toBe(false);
     expect(activityMetrics.longestVoiceStreak.periodAware).toBe(false);
+    expect(activityMetrics.longestVoiceRunSeconds.periodAware).toBe(false);
+    expect(activityMetrics.longestVoiceRunSeconds.unit).toBe('duration');
     expect(activityMetrics.messages.periodAware).toBe(true);
     expect(activityMetrics.voiceSeconds.periodAware).toBe(true);
     expect(activityMetrics.streamSeconds.periodAware).toBe(true);

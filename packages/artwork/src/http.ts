@@ -4,6 +4,34 @@ import type { ProviderHealth } from './types';
 export class ArtworkProviderError extends Error {
   constructor(readonly status: ProviderHealth['status']) { super(`Artwork provider ${status}`); }
 }
+const maxResponseBytes = 2_000_000;
+async function boundedJson(response: Response, signal: AbortSignal): Promise<unknown> {
+  if (Number(response.headers.get('content-length')) > maxResponseBytes) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new Error('Artwork response too large');
+  }
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error('Artwork response is empty');
+  let buffer = new Uint8Array(16_384);
+  let size = 0;
+  try {
+    while (true) {
+      signal.throwIfAborted();
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (size + value.byteLength > maxResponseBytes) throw new Error('Artwork response too large');
+      if (size + value.byteLength > buffer.byteLength) {
+        const grown = new Uint8Array(Math.min(maxResponseBytes, Math.max(buffer.byteLength * 2, size + value.byteLength)));
+        grown.set(buffer.subarray(0, size)); buffer = grown;
+      }
+      buffer.set(value, size); size += value.byteLength;
+    }
+    return JSON.parse(new TextDecoder().decode(buffer.subarray(0, size))) as unknown;
+  } catch (error) {
+    await reader.cancel().catch(() => undefined);
+    throw error;
+  } finally { reader.releaseLock(); }
+}
 /** Per-process paced requests, no retry loops, and shared cooldown (including Retry-After). */
 export class ArtworkHttp {
   private nextRequestAt = 0;
@@ -28,11 +56,10 @@ export class ArtworkHttp {
         const retryMs = retry ? (/^\d+$/u.test(retry) ? Number(retry) * 1000 : Date.parse(retry) - Date.now()) : 60_000;
         this.blockedUntil = Date.now() + (status === 'authorization_error' ? 3600_000 : Number.isFinite(retryMs) ? Math.max(60_000, retryMs) : 60_000);
         this.state = { status, checkedAt: Date.now() };
+        await response.body?.cancel().catch(() => undefined);
         throw new ArtworkProviderError(status);
       }
-      const body = await response.text();
-      if (body.length > 2_000_000) throw new ArtworkProviderError('unavailable');
-      const result: unknown = JSON.parse(body);
+      const result = await boundedJson(response, signal);
       if (this.blockedUntil <= Date.now()) this.state = { status: 'ok', checkedAt: Date.now() };
       return result;
     } catch (error) {

@@ -40,7 +40,7 @@ export function installAuthorizationUrl(clientId: string, guildId: string, redir
 export type DiscordTokens = { access_token: string; refresh_token: string; expires_in: number; token_type: string };
 const tokensSchema = z.object({ access_token: z.string(), refresh_token: z.string(), expires_in: z.number(), token_type: z.string() });
 export class DiscordApiError extends Error {
-  constructor(readonly status: number, readonly endpoint?: string) {
+  constructor(readonly status: number, readonly endpoint?: string, readonly code?: string) {
     super(`Discord API failed (${status})${endpoint ? ` on ${endpoint}` : ''}`);
     this.name = 'DiscordApiError';
   }
@@ -175,8 +175,12 @@ async function performRequest<T>(url: string, init: RequestInit, schema: z.ZodTy
       await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
       continue;
     }
-    if (!response.ok) throw new DiscordApiError(response.status, endpoint);
-    return schema.parse(await response.json());
+    if (!response.ok) {
+      const body: unknown = await response.json().catch(() => null);
+      const code = body && typeof body === 'object' && 'error' in body && typeof body.error === 'string' && /^[a-z_]{1,64}$/u.test(body.error) ? body.error : undefined;
+      throw new DiscordApiError(response.status, endpoint, code);
+    }
+    return schema.parse(response.status === 204 ? undefined : await response.json());
   }
 }
 function request<T>(url: string, init: RequestInit, schema: z.ZodType<T>, options: DiscordRequestOptions = {}): Promise<T> {
@@ -273,15 +277,17 @@ export function botRenameVoiceChannel(botToken: string, channelId: string, name:
   return request(`${api}/channels/${channelId}`, { method: 'PATCH', headers: { authorization: `Bot ${botToken}`, 'content-type': 'application/json' }, body: JSON.stringify({ name }) }, channelSchema);
 }
 export async function botDeleteChannel(botToken: string, channelId: string): Promise<void> {
-  const response = await fetch(`${api}/channels/${channelId}`, { method: 'DELETE', headers: { authorization: `Bot ${botToken}` } });
-  if (!response.ok && response.status !== 404) throw new Error(`Discord API failed (${response.status})`);
+  await deleteResource(botToken, `/channels/${snowflakeSchema.parse(channelId)}`);
+}
+async function deleteResource(botToken: string, path: string): Promise<void> {
+  try { await request(`${api}${path}`, { method: 'DELETE', headers: { authorization: `Bot ${botToken}` } }, z.unknown()); }
+  catch (error) { if (!(error instanceof DiscordApiError && error.status === 404)) throw error; }
 }
 export function botCreateVoiceInterfaceMessage(botToken: string, channelId: string) {
   return request(`${api}/channels/${channelId}/messages`, { method: 'POST', headers: { authorization: `Bot ${botToken}`, 'content-type': 'application/json' }, body: JSON.stringify({ content: 'Керування голосовою кімнатою\nСтвори кімнату через Creator-канал, а потім використовуй кнопки нижче.', components: voicePanelRows() }) }, z.object({ id: z.string(), channel_id: z.string() }));
 }
 export async function botDeleteVoiceInterfaceMessage(botToken: string, channelId: string, messageId: string): Promise<void> {
-  const response = await fetch(`${api}/channels/${channelId}/messages/${messageId}`, { method: 'DELETE', headers: { authorization: `Bot ${botToken}` } });
-  if (!response.ok && response.status !== 404) throw new Error(`Discord API failed (${response.status})`);
+  await deleteResource(botToken, `/channels/${snowflakeSchema.parse(channelId)}/messages/${snowflakeSchema.parse(messageId)}`);
 }
 
 export type BotRole = { id: string; name: string; permissions: string };

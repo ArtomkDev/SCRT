@@ -12,6 +12,7 @@ import { roomInsertionIndex } from './room-order';
 export { VoiceError } from './voice-errors';
 
 const requiredCreatorPermissions = [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ManageChannels, PermissionFlagsBits.ManageRoles, PermissionFlagsBits.MoveMembers, PermissionFlagsBits.Connect] as const;
+type Recovery = { cancelled: boolean; pending: Promise<void> };
 export class VoiceService {
   private readonly rooms = new Map<string, VoiceRoom>();
   private readonly locks = new Map<string, Promise<void>>();
@@ -21,6 +22,7 @@ export class VoiceService {
   private readonly creationTimes = new Map<string, number>();
   private readonly creatorChannels = new Map<string, Set<string>>();
   private readonly creatorWatches = new Map<string, () => void>();
+  private readonly recoveries = new Map<string, Recovery>();
   constructor(private readonly client: Client, private readonly repository: VoiceRepository, private readonly guildRepository: GuildRepository) { this.controls = new RoomControlService(repository); }
 
   async canManage(member: GuildMember): Promise<boolean> {
@@ -40,7 +42,7 @@ export class VoiceService {
   }
   private cancel(timers: Map<string, ReturnType<typeof setTimeout>>, key: string) { const timer = timers.get(key); if (timer) clearTimeout(timer); timers.delete(key); }
   private cachedRoom(guildId: string, channelId: string) { return this.rooms.get(this.key(guildId, channelId)); }
-  private setRoom(room: VoiceRoom) { this.rooms.set(this.key(room.guildId, room.channelId), room); }
+  private setRoom(room: VoiceRoom) { if (this.creatorWatches.has(room.guildId)) this.rooms.set(this.key(room.guildId, room.channelId), room); }
   private async audit(room: VoiceRoom, action: string, actorId?: string | null, targetUserId?: string | null, source: 'discord' | 'recovery' = 'discord') {
     try { await this.repository.audit({ guildId: room.guildId, creatorId: room.creatorId, channelId: room.channelId, action, actorId, targetUserId, source }); }
     catch (error) { log('error', 'voice', 'audit.failed', { guildId: room.guildId, channelId: room.channelId, action }, error); }
@@ -61,33 +63,58 @@ export class VoiceService {
   private async settings(guildId: string): Promise<VoiceSettings> { return this.repository.getSettings(guildId); }
 
   async recover(guild: Guild): Promise<void> {
-    const settings = await this.settings(guild.id);
-    const rooms = await this.repository.listRooms(guild.id);
-    const creators = await this.repository.listCreators(guild.id);
+    const existing = this.recoveries.get(guild.id);
+    if (existing && !existing.cancelled) return existing.pending;
+    const recovery: Recovery = { cancelled: false, pending: Promise.resolve() };
+    recovery.pending = this.recoverGuild(guild, recovery);
+    this.recoveries.set(guild.id, recovery);
+    try { await recovery.pending; }
+    finally { if (this.recoveries.get(guild.id) === recovery) this.recoveries.delete(guild.id); }
+  }
+  private async recoverGuild(guild: Guild, recovery: Recovery): Promise<void> {
+    const [settings, rooms, creators] = await Promise.all([this.settings(guild.id), this.repository.listRooms(guild.id), this.repository.listCreators(guild.id)]);
+    if (recovery.cancelled) return;
+    const creatorsById = new Map(creators.map((creator) => [creator.id, creator]));
+    const archivedCreators = new Map<string, VoiceCreator | null>();
     this.creatorChannels.set(guild.id, new Set(creators.filter((creator) => creator.enabled).map((creator) => creator.channelId)));
     this.creatorWatches.get(guild.id)?.();
-    this.creatorWatches.set(guild.id, this.repository.watchCreators(guild.id, (current) => {
-      this.creatorChannels.set(guild.id, new Set(current.filter((creator) => creator.enabled).map((creator) => creator.channelId)));
-    }, (error) => log('error', 'voice', 'creator.watch.failed', { guildId: guild.id }, error)));
-    for (const creator of creators) if (!this.channel(guild, creator.channelId) && creator.enabled) await this.repository.disableCreator(guild.id, creator.id);
+    const unsubscribe = this.repository.watchCreators(guild.id, (current) => {
+      if (!recovery.cancelled) this.creatorChannels.set(guild.id, new Set(current.filter((creator) => creator.enabled).map((creator) => creator.channelId)));
+    }, (error) => log('error', 'voice', 'creator.watch.failed', { guildId: guild.id }, error));
+    this.creatorWatches.set(guild.id, () => { recovery.cancelled = true; unsubscribe(); });
+    for (const creator of creators) {
+      if (recovery.cancelled) return;
+      if (!this.channel(guild, creator.channelId) && creator.enabled) await this.repository.disableCreator(guild.id, creator.id);
+    }
     let removed = 0;
     let failed = 0;
     for (const room of rooms) {
+      if (recovery.cancelled) return;
       try {
-        const channel = this.channel(guild, room.channelId);
-        if (!channel) { await this.repository.deleteRoom(guild.id, room.channelId); removed++; continue; }
-        const recovered = { ...room, state: 'active' as const, memberCount: this.humanMembers(channel).length, updatedAt: Date.now() };
-        this.setRoom(recovered);
-        if (recovered.memberCount !== room.memberCount || room.state !== 'active') await this.repository.saveRoom(recovered);
-        if (recovered.memberCount === 0) this.scheduleCleanup(guild, recovered, settings);
-        else if (recovered.ownerId && !channel.members.has(recovered.ownerId) && settings.ownerExitBehavior !== 'keep_owner') this.scheduleOwnerExit(guild, recovered, settings);
-        const creator = await this.repository.getCreator(guild.id, room.creatorId);
-        if (creator) await reconcileRoomPermissions(guild, channel, creator, settings, recovered);
+        await this.exclusive(this.key(guild.id, room.channelId), async () => {
+          if (recovery.cancelled) return;
+          const channel = this.channel(guild, room.channelId);
+          if (!channel) { await this.repository.deleteRoom(guild.id, room.channelId); removed++; return; }
+          // A control operation may have completed while recovery waited for this room.
+          const current = this.cachedRoom(guild.id, room.channelId) ?? room;
+          const recovered = { ...current, state: 'active' as const, memberCount: this.humanMembers(channel).length, updatedAt: Date.now() };
+          if (recovered.memberCount !== current.memberCount || current.state !== 'active') await this.repository.saveRoom(recovered);
+          if (recovery.cancelled) return;
+          this.setRoom(recovered);
+          if (recovered.memberCount === 0) this.scheduleCleanup(guild, recovered, settings);
+          else if (recovered.ownerId && !channel.members.has(recovered.ownerId) && settings.ownerExitBehavior !== 'keep_owner') await this.scheduleOwnerExit(guild, recovered, settings);
+          if (recovery.cancelled) return;
+          if (!creatorsById.has(room.creatorId) && !archivedCreators.has(room.creatorId)) archivedCreators.set(room.creatorId, await this.repository.getCreator(guild.id, room.creatorId));
+          if (recovery.cancelled) return;
+          const creator = creatorsById.get(room.creatorId) ?? archivedCreators.get(room.creatorId);
+          if (creator) await reconcileRoomPermissions(guild, channel, creator, settings, recovered);
+        });
       } catch (error) {
         failed++;
         log('error', 'voice', 'recovery.room.failed', { guildId: guild.id, channelId: room.channelId }, error);
       }
     }
+    if (recovery.cancelled) return;
     log('info', 'voice', 'recovery.complete', { guildId: guild.id, rooms: rooms.length, removed, failed });
     await this.repository.audit({ guildId: guild.id, action: 'voice.recovery', source: 'recovery' });
   }
@@ -109,6 +136,8 @@ export class VoiceService {
     await this.exclusive(key, () => this.exclusive(`${guild.id}:${creator.id}:room-order`, () => this.createFromCreator(guild, actor, creator)));
   }
   stopGuild(guildId: string) {
+    const recovery = this.recoveries.get(guildId);
+    if (recovery) recovery.cancelled = true;
     this.creatorWatches.get(guildId)?.();
     this.creatorWatches.delete(guildId);
     this.creatorChannels.delete(guildId);
@@ -116,7 +145,7 @@ export class VoiceService {
     for (const key of this.ownerTimers.keys()) if (key.startsWith(`${guildId}:`)) this.cancel(this.ownerTimers, key);
     for (const key of this.rooms.keys()) if (key.startsWith(`${guildId}:`)) this.rooms.delete(key);
   }
-  stop() { for (const guildId of this.creatorWatches.keys()) this.stopGuild(guildId); }
+  stop() { for (const guildId of new Set([...this.creatorWatches.keys(), ...this.recoveries.keys()])) this.stopGuild(guildId); }
 
   private async placeRoom(guild: Guild, channel: VoiceChannel, creator: VoiceCreator, source: VoiceChannel) {
     if (creator.roomPlacement === 'bottom' && creator.roomOrder === 'oldest_first') return;
@@ -213,6 +242,10 @@ export class VoiceService {
   }
 
   private async refreshOccupancy(guild: Guild, channelId: string) {
+    if (!this.cachedRoom(guild.id, channelId)) return;
+    await this.exclusive(this.key(guild.id, channelId), () => this.refreshRoomOccupancy(guild, channelId));
+  }
+  private async refreshRoomOccupancy(guild: Guild, channelId: string) {
     let room = this.cachedRoom(guild.id, channelId);
     if (!room) return;
     const channel = this.channel(guild, channelId);
@@ -220,8 +253,8 @@ export class VoiceService {
     const memberCount = this.humanMembers(channel).length;
     if (memberCount !== room.memberCount) {
       const next = { ...room, memberCount, lastActivityAt: Date.now(), updatedAt: Date.now() };
-      this.setRoom(next);
       await this.repository.saveRoom(next);
+      this.setRoom(next);
       room = next;
     }
     const settings = await this.settings(guild.id);
@@ -231,14 +264,15 @@ export class VoiceService {
       this.cancel(this.ownerTimers, this.key(guild.id, channelId));
       if (room.ownerLeftAt !== null) {
         const next = { ...room, ownerLeftAt: null, updatedAt: Date.now() };
-        this.setRoom(next);
         await this.repository.updateRoom(guild.id, channelId, { ownerLeftAt: null });
+        this.setRoom(next);
       }
     }
-    else if (room.ownerId && settings.ownerExitBehavior !== 'keep_owner') this.scheduleOwnerExit(guild, room, settings);
+    else if (room.ownerId && settings.ownerExitBehavior !== 'keep_owner') await this.scheduleOwnerExit(guild, room, settings);
   }
 
   private scheduleCleanup(guild: Guild, room: VoiceRoom, settings: VoiceSettings) {
+    if (!this.creatorWatches.has(guild.id)) return;
     const key = this.key(guild.id, room.channelId);
     this.cancel(this.cleanupTimers, key);
     const remaining = Math.max(0, room.lastActivityAt + settings.cleanupDelaySeconds * 1000 - Date.now());
@@ -270,13 +304,18 @@ export class VoiceService {
       throw error;
     }
   }
-  private scheduleOwnerExit(guild: Guild, room: VoiceRoom, settings: VoiceSettings) {
+  private async scheduleOwnerExit(guild: Guild, room: VoiceRoom, settings: VoiceSettings) {
+    if (!this.creatorWatches.has(guild.id)) return;
     const key = this.key(guild.id, room.channelId);
     if (this.ownerTimers.has(key)) return;
     const leftAt = room.ownerLeftAt ?? Date.now();
-    if (!room.ownerLeftAt) { const next = { ...room, ownerLeftAt: leftAt }; this.setRoom(next); void this.repository.updateRoom(guild.id, room.channelId, { ownerLeftAt: leftAt }).catch((error: unknown) => log('error', 'voice', 'owner.timestamp.failed', { guildId: guild.id, channelId: room.channelId }, error)); }
     const remaining = Math.max(0, leftAt + settings.ownerLeaveGraceSeconds * 1000 - Date.now());
     this.ownerTimers.set(key, setTimeout(() => { void this.resolveOwnerExit(guild, room.channelId).catch((error: unknown) => log('error', 'voice', 'owner.exit.failed', { guildId: guild.id, channelId: room.channelId }, error)); }, remaining));
+    if (room.ownerLeftAt === null) {
+      // Await this write under the room lock so a return cannot overtake it.
+      await this.repository.updateRoom(guild.id, room.channelId, { ownerLeftAt: leftAt });
+      if (this.cachedRoom(guild.id, room.channelId)) this.setRoom({ ...room, ownerLeftAt: leftAt });
+    }
   }
   private async resolveOwnerExit(guild: Guild, channelId: string) {
     await this.exclusive(this.key(guild.id, channelId), async () => {
@@ -296,14 +335,16 @@ export class VoiceService {
     });
   }
   async onChannelDelete(guild: Guild, channelId: string) {
-    const room = this.cachedRoom(guild.id, channelId);
-    if (room && room.state !== 'deleting') {
-      const key = this.key(guild.id, channelId);
-      this.cancel(this.cleanupTimers, key); this.cancel(this.ownerTimers, key);
-      this.rooms.delete(key);
-      await this.repository.deleteRoom(guild.id, channelId);
-      await this.audit(room, 'room.deleted');
-    }
+    const key = this.key(guild.id, channelId);
+    await this.exclusive(key, async () => {
+      const room = this.cachedRoom(guild.id, channelId);
+      if (room && room.state !== 'deleting') {
+        this.cancel(this.cleanupTimers, key); this.cancel(this.ownerTimers, key);
+        await this.repository.deleteRoom(guild.id, channelId);
+        this.rooms.delete(key);
+        await this.audit(room, 'room.deleted');
+      }
+    });
     const creator = await this.repository.getCreator(guild.id, channelId);
     if (creator) await this.repository.disableCreator(guild.id, channelId);
   }

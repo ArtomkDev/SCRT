@@ -1,7 +1,8 @@
 import { ActivityModuleContent } from '../module-content';
+import { ActivityPageLoading } from '../loading-content';
 import { MemberLink } from '../components';
 import { Suspense } from 'react';
-import { DataLoading } from '@/app/components/data-loading';
+import { RowsLoading } from '@/app/components/data-loading';
 import { PrefetchLink } from '@/app/components/prefetch-link';
 import { activityDirectory } from '@/lib/activity-data';
 
@@ -15,5 +16,5 @@ export default async function MembersPage({ params, searchParams }: { params: Pr
   const query = await searchParams;
   const search = typeof query.q === 'string' ? query.q : '';
   const after = typeof query.after === 'string' ? query.after : undefined;
-  return <ActivityModuleContent guildId={guildId}><section><div className="section-intro"><div><h2>Учасники</h2><p>Учасники зі збереженою активністю. Відкрийте профіль для повідомлень, Voice, серій та застосунків. Пошук за початком імені або username.</p></div></div><form className="activity-search"><label>Пошук<input name="q" maxLength={64} defaultValue={search} /></label><button className="action-link" type="submit">Знайти</button></form><Suspense key={`${search}:${after ?? ''}`} fallback={<DataLoading label="Завантаження учасників…" />}><DirectoryResults guildId={guildId} search={search} after={after} /></Suspense></section></ActivityModuleContent>;
+  return <ActivityModuleContent guildId={guildId} fallback={<ActivityPageLoading view="members" guildId={guildId} />}><section><div className="section-intro"><div><h2>Учасники</h2><p>Учасники зі збереженою активністю. Відкрийте профіль для повідомлень, Voice, серій та застосунків. Пошук за початком імені або username.</p></div></div><form className="activity-search"><label>Пошук<input name="q" maxLength={64} defaultValue={search} /></label><button className="action-link" type="submit">Знайти</button></form><Suspense fallback={<RowsLoading label="Завантаження учасників…" />}><DirectoryResults guildId={guildId} search={search} after={after} /></Suspense></section></ActivityModuleContent>;
 }

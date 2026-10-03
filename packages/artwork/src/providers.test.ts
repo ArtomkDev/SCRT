@@ -7,6 +7,34 @@ import type { ArtworkLookupInput } from './types';
 const input: ArtworkLookupInput = { gameKey: 'name:dota 2', displayName: 'Dota 2', applicationId: null, discord: { iconUrl: null, heroUrl: null }, mapping: null, classification: 'unknown', needs: { icon: true, hero: true } };
 const json = (value: unknown) => new Response(JSON.stringify(value), { status: 200 });
 describe('external provider contracts', () => {
+  it('decodes JSON when a UTF-8 character spans response chunks', async () => {
+    const bytes = new TextEncoder().encode('{"name":"Гра"}');
+    let index = 0;
+    const body = new ReadableStream<Uint8Array>({ pull(controller) { if (index < bytes.length) controller.enqueue(bytes.subarray(index, ++index)); else controller.close(); } });
+    const client = new ArtworkHttp(true, 0, vi.fn<typeof fetch>(async () => new Response(body)));
+    await expect(client.json('https://api.example.com', {}, new AbortController().signal)).resolves.toEqual({ name: 'Гра' });
+    expect(client.health().status).toBe('ok');
+  });
+  it('stops an oversized chunked payload, cancels its reader and enters cooldown', async () => {
+    const cancel = vi.fn(); let reads = 0;
+    const chunk = new TextEncoder().encode('я'.repeat(300_000));
+    const body = new ReadableStream<Uint8Array>({ pull(controller) { reads++; controller.enqueue(chunk); }, cancel }, { highWaterMark: 0 });
+    const fetcher = vi.fn<typeof fetch>(async () => new Response(body));
+    const client = new ArtworkHttp(true, 0, fetcher); const signal = new AbortController().signal;
+    await expect(client.json('https://api.example.com', {}, signal)).rejects.toThrow('unavailable');
+    expect(reads).toBe(4);
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(client.health().status).toBe('unavailable');
+    await expect(client.json('https://api.example.com', {}, signal)).rejects.toThrow('unavailable');
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+  it('rejects a declared oversized response before reading the body', async () => {
+    const cancel = vi.fn(); const pull = vi.fn();
+    const body = new ReadableStream<Uint8Array>({ pull, cancel }, { highWaterMark: 0 });
+    const client = new ArtworkHttp(true, 0, vi.fn<typeof fetch>(async () => new Response(body, { headers: { 'Content-Length': '2000001' } })));
+    await expect(client.json('https://api.example.com', {}, new AbortController().signal)).rejects.toThrow('unavailable');
+    expect(pull).not.toHaveBeenCalled(); expect(cancel).toHaveBeenCalledOnce();
+  });
   it('does not send endpoint-incompatible MIME filters that block subsequent hero requests', async () => {
     const fetcher = vi.fn<typeof fetch>(async (url) => {
       const request = new URL(String(url));

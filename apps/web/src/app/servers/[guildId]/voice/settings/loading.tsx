@@ -1,1 +1,1 @@
-export { default } from '../loading';
+export { VoiceSettingsLoading as default } from '../loading-content';

@@ -11,6 +11,71 @@ const start = Date.parse('2026-10-01T20:30:00Z');
 const session = (patch = {}) => activitySessionSchema.parse({ id: randomUUID(), guildId, userId, tracker: 'voice', channelId: '32345678901234567', startedAt: start, cursorAt: start, lastObservedAt: start, qualified: false, timezone: 'Europe/Kyiv', minimumSeconds: 60, streakMinimum: 300, streakEpoch: 'Europe/Kyiv:300:true:0', game: null, schemaVersion: 1, ...patch });
 function setup(missingIndexes = false) { const store = activityTestStore(missingIndexes); const repository = new ActivityRepository(store.db); return { ...store, repository, row: (collection: string, id: string) => store.records.get(`guilds/${guildId}/${collection}/${id}`) }; }
 
+describe('continuous Voice records', () => {
+  it('accumulates eligible segments without gaps or duplicate checkpoint/start/close counts', async () => {
+    const { repository, row } = setup(); const voiceRunEpoch = randomUUID();
+    const first = session({ voiceRunEpoch });
+    await repository.startSession(first);
+    await repository.settleSession(guildId, first.id, start + 120000, true, 60);
+    const joined = start + 150000;
+    const next = session({ voiceRunEpoch, startedAt: joined, cursorAt: joined, lastObservedAt: joined });
+    await repository.startSession(next);
+    await repository.settleSession(guildId, next.id, joined + 60000, false);
+    await repository.startSession(next);
+    await repository.settleSession(guildId, next.id, joined + 60000, false);
+    expect(row('activityMembers', userId)).toMatchObject({ voiceSeconds: 180, longestVoiceRunSeconds: 180 });
+    await repository.settleSession(guildId, next.id, joined + 120000, true);
+    await repository.settleSession(guildId, next.id, joined + 180000, true);
+    expect(row('activityMembers', userId)).toMatchObject({ voiceSeconds: 240, longestVoiceRunSeconds: 240 });
+    expect((await repository.listSessions(guildId))).toEqual([]);
+  });
+  it.each(['expired', 'new epoch', 'no grace'] as const)('preserves the historical record but resets after %s', async (reason) => {
+    const { repository, row } = setup(); const voiceRunEpoch = randomUUID();
+    const first = session({ voiceRunEpoch }); await repository.startSession(first);
+    await repository.settleSession(guildId, first.id, start + 120000, true, reason === 'no grace' ? 0 : 60);
+    const joined = start + (reason === 'expired' ? 180001 : 130000);
+    const next = session({ voiceRunEpoch: reason === 'new epoch' ? randomUUID() : voiceRunEpoch, startedAt: joined, cursorAt: joined, lastObservedAt: joined });
+    await repository.startSession(next);
+    expect((await repository.listSessions(guildId))[0]!.voiceRunBaseMilliseconds).toBe(0);
+    await repository.settleSession(guildId, next.id, joined + 60000, true);
+    expect(row('activityMembers', userId)).toMatchObject({ voiceSeconds: 180, longestVoiceRunSeconds: 120 });
+  });
+  it('qualifies the continuous record from short segments while retaining per-session total thresholds', async () => {
+    const { repository, row } = setup(); const voiceRunEpoch = randomUUID();
+    const first = session({ voiceRunEpoch }); await repository.startSession(first);
+    await repository.settleSession(guildId, first.id, start + 30500, true, 60);
+    expect(row('activityMembers', userId)?.longestVoiceRunSeconds).toBe(0);
+    const joined = start + 40000;
+    const next = session({ voiceRunEpoch, startedAt: joined, cursorAt: joined, lastObservedAt: joined });
+    await repository.startSession(next);
+    await repository.settleSession(guildId, next.id, joined + 30500, true);
+    expect(row('activityMembers', userId)?.longestVoiceRunSeconds).toBe(61);
+    expect(row('activityMembers', userId)?.voiceSeconds).toBeUndefined();
+  });
+  it('never carries another guild’s run and returns zero for legacy member records', async () => {
+    const { repository, row } = setup(); const voiceRunEpoch = randomUUID();
+    const first = session({ voiceRunEpoch }); await repository.startSession(first);
+    await repository.settleSession(guildId, first.id, start + 120000, true, 60);
+    const otherGuild = '52345678901234567', joined = start + 130000;
+    const next = session({ guildId: otherGuild, voiceRunEpoch, startedAt: joined, cursorAt: joined, lastObservedAt: joined });
+    await repository.startSession(next);
+    await repository.settleSession(otherGuild, next.id, joined + 60000, true);
+    const service = new ActivityLeaderboardService(repository, () => joined);
+    expect((await service.member(otherGuild, userId, 'all')).longestVoiceRunSeconds).toBe(60);
+    expect(row('activityMembers', userId)?.longestVoiceRunSeconds).toBe(120);
+    await repository.flushMessages(guildId, 'legacy', [{ userId: '62345678901234567', date: '2026-10-01', count: 1, observedAt: start }]);
+    expect((await service.member(guildId, '62345678901234567', 'all')).longestVoiceRunSeconds).toBe(0);
+  });
+  it('uses a bounded all-time sorted query for the new metric, including deterministic ties', async () => {
+    const { repository, records, queries } = setup();
+    for (const [id, value] of [[userId, 900], ['62345678901234567', 900], ['72345678901234567', 0]] as const) records.set(`guilds/${guildId}/activityMembers/${id}`, { userId: id, longestVoiceRunSeconds: value });
+    records.set(`guilds/52345678901234567/activityMembers/${userId}`, { userId, longestVoiceRunSeconds: 99999 });
+    const service = new ActivityLeaderboardService(repository, () => start);
+    expect(await service.memberLeaderboard(guildId, 'longestVoiceRunSeconds', 'today', 2)).toEqual([{ userId: '62345678901234567', value: 900, rank: 1 }, { userId, value: 900, rank: 2 }]);
+    expect(queries).toEqual([{ collection: `guilds/${guildId}/activityMembers`, limit: 2, filters: [] }]);
+  });
+});
+
 describe('atomic Activity aggregates', () => {
   it('discards short voice/stream/game sessions and cleans up', async () => {
     for (const tracker of ['voice', 'stream', 'game'] as const) {

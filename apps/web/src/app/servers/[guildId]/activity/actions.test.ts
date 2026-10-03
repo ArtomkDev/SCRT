@@ -64,6 +64,21 @@ describe('Activity backend configuration security', () => {
     await saveActivitySettings(guildId, data);
     expect(mocks.save).toHaveBeenCalledWith(guildId, expect.objectContaining({ enabled: true }), '22345678901234567');
   });
+  it.each([0, 45, 86400])('saves %s seconds of Voice return time for the authorized guild', async (seconds) => {
+    const data = form(); data.set('voiceReturnGrace', String(seconds));
+    await saveActivitySettings(guildId, data);
+    expect(mocks.save).toHaveBeenCalledWith(guildId, expect.objectContaining({ voice: { minimumSessionSeconds: 60, returnGraceSeconds: seconds } }), '22345678901234567');
+  });
+  it.each(['-1', '86401', '1.5', 'invalid', ''])('rejects invalid Voice return time %s before external calls', async (seconds) => {
+    const data = form(); data.set('voiceReturnGrace', seconds);
+    await expect(saveActivitySettings(guildId, data)).rejects.toThrow('час на повернення');
+    expect(mocks.channels).not.toHaveBeenCalled(); expect(mocks.save).not.toHaveBeenCalled();
+  });
+  it('preserves a configured return time when an older form omits the field', async () => {
+    mocks.get.mockResolvedValue(activitySettingsSchema.parse({ voice: { returnGraceSeconds: 45 } }));
+    await saveActivitySettings(guildId, form());
+    expect(mocks.save).toHaveBeenCalledWith(guildId, expect.objectContaining({ voice: { minimumSessionSeconds: 60, returnGraceSeconds: 45 } }), '22345678901234567');
+  });
 });
 
 describe('Observed activity policy authorization', () => {

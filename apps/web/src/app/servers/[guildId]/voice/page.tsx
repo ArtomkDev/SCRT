@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { Suspense } from 'react';
-import { DataLoading } from '@/app/components/data-loading';
+import { MetricsLoading } from '@/app/components/data-loading';
 import { InlineAction } from '@/app/components/inline-action';
 import { requireGuildAccess } from '@/lib/guards';
 import { voiceRecords } from '@/lib/voice-data';
@@ -18,7 +18,7 @@ async function VoiceSummary({ guildId }: { guildId: string }) {
 
 export default async function VoiceOverview({ params }: { params: Promise<{ guildId: string }> }) {
   const { guildId } = await params;
-  return <section><h2 className="subheading">Огляд</h2><Suspense fallback={<DataLoading label="Завантаження стану голосового модуля…" />}><VoiceSummary guildId={guildId} /></Suspense>
+  return <section><h2 className="subheading">Огляд</h2><Suspense fallback={<MetricsLoading labels={["Канали створення", "Активні кімнати"]} className="voice-module-summary" label="Завантаження стану голосового модуля…" />}><VoiceSummary guildId={guildId} /></Suspense>
     <p className="muted">Права бота — у вкладці <Link href={`/servers/${guildId}/voice/permissions`}>Дозволи</Link>.</p>
     <p className="muted">Коли модуль увімкнено, учасник заходить у канал створення, SCRT створює кімнату та переносить його. Порожню кімнату буде видалено після заданої затримки.</p>
   </section>;

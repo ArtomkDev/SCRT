@@ -1,1 +1,4 @@
-export default function Loading() { return <main className="content-page" aria-label="Завантаження серверів"><div className="skeleton skeleton-title" /><div className="skeleton skeleton-line" /><div className="server-group"><div className="skeleton skeleton-heading" /><div className="server-grid">{[0, 1, 2, 3].map((item) => <div key={item} className="skeleton skeleton-card" />)}</div></div></main>; }
+import { ServerGroupsLoading } from './loading-content';
+export default function Loading() {
+  return <main className="content-page"><div className="page-heading"><h1>Сервери</h1><p>Виберіть сервер для налаштування SCRT.</p></div><ServerGroupsLoading /></main>;
+}

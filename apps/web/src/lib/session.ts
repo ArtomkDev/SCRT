@@ -1,7 +1,8 @@
 import 'server-only';
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 import { cookies } from 'next/headers';
-import { discordUser, refreshTokens, type DiscordUser } from '@scrt/discord';
+import { DiscordApiError, discordUser, refreshTokens, type DiscordUser } from '@scrt/discord';
+import { log } from '@scrt/shared';
 import { env } from './server';
 
 type Session = { accessToken: string; refreshToken: string; accessExpiresAt: number; sessionExpiresAt: number; user?: DiscordUser };
@@ -9,6 +10,9 @@ type Tokens = Awaited<ReturnType<typeof refreshTokens>>;
 const pendingRefreshes = new Map<string, Promise<Tokens>>();
 const key = () => createHash('sha256').update(env().SESSION_SECRET).digest();
 const name = 'scrt_session';
+export class SessionRefreshUnavailableError extends Error {
+  constructor() { super('Session refresh temporarily unavailable'); }
+}
 export const cookieOptions = () => ({ httpOnly: true, secure: env().NODE_ENV === 'production', sameSite: 'lax' as const, path: '/' });
 
 function seal(session: Session): string {
@@ -53,6 +57,8 @@ export async function refreshSession(force = false): Promise<boolean> {
   const session = value ? unseal(value) : null;
   if (!session) return false;
   if (!force && session.accessExpiresAt > Date.now() + 10_000) return true;
+  let tokens: Tokens;
+  let user: DiscordUser;
   try {
     // Parallel navigation requests can carry the same old cookie. Reusing the
     // result prevents a rotated Discord refresh token from being spent twice.
@@ -67,9 +73,15 @@ export async function refreshSession(force = false): Promise<boolean> {
         () => { if (pendingRefreshes.get(refreshKey) === current) pendingRefreshes.delete(refreshKey); },
       );
     }
-    const tokens = await pending;
-    await createSession(tokens, session.user ?? await discordUser(tokens.access_token));
-    return true;
-  } catch { (await cookies()).delete(name); return false; }
+    tokens = await pending;
+    user = session.user ?? await discordUser(tokens.access_token);
+  } catch (error) {
+    if (error instanceof DiscordApiError && error.code === 'invalid_grant') { (await cookies()).delete(name); return false; }
+    log('warn', 'auth', 'session.refresh.unavailable', error instanceof DiscordApiError ? { status: error.status, endpoint: error.endpoint, code: error.code } : {});
+    // Network/cooldown/provider failures do not revoke the user's refresh token.
+    throw new SessionRefreshUnavailableError();
+  }
+  await createSession(tokens, user);
+  return true;
 }
 export async function clearSession() { (await cookies()).delete(name); }

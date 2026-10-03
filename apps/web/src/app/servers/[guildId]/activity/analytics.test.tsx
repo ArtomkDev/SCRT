@@ -48,11 +48,11 @@ const guildId = '12345678901234567'; const userId = '22345678901234567';
 const params = Promise.resolve({ guildId });
 const game = { gameKey: 'name:dota 2', displayName: 'Dota 2', applicationId: null, totalSeconds: 19200, uniquePlayers: 2, sessionCount: 12, lastPlayedAt: Date.now(), activityPercent: 100 };
 const profile = { userId, displayName: 'ARTOMK', username: 'artomk', avatarUrl: '', updatedAt: 0, searchName: 'artomk' };
-async function html(tree: React.ReactNode): Promise<string> {
+async function html(tree: React.ReactNode, preserveMarkers = false): Promise<string> {
   return new Promise((resolve, reject) => {
     let result = '';
     const sink = new Writable({ write(chunk: Buffer, _encoding, done) { result += chunk.toString(); done(); } });
-    sink.on('finish', () => resolve(result.replace(/<!--[\s\S]*?-->/g, '')));
+    sink.on('finish', () => resolve(preserveMarkers ? result : result.replace(/<!--[\s\S]*?-->/g, '')));
     const stream = renderToPipeableStream(tree, { onAllReady() { stream.pipe(sink); }, onError: reject });
   });
 }
@@ -71,7 +71,7 @@ beforeEach(() => {
   mocks.game.mockResolvedValue(game);
   mocks.players.mockResolvedValue([{ userId, totalSeconds: 10240, contributionPercent: 53.333333, sessionCount: 7, lastPlayedAt: Date.now() }, { userId: '32345678901234567', totalSeconds: 8960, contributionPercent: 46.666667, sessionCount: 5, lastPlayedAt: Date.now() }]);
   mocks.observed.mockResolvedValue({ games: [game, { ...game, gameKey: 'name:visual studio code', displayName: 'Visual Studio Code' }], next: null });
-  mocks.member.mockResolvedValue({ messages: 4821, voiceSeconds: 185040, streamSeconds: 2400, currentVoiceStreak: 23, longestVoiceStreak: 28, lastActivityAt: Date.now() });
+  mocks.member.mockResolvedValue({ messages: 4821, voiceSeconds: 185040, streamSeconds: 2400, currentVoiceStreak: 23, longestVoiceStreak: 28, longestVoiceRunSeconds: 185040, lastActivityAt: Date.now() });
   mocks.memberGames.mockResolvedValue([game]);
   mocks.identity.mockResolvedValue({ member: { username: profile.username, globalName: profile.displayName, avatarUrl: null }, left: false });
   mocks.directory.mockResolvedValue({ profiles: [profile], next: null });
@@ -107,10 +107,24 @@ describe('Activity page domain and navigation semantics', () => {
     expect(output.match(/aria-label="Період"/g)).toHaveLength(1);
     expect(output).toContain('Активні автори');
   });
-  it.each(['currentVoiceStreak', 'longestVoiceStreak'])('hides period control and requests all-time %s', async (metric) => {
+  it.each(['currentVoiceStreak', 'longestVoiceStreak', 'longestVoiceRunSeconds'])('hides period control and requests all-time %s', async (metric) => {
     const output = await html(await RankingPage({ params, searchParams: Promise.resolve({ metric, period: '7d' }) }));
     expect(output).not.toContain('aria-label="Період"');
     expect(mocks.ranking).toHaveBeenCalledWith(guildId, metric, 'all', 25);
+  });
+  it('formats continuous Voice as hours, with the return policy instead of the daily threshold', async () => {
+    const output = await html(await RankingPage({ params, searchParams: Promise.resolve({ metric: 'longestVoiceRunSeconds', period: '7d' }) }));
+    expect(output).toContain('51 год 24 хв');
+    expect(output).toContain('На повернення після виходу є 1 хв');
+    expect(output).toContain('час поза Voice не зараховується');
+    expect(output).not.toContain('День серії зараховується');
+    expect(output).not.toContain('185\u00a0040 дн.');
+  });
+  it('shows an immediate end when return grace is disabled', async () => {
+    mocks.settings.mockResolvedValue(activitySettingsSchema.parse({ enabled: true, voice: { returnGraceSeconds: 0 } }));
+    const output = await html(await RankingPage({ params, searchParams: Promise.resolve({ metric: 'longestVoiceRunSeconds' }) }));
+    expect(output).toContain('Вихід одразу завершує серію.');
+    expect(output).not.toContain('На повернення після виходу є');
   });
   it('shows compact overview leaders and preserves period in game/member navigation', async () => {
     const output = await html(await OverviewPage({ params, searchParams: Promise.resolve({ period: '7d' }) }));
@@ -187,6 +201,7 @@ describe('Activity page domain and navigation semantics', () => {
       ['voice', '/voice', await VoicePage({ params, searchParams: query })],
       ['messages', '/messages', await MessagesPage({ params, searchParams: query })],
       ['ranking', '/leaderboard', await RankingPage({ params, searchParams: query })],
+      ['voice-run-ranking', '/leaderboard', await RankingPage({ params, searchParams: Promise.resolve({ metric: 'longestVoiceRunSeconds', period: '7d' }) })],
       ['games', '/games', await GamesPage({ params, searchParams: query })],
       ['game', '/games/name%3Adota%202', await GamePage({ params: Promise.resolve({ guildId, gameKey: game.gameKey }), searchParams: query })],
       ['members', '/members', await MembersPage({ params, searchParams: Promise.resolve({}) })],
@@ -196,7 +211,7 @@ describe('Activity page domain and navigation semantics', () => {
     if (directory) await mkdir(directory, { recursive: true });
     for (const [name, suffix, page] of pages) {
       mocks.path = '/servers/' + guildId + '/activity' + suffix;
-      const output = await html(await ActivityLayout({ params, children: page }));
+      const output = await html(await ActivityLayout({ params, children: page }), true);
       expect(output).toContain('<h1>Активність</h1>');
       if (directory) await writeFile(join(directory, name + '.html'), output);
     }

@@ -1,7 +1,7 @@
 export type ActivityPeriod = 'today' | '7d' | '30d' | 'all';
-export type ActivityMetric = 'messages' | 'voiceSeconds' | 'streamSeconds' | 'currentVoiceStreak' | 'longestVoiceStreak';
+export type ActivityMetric = 'messages' | 'voiceSeconds' | 'streamSeconds' | 'currentVoiceStreak' | 'longestVoiceStreak' | 'longestVoiceRunSeconds';
 export type ActivityTotals = { messages: number; voiceSeconds: number; streamSeconds: number };
-export type ActivityMemberSummary = ActivityTotals & { userId: string; currentVoiceStreak: number; longestVoiceStreak: number; lastQualifiedVoiceDate: string | null; lastActivityAt: number };
+export type ActivityMemberSummary = ActivityTotals & { userId: string; currentVoiceStreak: number; longestVoiceStreak: number; longestVoiceRunSeconds: number; lastQualifiedVoiceDate: string | null; lastActivityAt: number };
 export type ActivityLeaderboardEntry = { userId: string; value: number; rank: number };
 export type ActivityGameSummary = { gameKey: string; displayName: string; applicationId: string | null; totalSeconds: number; sessionCount: number; uniquePlayers: number; lastPlayedAt: number; activityPercent?: number };
 export type ActivityGamePlayerSummary = { userId: string; totalSeconds: number; sessionCount: number; lastPlayedAt: number; contributionPercent: number };
@@ -81,12 +81,13 @@ export const activityPeriods = [
   ['today', 'Сьогодні'], ['7d', '7 днів'], ['30d', '30 днів'], ['all', 'Увесь час'],
 ] as const;
 export const activityMetrics = {
-  messages: { label: 'Повідомлення', periodAware: true },
-  voiceSeconds: { label: 'Voice', periodAware: true },
-  streamSeconds: { label: 'Демонстрація екрана', periodAware: true },
-  currentVoiceStreak: { label: 'Поточна серія', periodAware: false },
-  longestVoiceStreak: { label: 'Найдовша серія', periodAware: false },
-} as const satisfies Record<ActivityMetric, { label: string; periodAware: boolean }>;
+  messages: { label: 'Повідомлення', periodAware: true, unit: 'count' },
+  voiceSeconds: { label: 'Voice', periodAware: true, unit: 'duration' },
+  streamSeconds: { label: 'Демонстрація екрана', periodAware: true, unit: 'duration' },
+  currentVoiceStreak: { label: 'Поточна серія', periodAware: false, unit: 'days' },
+  longestVoiceStreak: { label: 'Найдовша серія', periodAware: false, unit: 'days' },
+  longestVoiceRunSeconds: { label: 'Безперервний Voice', periodAware: false, unit: 'duration' },
+} as const satisfies Record<ActivityMetric, { label: string; periodAware: boolean; unit: 'count' | 'duration' | 'days' }>;
 export function activityContributionPercent(seconds: number, total: number): number {
   return total > 0 ? Math.min(100, Math.max(0, seconds / total * 100)) : 0;
 }

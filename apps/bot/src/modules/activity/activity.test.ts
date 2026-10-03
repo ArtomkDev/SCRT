@@ -112,6 +112,36 @@ describe('persistent session lifecycle', () => {
     return { persisted, startSession, settleSession, listSessions: vi.fn(async () => [...persisted.values()]) };
   }
   const desired = [{ tracker: 'voice' as const, channelId, game: null }];
+  it('isolates active-member lookup across guilds and releases it after the last tracker closes', async () => {
+    const repository = store(); const service = new ActivitySessionService(repository);
+    const otherGuild = '92345678901234567'; const otherUser = '82345678901234567';
+    await service.reconcile(guildId, userId, [...desired, { tracker: 'stream', channelId, game: null }], settings, 1000);
+    await service.reconcile(otherGuild, userId, desired, settings, 1000);
+    await service.reconcile(guildId, otherUser, desired, settings, 1000);
+    expect(service.hasSessions(otherGuild, otherUser)).toBe(false);
+    await service.reconcile(guildId, userId, desired, settings, 2000);
+    expect(service.hasSessions(guildId, userId)).toBe(true);
+    await service.reconcile(guildId, userId, [], settings, 3000);
+    expect(service.hasSessions(guildId, userId)).toBe(false);
+    expect(service.hasSessions(otherGuild, userId)).toBe(true);
+    expect(service.hasSessions(guildId, otherUser)).toBe(true);
+    await service.suspend(guildId);
+    expect(service.hasSessions(guildId, otherUser)).toBe(false);
+    expect(service.hasSessions(otherGuild, userId)).toBe(true);
+  });
+  it('keeps failed starts discoverable for retry and removes missing durable sessions at checkpoint', async () => {
+    const repository = store(); const service = new ActivitySessionService(repository);
+    repository.startSession.mockRejectedValueOnce(new Error('offline'));
+    await expect(service.reconcile(guildId, userId, desired, settings, 1000)).rejects.toThrow('offline');
+    expect(service.hasSessions(guildId, userId)).toBe(true);
+    await service.reconcile(guildId, userId, desired, settings, 2000);
+    repository.persisted.clear();
+    await service.checkpoint(guildId, 3000);
+    expect(service.hasSessions(guildId, userId)).toBe(false);
+    await service.reconcile(guildId, userId, desired, settings, 4000);
+    await service.recover(guildId);
+    expect(service.hasSessions(guildId, userId)).toBe(false);
+  });
   it('join starts, eligible move stays continuous, leave closes once', async () => {
     const repository = store(); const service = new ActivitySessionService(repository);
     await service.reconcile(guildId, userId, desired, settings, 1000);
@@ -128,6 +158,42 @@ describe('persistent session lifecycle', () => {
     await service.reconcile(guildId, userId, [], settings, 121000);
     await service.reconcile(guildId, userId, desired, settings, 181000);
     expect(repository.startSession).toHaveBeenCalledTimes(2);
+  });
+  it('keeps one run across channel moves and a return at the grace deadline', async () => {
+    const repository = store(); const service = new ActivitySessionService(repository);
+    await service.reconcile(guildId, userId, desired, settings, 1000, 'continue');
+    const epoch = service.sessions()[0]!.voiceRunEpoch;
+    await service.reconcile(guildId, userId, [{ ...desired[0]!, channelId: '92345678901234567' }], settings, 61000, 'continue');
+    expect(repository.startSession).toHaveBeenCalledOnce();
+    await service.reconcile(guildId, userId, [], settings, 121000, 'continue');
+    expect(repository.settleSession).toHaveBeenCalledWith(guildId, expect.any(String), 121000, true, 60);
+    expect(service.hasVoiceReturn(guildId, userId)).toBe(true);
+    await service.reconcile(guildId, userId, desired, settings, 181000, 'continue');
+    expect(service.sessions()[0]!.voiceRunEpoch).toBe(epoch);
+    expect(service.hasVoiceReturn(guildId, userId)).toBe(false);
+  });
+  it.each(['expired', 'excluded', 'disabled', 'zero', 'recovery', 'suspend', 'shortened'] as const)('starts a new run after %s', async (reason) => {
+    const repository = store(); const service = new ActivitySessionService(repository);
+    await service.reconcile(guildId, userId, desired, settings, 1000, 'continue');
+    const epoch = service.sessions()[0]!.voiceRunEpoch;
+    await service.reconcile(guildId, userId, [], settings, 61000, 'continue');
+    if (reason === 'excluded' || reason === 'disabled') await service.reconcile(guildId, userId, [], settings, 62000, 'break');
+    if (reason === 'recovery') await service.recover(guildId);
+    if (reason === 'suspend') await service.suspend(guildId);
+    const nextSettings = reason === 'zero' || reason === 'shortened' ? activitySettingsSchema.parse({ ...settings, voice: { ...settings.voice, returnGraceSeconds: reason === 'zero' ? 0 : 1 } }) : settings;
+    await service.reconcile(guildId, userId, desired, nextSettings, reason === 'expired' ? 121001 : 64000, 'continue');
+    expect(service.sessions()[0]!.voiceRunEpoch).not.toBe(epoch);
+  });
+  it('isolates returns by guild and expires pending return state without a per-user timer', async () => {
+    const repository = store(); const service = new ActivitySessionService(repository);
+    await service.reconcile(guildId, userId, desired, settings, 1000, 'continue');
+    const epoch = service.sessions()[0]!.voiceRunEpoch;
+    await service.reconcile(guildId, userId, [], settings, 61000, 'continue');
+    expect(service.users(guildId)).toEqual([userId]);
+    await service.reconcile('92345678901234567', userId, desired, settings, 62000, 'continue');
+    expect(service.sessions('92345678901234567')[0]!.voiceRunEpoch).not.toBe(epoch);
+    await service.checkpoint(guildId, 121001);
+    expect(service.users(guildId)).toEqual([]);
   });
   it('unchanged games keep starts and vanished games close individually', async () => {
     const repository = store(); const service = new ActivitySessionService(repository);

@@ -1,9 +1,10 @@
 import { ActivityModuleContent } from '../../module-content';
+import { ActivityPageLoading, GameContentLoading, contributorColumns } from '../../loading-content';
 import { notFound } from 'next/navigation';
 import { Suspense } from 'react';
 import { ActivityHero } from '@/app/components/activity-artwork';
 import { activityArtworks, activityArtworkForKey, activityArtworkNeedsRefresh } from '@/lib/activity-artwork';
-import { DataLoading } from '@/app/components/data-loading';
+import { TableLoading } from '@/app/components/data-loading';
 import { InlineAction } from '@/app/components/inline-action';
 import { activityGame, activityGamePlayers, activityPeriod, activityProfiles, activitySettings } from '@/lib/activity-data';
 import { formatActivityDuration, formatActivityRelativeDay, type ActivityGameSummary, type ActivityPeriod } from '@scrt/shared';
@@ -35,16 +36,16 @@ async function GameSummary({ guildId, game }: { guildId: string; game: ActivityG
   return <MetricValues compact values={[[ 'Загальний час', formatActivityDuration(game.totalSeconds)], ['Учасники', number(game.uniquePlayers)], ['Сесії', number(game.sessionCount)], ['Остання активність', formatActivityRelativeDay(game.lastPlayedAt, settings.streak.timezone, Date.now())]]} />;
 }
 async function GameContent({ guildId, gameKey, period }: { guildId: string; gameKey: string; period: ActivityPeriod }) {
-  const [game, cachedArtwork, contributors, access] = await Promise.all([activityGame(guildId, gameKey, period), activityArtworkForKey(guildId, gameKey), GameContributors({ guildId, gameKey, period }), requireGuildAccess(guildId, 'activity.view')]);
+  const [game, cachedArtwork, access] = await Promise.all([activityGame(guildId, gameKey, period), activityArtworkForKey(guildId, gameKey), requireGuildAccess(guildId, 'activity.view')]);
   if (!game) notFound();
   if (activityArtworkNeedsRefresh(cachedArtwork)) await activityArtworks(guildId, [game]);
   const settings = await activitySettings(guildId);
   const path = '/servers/' + guildId + '/activity/games/' + encodeURIComponent(gameKey);
-  return <><ActivityHero gameKey={gameKey} name={game.displayName} artwork={cachedArtwork} actions={<ActivityActionsMenu guildId={guildId} identity={game} artwork={cachedArtwork} href={path + '?period=' + period} canManage={access.permissions.has('activity.manage')} ignored={settings.games.ignoredGameKeys.includes(gameKey)} detail />} /><PeriodLinks path={path} period={period} /><GameSummary guildId={guildId} game={game} /><section className="detail-panel activity-contributors" id="contributors"><h3>Внесок учасників</h3>{contributors}</section></>;
+  return <><ActivityHero gameKey={gameKey} name={game.displayName} artwork={cachedArtwork} actions={<ActivityActionsMenu guildId={guildId} identity={game} artwork={cachedArtwork} href={path + '?period=' + period} canManage={access.permissions.has('activity.manage')} ignored={settings.games.ignoredGameKeys.includes(gameKey)} detail />} /><PeriodLinks path={path} period={period} /><GameSummary guildId={guildId} game={game} /><section className="detail-panel activity-contributors" id="contributors"><h3>Внесок учасників</h3><Suspense fallback={<TableLoading label="Завантаження учасників…" columns={contributorColumns} className="activity-table activity-contributors-table" />}><GameContributors guildId={guildId} gameKey={gameKey} period={period} /></Suspense></section></>;
 }
 export default async function GamePage({ params, searchParams }: { params: Promise<{ guildId: string; gameKey: string }>; searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const { guildId, gameKey: segment } = await params;
   const gameKey = gameKeyFromParam(segment);
   const period = activityPeriod((await searchParams).period);
-  return <ActivityModuleContent guildId={guildId}><section className="activity-game-detail"><InlineAction className="activity-more" direction="back" href={'/servers/' + guildId + '/activity/games?period=' + period}>Ігри та застосунки</InlineAction><Suspense key={gameKey + ':' + period} fallback={<DataLoading label="Завантаження статистики…" />}><GameContent guildId={guildId} gameKey={gameKey} period={period} /></Suspense></section></ActivityModuleContent>;
+  return <ActivityModuleContent guildId={guildId} fallback={<ActivityPageLoading view="game" guildId={guildId} period={period} path={`/servers/${guildId}/activity/games/${encodeURIComponent(gameKey)}`} />}><section className="activity-game-detail"><InlineAction className="activity-more" direction="back" href={'/servers/' + guildId + '/activity/games?period=' + period}>Ігри та застосунки</InlineAction><Suspense key={gameKey} fallback={<GameContentLoading path={`/servers/${guildId}/activity/games/${encodeURIComponent(gameKey)}`} period={period} />}><GameContent guildId={guildId} gameKey={gameKey} period={period} /></Suspense></section></ActivityModuleContent>;
 }

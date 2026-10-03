@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ApplicationFlags, PermissionFlagsBits } from 'discord-api-types/v10';
-import { administratorRoleIds, botGuildMember, botGuildRoles, botPermissions, botPresenceIntentAvailable, botRenameVoiceChannel, canManageGuild, canMemberManageGuild, DiscordApiError, discordUser, effectiveBotPermissions, installAuthorizationUrl, installUrl, memberAvatarUrl, memberDisplayName, requiredBotPermissions, type BotGuildMember } from './index';
+import { administratorRoleIds, botDeleteChannel, botDeleteVoiceInterfaceMessage, botGuildMember, botGuildRoles, botPermissions, botPresenceIntentAvailable, botRenameVoiceChannel, canManageGuild, canMemberManageGuild, DiscordApiError, discordUser, effectiveBotPermissions, installAuthorizationUrl, installUrl, memberAvatarUrl, memberDisplayName, refreshTokens, requiredBotPermissions, type BotGuildMember } from './index';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -18,6 +18,31 @@ describe('live installer permissions', () => {
 });
 
 describe('Discord API errors', () => {
+  it('exposes the OAuth error code without reflecting provider descriptions', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: 'invalid_grant', error_description: 'secret refresh token' }), { status: 400 })));
+    await expect(refreshTokens('client', 'secret', 'revoked')).rejects.toMatchObject({ status: 400, code: 'invalid_grant', message: 'Discord API failed (400) on POST /api/v10/oauth2/token' });
+  });
+  it('deletes channels through the bounded API client and accepts an empty 204', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(botDeleteChannel('delete-channel-token', '12345678901234567')).resolves.toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledWith('https://discord.com/api/v10/channels/12345678901234567', expect.objectContaining({ method: 'DELETE', signal: expect.any(AbortSignal) }));
+  });
+  it('retries rate limited message deletion and treats already deleted messages as complete', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(null, { status: 429, headers: { 'retry-after': '0.001' } }))
+      .mockResolvedValueOnce(new Response(null, { status: 404 }));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(botDeleteVoiceInterfaceMessage('delete-message-token', '12345678901234567', '22345678901234567')).resolves.toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+  it('propagates delete permission and timeout failures without retrying an ambiguous write', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(null, { status: 403 })).mockRejectedValueOnce(new DOMException('Timed out', 'TimeoutError'));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(botDeleteChannel('delete-denied', '12345678901234567')).rejects.toMatchObject({ status: 403 });
+    await expect(botDeleteChannel('delete-timeout', '22345678901234567')).rejects.toMatchObject({ name: 'TimeoutError' });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
   it.each([0, ApplicationFlags.GatewayPresence, ApplicationFlags.GatewayPresenceLimited])('detects Presence availability for flags %d', async (flags) => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ flags }), { status: 200 })));
     await expect(botPresenceIntentAvailable(`flags-${flags}`)).resolves.toBe(flags !== 0);

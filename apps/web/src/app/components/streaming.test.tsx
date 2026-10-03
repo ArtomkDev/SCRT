@@ -102,6 +102,12 @@ describe('dashboard server streaming', () => {
       await vi.waitFor(() => expect(output.html()).toContain('<h1>Активність</h1>'));
       expect(output.html()).toContain(`href="/servers/${guildId}/activity/messages"`);
       expect(output.html()).toContain('Перевірка стану активності');
+      expect(output.html()).toContain('<h2>Огляд</h2>');
+      expect(output.html()).toContain('<dt>Повідомлення</dt>');
+      expect(output.html()).toContain('<dt>Активні учасники</dt>');
+      expect(output.html()).toContain('<h3>Найактивніші в чаті</h3>');
+      expect(output.html()).toContain('<th>Активність</th>');
+      expect(output.html()).not.toContain('skeleton-card');
       expect(mocks.overview).not.toHaveBeenCalled();
       settings.resolve({ enabled: true, streak: { timezone: 'Europe/Kyiv', minimumVoiceSecondsPerDay: 300 } });
       await vi.waitFor(() => expect(output.html()).toContain('Найактивніші в чаті'));

@@ -5,6 +5,7 @@ import { DashboardNav } from '../../components/dashboard-nav';
 import { LiveRefresh } from '../../components/live-refresh';
 import { voiceSettings } from '@/lib/voice-data';
 import { activitySettings } from '@/lib/activity-data';
+import { LoadingValue } from '../../components/data-loading';
 
 async function ModuleNavigation({ guildId, showVoice, showActivity, showAccess }: { guildId: string; showVoice: boolean; showActivity: boolean; showAccess: boolean }) {
   const [voice, activity] = await Promise.all([showVoice ? voiceSettings(guildId) : null, showActivity ? activitySettings(guildId) : null]);
@@ -19,5 +20,5 @@ async function GuildSidebar({ params }: { params: Promise<{ guildId: string }> }
 }
 
 export default function GuildLayout(props: { children: ReactNode; params: Promise<{ guildId: string }> }) {
-  return <div className="guild-workspace"><Suspense fallback={<aside className="guild-sidebar" aria-busy="true"><p className="muted" role="status">Завантаження сервера…</p><div className="skeleton skeleton-card" aria-hidden="true" /></aside>}><GuildSidebar params={props.params} /></Suspense><div className="guild-content">{props.children}</div></div>;
+  return <div className="guild-workspace"><Suspense fallback={<aside className="guild-sidebar" aria-label="Завантаження сервера…" aria-busy="true"><div className="guild-context"><span className="guild-icon" style={{ width: 32, height: 32 }} aria-hidden="true" /><span className="guild-context-name"><LoadingValue width="14ch" /></span></div><span className="sidebar-label">Сервер</span></aside>}><GuildSidebar params={props.params} /></Suspense><div className="guild-content">{props.children}</div></div>;
 }

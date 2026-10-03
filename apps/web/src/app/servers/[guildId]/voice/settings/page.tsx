@@ -1,6 +1,6 @@
 import { requireGuildAccess } from '@/lib/guards';
 import { Suspense } from 'react';
-import { DataLoading } from '@/app/components/data-loading';
+import { VoiceSettingsLoading } from '../loading-content';
 import { voiceResources, voiceSettings } from '@/lib/voice-data';
 import { ActionForm } from '@/app/components/action-form';
 import { saveVoiceSettings } from '../actions';
@@ -57,6 +57,6 @@ async function SettingsContent({ params }: { params: Promise<{ guildId: string }
 }
 
 export default function VoiceSettingsPage(props: Parameters<typeof SettingsContent>[0]) {
-  return <div className="settings-page"><Suspense fallback={<section><h2 className="subheading">Налаштування</h2><DataLoading label="Завантаження налаштувань голосового модуля…" /></section>}><SettingsContent {...props} /></Suspense></div>;
+  return <div className="settings-page"><Suspense fallback={<VoiceSettingsLoading />}><SettingsContent {...props} /></Suspense></div>;
 }
 
