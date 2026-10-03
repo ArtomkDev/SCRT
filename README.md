@@ -67,7 +67,7 @@ To set up Voice, open **Голосові канали → Налаштуванн
 
 On startup the bot loads SCRT room records, removes records whose channels no longer exist, restores active rooms and ownership, and reschedules cleanup and owner-leave timers. It never infers managed rooms from their names and never recreates missing rooms. Creator configuration changes are observed through Firestore. A Railway redeploy does not require a persistent disk.
 
-Run `pnpm deploy:commands` after filling credentials. With `DISCORD_GUILD_ID` in development it registers to that guild; production registers global commands, which can take time to propagate. The bot reconciles guild records on ready and handles join/leave events. A join merges metadata without replacing access settings; a leave marks the record disconnected.
+Run `pnpm deploy:commands` after filling credentials. With `DISCORD_GUILD_ID` in local development it registers to that guild; production and Railway register global commands, which can take time to propagate. Railway is recognized by its provided `RAILWAY_ENVIRONMENT_ID` or `RAILWAY_PROJECT_ID`, so a leftover development guild ID cannot target the test server on the host. The bot reconciles guild records on ready and handles join/leave events. A join merges metadata without replacing access settings; a leave marks the record disconnected.
 
 ## Activity Tracking & Leaderboards
 
@@ -96,6 +96,8 @@ The private key must contain only the PEM value, including its BEGIN/END markers
 Deploy the bot as a persistent worker from this repository. Build command: `pnpm install --frozen-lockfile && pnpm --filter @scrt/bot build`. Start command: `pnpm --filter @scrt/bot start`. Set the bot's required environment variables in Railway; no local `.env` or persistent volume is required. Deploy the web app as a separate service with build command `pnpm install --frozen-lockfile && pnpm --filter @scrt/web build`, start command `pnpm --filter @scrt/web start`, and its required environment variables. Set `NEXT_PUBLIC_APP_URL` to the web service's public HTTPS origin and add its OAuth callback URL in Discord. Register global commands from a credentialed deployment environment using `pnpm deploy:commands`.
 
 The bot tolerates reconnects and restart through guild and Voice reconciliation. Firestore is the persistent store. Guild and room recovery failures are logged individually; there is no local disk dependency.
+
+Set `NODE_ENV=production` on the bot service and remove the local-only `DISCORD_GUILD_ID`. Optional Pre-deploy Command: `node apps/bot/dist/register-commands.js` (from the repository root); keep the persistent Start Command above. A successful build followed by `DiscordAPIError[50001]: Missing Access` in `register-commands.js` is a command-registration failure before the worker starts. Check the logged application ID and registration scope: the hosted deployment must use `global`, and `DISCORD_CLIENT_ID` must belong to `DISCORD_BOT_TOKEN`. The registration script uses platform environment variables in production/Railway and does not load a local `.env` there.
 
 ## Graphify and Codex
 
