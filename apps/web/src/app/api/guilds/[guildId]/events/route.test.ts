@@ -36,4 +36,21 @@ describe('guild event authorization', () => {
     expect((await GET(request, context)).status).toBe(200);
     expect(mocks.watchDashboard).toHaveBeenCalledWith(guildId, false, expect.any(Function), expect.any(Function));
   });
+
+  it('omits voice subscriptions on activity pages even for voice administrators', async () => {
+    mocks.requireGuildAccess.mockResolvedValueOnce({ permissions: new Set(['dashboard.access', 'voice.view']) });
+    expect((await GET(new Request(request.url + '?scope=guild'), context)).status).toBe(200);
+    expect(mocks.watchDashboard).toHaveBeenCalledWith(guildId, false, expect.any(Function), expect.any(Function));
+  });
+
+  it('does not grant voice access through a requested scope', async () => {
+    mocks.requireGuildAccess.mockResolvedValueOnce({ permissions: new Set(['dashboard.access']) });
+    expect((await GET(new Request(request.url + '?scope=voice'), context)).status).toBe(200);
+    expect(mocks.watchDashboard).toHaveBeenCalledWith(guildId, false, expect.any(Function), expect.any(Function));
+  });
+
+  it('rejects unknown scopes before starting data subscriptions', async () => {
+    expect((await GET(new Request(request.url + '?scope=all'), context)).status).toBe(400);
+    expect(mocks.watchDashboard).not.toHaveBeenCalled();
+  });
 });

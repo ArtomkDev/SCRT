@@ -8,8 +8,8 @@ export function DashboardNav({ guildId, showVoice = false, showActivity = false,
   const pathname = usePathname();
   const base = `/servers/${guildId}`;
   const entries: Array<[string, string, ModuleState?]> = [
-      ...(showVoice ? [['Голосові канали', `${base}/voice`, voiceState] as [string, string, ModuleState?]] : []),
       ...(showActivity ? [['Активність', `${base}/activity`, activityState] as [string, string, ModuleState?]] : []),
+      ...(showVoice ? [['Голосові канали', `${base}/voice`, voiceState] as [string, string, ModuleState?]] : []),
       ...(showAccess ? [['Керування доступом', `${base}/settings/access-control`] as [string, string]] : []),
     ];
   return <nav aria-label="Розділи сервера" className="nav-list">

@@ -10,6 +10,7 @@ export class ActivityLeaderboardService {
   private readonly settingsReads = new Map<string, Promise<ActivitySettings>>();
   private readonly gameReads = new Map<string, Promise<ActivityGameSummary | null>>();
   private readonly dailyReads = new Map<string, Promise<DocumentData[]>>();
+  private readonly memberGameReads = new Map<string, Promise<{ games: ActivityGameSummary[]; totalSeconds: number }>>();
   private readonly now: () => number;
   constructor(private readonly repository: ActivityRepository, now: () => number = Date.now) {
     // A request crossing guild midnight must keep numerator and denominator in the same window.
@@ -151,6 +152,19 @@ export class ActivityLeaderboardService {
     const matchingEpoch = all.streakEpoch === activityStreakEpoch(settings);
     return { ...values, userId, currentVoiceStreak: matchingEpoch ? currentActivityStreak(counter(all.currentVoiceStreak), date, activityDate(this.now(), settings.streak.timezone)) : 0, longestVoiceStreak: counter(all.longestVoiceStreak), longestVoiceRunSeconds: counter(all.longestVoiceRunSeconds), lastQualifiedVoiceDate: date, lastActivityAt: counter(all.lastActivityAt) };
   }
+  async gameTimeTotal(guildId: string, period: ActivityPeriod): Promise<number> {
+    activityPeriodSchema.parse(period);
+    const ignored = new Set((await this.getSettings(guildId)).games.ignoredGameKeys);
+    if (period !== 'all') {
+      return (await this.daily(guildId, 'activityDailyGames', period)).reduce((sum, row) => sum + (ignored.has(String(row.gameKey)) ? 0 : counter(row.totalSeconds)), 0);
+    }
+    const collection = this.repository.collection(guildId, 'activityGames');
+    const [aggregate, excluded] = await Promise.all([
+      collection.aggregate({ totalSeconds: AggregateField.sum('totalSeconds') }).get(),
+      ignored.size ? this.repository.db.getAll(...[...ignored].map((key) => collection.doc(activityKey(key)))) : [],
+    ]);
+    return Math.max(0, counter(aggregate.data().totalSeconds) - excluded.reduce((sum, doc) => sum + counter(doc.get('totalSeconds')), 0));
+  }
   async games(guildId: string, period: ActivityPeriod, limit = 25): Promise<ActivityGameSummary[]> {
     activityPeriodSchema.parse(period); this.limit(limit);
     const ignored = new Set((await this.getSettings(guildId)).games.ignoredGameKeys);
@@ -236,8 +250,14 @@ export class ActivityLeaderboardService {
     const docs = await query.limit(51).get();
     return { games: docs.docs.slice(0, 50).map((doc) => this.gameModel(doc.data())), next: docs.size > 50 ? docs.docs[49]!.id : null };
   }
-  async memberGames(guildId: string, userId: string, period: ActivityPeriod): Promise<ActivityGameSummary[]> {
+  private memberGameSummary(guildId: string, userId: string, period: ActivityPeriod) {
     snowflakeSchema.parse(userId); activityPeriodSchema.parse(period);
+    const key = `${guildId}:${userId}:${period}`;
+    let read = this.memberGameReads.get(key);
+    if (!read) { read = this.readMemberGameSummary(guildId, userId, period); this.memberGameReads.set(key, read); }
+    return read;
+  }
+  private async readMemberGameSummary(guildId: string, userId: string, period: ActivityPeriod) {
     let rows: DocumentData[];
     if (period === 'all') {
       const query = this.repository.collection(guildId, 'activityGameMembers').where('userId', '==', userId);
@@ -249,7 +269,13 @@ export class ActivityLeaderboardService {
     for (const row of rows) { if (ignored.has(String(row.gameKey)) || row.userId !== userId) continue; const previous = games.get(String(row.gameKey)) ?? { ...this.gameModel(row), totalSeconds: 0, sessionCount: 0, uniquePlayers: 1 }; previous.totalSeconds += counter(row.totalSeconds); previous.sessionCount += counter(row.sessionCount); previous.lastPlayedAt = Math.max(previous.lastPlayedAt, counter(row.lastPlayedAt)); games.set(previous.gameKey, previous); }
     const visible = [...games.values()];
     const total = visible.reduce((sum, game) => sum + game.totalSeconds, 0);
-    return visible.sort((a, b) => b.totalSeconds - a.totalSeconds || a.gameKey.localeCompare(b.gameKey)).slice(0, 25).map((game) => ({ ...game, activityPercent: activityContributionPercent(game.totalSeconds, total) }));
+    return { totalSeconds: total, games: visible.sort((a, b) => b.totalSeconds - a.totalSeconds || a.gameKey.localeCompare(b.gameKey)).slice(0, 25).map((game) => ({ ...game, activityPercent: activityContributionPercent(game.totalSeconds, total) })) };
+  }
+  async memberGames(guildId: string, userId: string, period: ActivityPeriod): Promise<ActivityGameSummary[]> {
+    return (await this.memberGameSummary(guildId, userId, period)).games;
+  }
+  async memberGameTimeTotal(guildId: string, userId: string, period: ActivityPeriod): Promise<number> {
+    return (await this.memberGameSummary(guildId, userId, period)).totalSeconds;
   }
   async directory(guildId: string, search: string, after?: string): Promise<{ profiles: ActivityProfile[]; next: string | null }> {
     if (search.length > 64) throw new Error('Пошуковий запит задовгий.');

@@ -6,8 +6,8 @@ import { groupGuilds } from '@/lib/guild-presentation';
 import type { DiscordGuild } from '@scrt/discord';
 
 vi.stubGlobal('React', React);
-const mocks = vi.hoisted(() => ({ pathname: vi.fn(), refresh: vi.fn() }));
-vi.mock('next/navigation', () => ({ usePathname: mocks.pathname, useRouter: () => ({ refresh: mocks.refresh }) }));
+const mocks = vi.hoisted(() => ({ pathname: vi.fn(), search: vi.fn(), refresh: vi.fn() }));
+vi.mock('next/navigation', () => ({ usePathname: mocks.pathname, useSearchParams: mocks.search, useRouter: () => ({ refresh: mocks.refresh }) }));
 vi.mock('./prefetch-link', () => ({ PrefetchLink: ({ children, ...props }: React.ComponentProps<'a'>) => <a {...props}>{children}</a> }));
 
 import { GuildNavigation } from './guild-navigation';
@@ -19,14 +19,16 @@ const a = '12345678901234567', b = '22345678901234567', c = '32345678901234567',
 const groups = groupGuilds([guild(b, 'Бета'), guild(c, 'Явір'), guild(a, 'Альфа'), guild(d, 'Вежа')], new Set([a, b]));
 
 describe('guild navigation', () => {
-  beforeEach(() => { vi.clearAllMocks(); mocks.pathname.mockReturnValue(`/servers/${b}/activity/games/name%3Adota`); });
+  beforeEach(() => { vi.clearAllMocks(); mocks.pathname.mockReturnValue(`/servers/${b}/activity/games/name%3Adota`); mocks.search.mockReturnValue(new URLSearchParams('period=7d')); });
   afterEach(cleanup);
 
-  it('orders installed and available guilds separately and uses canonical destinations', () => {
+  it('preserves the screen and period in both switchers while keeping installation destinations', () => {
     render(<GuildNavigation groups={groups} />);
     const rail = screen.getByRole('navigation', { name: 'Перемикання серверів' });
     const links = within(rail).getAllByRole('link');
-    expect(links.map((link) => link.getAttribute('href'))).toEqual(['/servers', `/servers/${a}`, `/servers/${b}`, `/api/install/${d}`, `/api/install/${c}`]);
+    const destination = `/servers/${a}?period=7d&screen=activity%2Fgames%2Fname%253Adota`;
+    expect(links.map((link) => link.getAttribute('href'))).toEqual(['/servers', destination, `/servers/${b}/activity/games/name%3Adota?period=7d`, `/api/install/${d}`, `/api/install/${c}`]);
+    expect(within(screen.getByRole('navigation', { name: 'Сервери' })).getByRole('link', { name: /Альфа/ }).getAttribute('href')).toBe(destination);
     expect(within(rail).getByRole('link', { name: 'Бета' }).getAttribute('aria-current')).toBe('page');
     expect(within(rail).getByRole('link', { name: 'Альфа' }).getAttribute('aria-current')).toBeNull();
     expect(within(rail).getByRole('link', { name: 'Додати SCRT до сервера Вежа' }).getAttribute('aria-disabled')).toBeNull();
@@ -50,7 +52,7 @@ describe('guild navigation', () => {
     render(<GuildNavigation groups={{ installed: [], available: [] }} unavailable />);
     const rail = screen.getByRole('navigation', { name: 'Перемикання серверів' });
     expect(within(rail).getByRole('link', { name: 'Усі сервери' }).getAttribute('href')).toBe('/servers');
-    expect(within(rail).getByRole('link', { name: 'Поточний сервер' }).getAttribute('href')).toBe(`/servers/${b}`);
+    expect(within(rail).getByRole('link', { name: 'Поточний сервер' }).getAttribute('href')).toBe(`/servers/${b}/activity/games/name%3Adota?period=7d`);
     fireEvent.click(within(rail).getByRole('button', { name: 'Повторити завантаження серверів' }));
     expect(mocks.refresh).toHaveBeenCalledTimes(1);
   });

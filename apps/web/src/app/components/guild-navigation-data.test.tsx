@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.stubGlobal('React', React);
 const mocks = vi.hoisted(() => ({ list: vi.fn(), rethrow: vi.fn() }));
 vi.mock('@/lib/guards', () => ({ manageableGuildList: mocks.list }));
-vi.mock('next/navigation', () => ({ unstable_rethrow: mocks.rethrow, usePathname: () => '/servers', useRouter: () => ({ refresh: vi.fn() }) }));
+vi.mock('next/navigation', () => ({ unstable_rethrow: mocks.rethrow, usePathname: () => '/servers', useSearchParams: () => new URLSearchParams(), useRouter: () => ({ refresh: vi.fn() }) }));
 
 import { GuildNavigationData } from './guild-navigation-data';
 

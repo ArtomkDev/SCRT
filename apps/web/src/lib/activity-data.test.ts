@@ -1,12 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const mocks = vi.hoisted(() => ({ access: vi.fn(), ranking: vi.fn(), game: vi.fn(), players: vi.fn(), profiles: vi.fn(), settings: vi.fn() }));
+const mocks = vi.hoisted(() => ({ access: vi.fn(), ranking: vi.fn(), game: vi.fn(), players: vi.fn(), profiles: vi.fn(), settings: vi.fn(), gameTime: vi.fn(), memberGameTime: vi.fn() }));
 vi.mock('server-only', () => ({}));
 vi.mock('react', () => ({ cache: (fn: unknown) => fn }));
 vi.mock('./guards', () => ({ requireGuildAccess: mocks.access }));
-vi.mock('./server', () => ({ activity: () => ({ profiles: mocks.profiles }), activityLeaderboards: () => ({ memberLeaderboard: mocks.ranking, game: mocks.game, gamePlayers: mocks.players, getSettings: mocks.settings }) }));
+vi.mock('./server', () => ({ activity: () => ({ profiles: mocks.profiles }), activityLeaderboards: () => ({ memberLeaderboard: mocks.ranking, game: mocks.game, gamePlayers: mocks.players, getSettings: mocks.settings, gameTimeTotal: mocks.gameTime, memberGameTimeTotal: mocks.memberGameTime }) }));
 
-import { activityGame, activityGamePlayers, activityPeriod, activityProfiles, activityRanking, activitySettings } from './activity-data';
+import { activityGame, activityGamePlayers, activityGameTimeTotal, activityMemberGameTimeTotal, activityPeriod, activityProfiles, activityRanking, activitySettings } from './activity-data';
 
 const guildId = '12345678901234567';
 const first = { userId: '22345678901234567', rank: 1, value: 3 };
@@ -29,8 +29,12 @@ describe('Activity page data loading', () => {
     mocks.access.mockRejectedValue(new Error('Forbidden'));
     await expect(activityRanking(guildId, 'messages', 'all')).rejects.toThrow('Forbidden');
     await expect(activityProfiles(guildId, first.userId)).rejects.toThrow('Forbidden');
+    await expect(activityGameTimeTotal(guildId, 'all')).rejects.toThrow('Forbidden');
+    await expect(activityMemberGameTimeTotal(guildId, first.userId, 'all')).rejects.toThrow('Forbidden');
     expect(mocks.ranking).not.toHaveBeenCalled();
     expect(mocks.profiles).not.toHaveBeenCalled();
+    expect(mocks.gameTime).not.toHaveBeenCalled();
+    expect(mocks.memberGameTime).not.toHaveBeenCalled();
   });
 
   it('uses the same request-scoped settings source as leaderboard queries', async () => {

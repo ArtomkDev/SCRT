@@ -3,12 +3,13 @@ import Image from 'next/image';
 import { Suspense } from 'react';
 import { PrefetchLink } from '@/app/components/prefetch-link';
 import { MetricsLoading, RowsLoading } from '@/app/components/data-loading';
-import { GamesLoading, summaryLabels } from './loading-content';
+import { DataBoundary } from '@/app/components/data-boundary';
+import { GamesLoading, gamesTimeLabel, summaryLabels } from './loading-content';
 import { ActivityIcon } from '@/app/components/activity-artwork';
 import { activityArtworks } from '@/lib/activity-artwork';
 import { ActivityActionsMenu } from './activity-actions-menu';
 import { requireGuildAccess } from '@/lib/guards';
-import { activityGames, activityOverview, activityProfiles, activityRanking, activitySettings, activityMessageSummary, activityVoiceSummary } from '@/lib/activity-data';
+import { activityGames, activityGameTimeTotal, activityMemberGameTimeTotal, activityOverview, activityProfiles, activityRanking, activitySettings, activityMessageSummary, activityVoiceSummary } from '@/lib/activity-data';
 import { activityMetrics, formatActivityDuration, formatActivityRelativeDay, type ActivityGameSummary, type ActivityLeaderboardEntry, type ActivityMetric, type ActivityPeriod, type ActivityProfile, type ActivityTotals } from '@scrt/shared';
 export { PeriodLinks } from './period-links';
 
@@ -33,7 +34,7 @@ async function SummaryValues({ guildId, period, domain }: { guildId: string; per
   return <ActivityStats data={await activityOverview(guildId, period)} />;
 }
 export function ActivitySummary({ guildId, period, domain = 'overview' }: { guildId: string; period: ActivityPeriod; domain?: 'overview' | 'voice' | 'messages' }) {
-  return <Suspense fallback={<MetricsLoading labels={summaryLabels[domain]} />}><SummaryValues guildId={guildId} period={period} domain={domain} /></Suspense>;
+  return <DataBoundary key={period} title="Показники не завантажилися"><Suspense fallback={<MetricsLoading labels={summaryLabels[domain]} />}><SummaryValues guildId={guildId} period={period} domain={domain} /></Suspense></DataBoundary>;
 }
 export function MemberLink({ guildId, userId, profile, period }: { guildId: string; userId: string; profile?: ActivityProfile; period?: ActivityPeriod }) {
   return <PrefetchLink className="activity-identity" title={profile?.displayName ?? 'Учасник ' + userId} href={'/servers/' + guildId + '/activity/members/' + userId + (period ? '?period=' + period : '')}>{profile?.avatarUrl ? <Image src={profile.avatarUrl} alt="" width={32} height={32} unoptimized /> : <span className="activity-avatar" aria-hidden="true">?</span>}<span>{profile?.displayName ?? 'Учасник ' + userId}{profile?.username && <small>@{profile.username}</small>}</span></PrefetchLink>;
@@ -48,13 +49,20 @@ async function RankingValues({ guildId, metric, period, limit }: { guildId: stri
   return <MemberRows guildId={guildId} metric={metric} period={period} rows={await activityRanking(guildId, metric, activityMetrics[metric].periodAware ? period : 'all', limit)} />;
 }
 export function Ranking({ guildId, metric, period, title, limit = 25, more = false }: { guildId: string; metric: ActivityMetric; period: ActivityPeriod; title: string; limit?: number; more?: boolean }) {
-  return <section className="detail-panel"><h3>{title}</h3><Suspense fallback={<RowsLoading label="Завантаження рейтингу…" />}><RankingValues guildId={guildId} metric={metric} period={period} limit={limit} /></Suspense>{more && <InlineAction className="activity-more" href={'/servers/' + guildId + '/activity/leaderboard?metric=' + metric + (activityMetrics[metric].periodAware ? '&period=' + period : '')}>Переглянути рейтинг</InlineAction>}</section>;
+  return <section className="detail-panel"><h3>{title}</h3><DataBoundary key={`${metric}:${period}`} title="Рейтинг не завантажився"><Suspense fallback={<RowsLoading label="Завантаження рейтингу…" />}><RankingValues guildId={guildId} metric={metric} period={period} limit={limit} /></Suspense></DataBoundary>{more && <InlineAction className="activity-more" href={'/servers/' + guildId + '/activity/leaderboard?metric=' + metric + (activityMetrics[metric].periodAware ? '&period=' + period : '')}>Переглянути рейтинг</InlineAction>}</section>;
 }
 async function GameListValues({ guildId, period, limit }: { guildId: string; period: ActivityPeriod; limit: number }) {
   return <GamesTable guildId={guildId} period={period} games={await activityGames(guildId, period, limit)} />;
 }
 export function GameList({ guildId, period, limit = 25 }: { guildId: string; period: ActivityPeriod; limit?: number }) {
-  return <Suspense fallback={<GamesLoading />}><GameListValues guildId={guildId} period={period} limit={limit} /></Suspense>;
+  return <DataBoundary key={period} title="Ігри та застосунки не завантажилися"><Suspense fallback={<GamesLoading />}><GameListValues guildId={guildId} period={period} limit={limit} /></Suspense></DataBoundary>;
+}
+async function GamesTimeValue({ guildId, period, userId }: { guildId: string; period: ActivityPeriod; userId?: string }) {
+  const seconds = userId ? await activityMemberGameTimeTotal(guildId, userId, period) : await activityGameTimeTotal(guildId, period);
+  return <MetricValues values={[[userId ? 'Загальний час в іграх та застосунках' : gamesTimeLabel, formatActivityDuration(seconds)]]} />;
+}
+export function GamesTimeSummary({ guildId, period, userId }: { guildId: string; period: ActivityPeriod; userId?: string }) {
+  return <div className="activity-games-total"><DataBoundary key={period} title="Час активності не завантажився"><Suspense fallback={<MetricsLoading labels={[userId ? 'Загальний час в іграх та застосунках' : gamesTimeLabel]} />}><GamesTimeValue guildId={guildId} period={period} userId={userId} /></Suspense></DataBoundary></div>;
 }
 export async function GamesTable({ guildId, games, period, member = false }: { guildId: string; games: ActivityGameSummary[]; period: ActivityPeriod; member?: boolean }) {
   if (!games.length) return <p className="empty-state">За цей період Discord ще не передав жодної відстежуваної активності.</p>;

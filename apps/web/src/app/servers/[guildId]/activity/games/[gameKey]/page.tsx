@@ -5,6 +5,7 @@ import { Suspense } from 'react';
 import { ActivityHero } from '@/app/components/activity-artwork';
 import { activityArtworks, activityArtworkForKey, activityArtworkNeedsRefresh } from '@/lib/activity-artwork';
 import { TableLoading } from '@/app/components/data-loading';
+import { DataBoundary } from '@/app/components/data-boundary';
 import { InlineAction } from '@/app/components/inline-action';
 import { activityGame, activityGamePlayers, activityPeriod, activityProfiles, activitySettings } from '@/lib/activity-data';
 import { formatActivityDuration, formatActivityRelativeDay, type ActivityGameSummary, type ActivityPeriod } from '@scrt/shared';
@@ -41,7 +42,7 @@ async function GameContent({ guildId, gameKey, period }: { guildId: string; game
   if (activityArtworkNeedsRefresh(cachedArtwork)) await activityArtworks(guildId, [game]);
   const settings = await activitySettings(guildId);
   const path = '/servers/' + guildId + '/activity/games/' + encodeURIComponent(gameKey);
-  return <><ActivityHero gameKey={gameKey} name={game.displayName} artwork={cachedArtwork} actions={<ActivityActionsMenu guildId={guildId} identity={game} artwork={cachedArtwork} href={path + '?period=' + period} canManage={access.permissions.has('activity.manage')} ignored={settings.games.ignoredGameKeys.includes(gameKey)} detail />} /><PeriodLinks path={path} period={period} /><GameSummary guildId={guildId} game={game} /><section className="detail-panel activity-contributors" id="contributors"><h3>Внесок учасників</h3><Suspense fallback={<TableLoading label="Завантаження учасників…" columns={contributorColumns} className="activity-table activity-contributors-table" />}><GameContributors guildId={guildId} gameKey={gameKey} period={period} /></Suspense></section></>;
+  return <><ActivityHero gameKey={gameKey} name={game.displayName} artwork={cachedArtwork} actions={<ActivityActionsMenu guildId={guildId} identity={game} artwork={cachedArtwork} href={path + '?period=' + period} canManage={access.permissions.has('activity.manage')} ignored={settings.games.ignoredGameKeys.includes(gameKey)} detail />} /><PeriodLinks path={path} period={period} /><GameSummary guildId={guildId} game={game} /><section className="detail-panel activity-contributors" id="contributors"><h3>Внесок учасників</h3><DataBoundary key={period} title="Внесок учасників не завантажився"><Suspense fallback={<TableLoading label="Завантаження учасників…" columns={contributorColumns} className="activity-table activity-contributors-table" />}><GameContributors guildId={guildId} gameKey={gameKey} period={period} /></Suspense></DataBoundary></section></>;
 }
 export default async function GamePage({ params, searchParams }: { params: Promise<{ guildId: string; gameKey: string }>; searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const { guildId, gameKey: segment } = await params;

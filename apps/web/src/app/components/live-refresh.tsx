@@ -6,8 +6,9 @@ import { useUnsavedChanges } from './unsaved-changes';
 
 function affectsPage(kind: string, pathname: string): boolean {
   if (kind === 'guild' || kind === 'access' || kind === 'guilds' || kind === 'settings') return true;
-  const voice = pathname.split('/voice')[1];
-  if (voice === undefined) return false;
+  const match = pathname.match(/^\/servers\/[^/]+\/voice(\/.*)?$/);
+  if (!match) return false;
+  const voice = match[1] ?? '';
   if (voice === '' || voice === '/') return ['rooms', 'creators', 'settings'].includes(kind);
   if (voice.startsWith('/rooms')) return kind === 'rooms';
   if (voice.startsWith('/creators')) return kind === 'creators' || kind === 'rooms';
@@ -20,6 +21,9 @@ function affectsPage(kind: string, pathname: string): boolean {
 export function LiveRefresh({ endpoint }: { endpoint: string }) {
   const router = useRouter();
   const pathname = usePathname();
+  const scopedEndpoint = /^\/api\/guilds\/[^/]+\/events$/.test(endpoint)
+    ? `${endpoint}?scope=${/^\/servers\/[^/]+\/voice(?:\/|$)/.test(pathname) ? 'voice' : 'guild'}`
+    : endpoint;
   const { hasChanges } = useUnsavedChanges();
   const dirty = useRef(hasChanges);
   dirty.current = hasChanges;
@@ -39,6 +43,7 @@ export function LiveRefresh({ endpoint }: { endpoint: string }) {
     let active = true;
     let source: EventSource | null = null;
     let reconnectTimer: number | null = null;
+    let stableTimer: number | null = null;
     let refreshTimer: number | null = null;
     let retryDelay = 1000;
     let lastRefresh = Date.now();
@@ -70,6 +75,8 @@ export function LiveRefresh({ endpoint }: { endpoint: string }) {
     function disconnect() {
       source?.close();
       source = null;
+      if (stableTimer !== null) window.clearTimeout(stableTimer);
+      stableTimer = null;
       if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
       reconnectTimer = null;
       if (active) setConnected(false);
@@ -77,12 +84,13 @@ export function LiveRefresh({ endpoint }: { endpoint: string }) {
 
     function connect() {
       if (!active || document.hidden || !navigator.onLine || source || reconnectTimer !== null) return;
-      const events = new EventSource(endpoint);
+      const events = new EventSource(scopedEndpoint);
       source = events;
       const versionAtConnect = refreshVersion;
       events.addEventListener('sync', () => {
         if (!active || source !== events) return;
-        retryDelay = 1000;
+        // A stream that syncs and immediately fails must retain exponential backoff.
+        if (stableTimer === null) stableTimer = window.setTimeout(() => { stableTimer = null; retryDelay = 1000; }, 30_000);
         setConnected(true);
         // A focus/visibility refresh may already have reconciled this connection.
         if (synced && versionAtConnect === refreshVersion) refreshSoon();
@@ -145,7 +153,7 @@ export function LiveRefresh({ endpoint }: { endpoint: string }) {
       window.removeEventListener('online', resume);
       window.removeEventListener('pageshow', onPageShow);
     };
-  }, [endpoint, router, startTransition]);
+  }, [scopedEndpoint, router, startTransition]);
 
   return <span className={`live-status ${connected ? 'live-status-connected' : ''}`} role="status" aria-busy={isPending}>
     <span aria-hidden="true" />{isPending ? 'Оновлення даних…' : connected ? 'Автооновлення' : 'Відновлення з’єднання…'}

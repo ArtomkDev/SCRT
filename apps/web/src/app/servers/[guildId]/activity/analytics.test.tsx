@@ -10,14 +10,16 @@ vi.mock('@/lib/activity-artwork', () => ({ activityArtworks: async () => [], act
 vi.mock('./artwork-actions', () => ({ editActivityArtwork: vi.fn(), refreshActivityArtwork: vi.fn(), resetActivityArtwork: vi.fn(), enrichMissingArtworkBatch: vi.fn() }));
 vi.mock('./artwork-picker', () => ({ ArtworkPicker: () => null }));
 const mocks = vi.hoisted(() => ({
-  overview: vi.fn(), voice: vi.fn(), messages: vi.fn(), ranking: vi.fn(), games: vi.fn(),
+  overview: vi.fn(), voice: vi.fn(), messages: vi.fn(), ranking: vi.fn(), games: vi.fn(), gameTime: vi.fn(),
   profiles: vi.fn(), game: vi.fn(), players: vi.fn(), observed: vi.fn(), settings: vi.fn(),
-  member: vi.fn(), memberGames: vi.fn(), identity: vi.fn(), directory: vi.fn(), health: vi.fn(),
+  member: vi.fn(), memberGames: vi.fn(), memberGameTime: vi.fn(), identity: vi.fn(), directory: vi.fn(), health: vi.fn(),
   path: '/servers/12345678901234567/activity',
 }));
 vi.mock('@/lib/activity-data', () => ({
   activityOverview: mocks.overview, activityVoiceSummary: mocks.voice, activityMessageSummary: mocks.messages,
   activityRanking: mocks.ranking, activityGames: mocks.games, activityProfiles: mocks.profiles,
+  activityGameTimeTotal: mocks.gameTime,
+  activityMemberGameTimeTotal: mocks.memberGameTime,
   activityGame: mocks.game, activityGamePlayers: mocks.players, activityObservedGames: mocks.observed,
   activitySettings: mocks.settings, activityMember: mocks.member, activityMemberGames: mocks.memberGames,
   activityMemberIdentity: mocks.identity, activityDirectory: mocks.directory, activityHealth: mocks.health,
@@ -67,18 +69,33 @@ beforeEach(() => {
     { userId: '32345678901234567', rank: 2, value: metric === 'messages' ? 3170 : metric.endsWith('Streak') ? 8 : 151860 },
   ].slice(0, limit));
   mocks.games.mockResolvedValue([game]);
+  mocks.gameTime.mockResolvedValue(72000);
   mocks.profiles.mockResolvedValue([profile]);
   mocks.game.mockResolvedValue(game);
   mocks.players.mockResolvedValue([{ userId, totalSeconds: 10240, contributionPercent: 53.333333, sessionCount: 7, lastPlayedAt: Date.now() }, { userId: '32345678901234567', totalSeconds: 8960, contributionPercent: 46.666667, sessionCount: 5, lastPlayedAt: Date.now() }]);
   mocks.observed.mockResolvedValue({ games: [game, { ...game, gameKey: 'name:visual studio code', displayName: 'Visual Studio Code' }], next: null });
   mocks.member.mockResolvedValue({ messages: 4821, voiceSeconds: 185040, streamSeconds: 2400, currentVoiceStreak: 23, longestVoiceStreak: 28, longestVoiceRunSeconds: 185040, lastActivityAt: Date.now() });
   mocks.memberGames.mockResolvedValue([game]);
+  mocks.memberGameTime.mockResolvedValue(36000);
   mocks.identity.mockResolvedValue({ member: { username: profile.username, globalName: profile.displayName, avatarUrl: null }, left: false });
   mocks.directory.mockResolvedValue({ profiles: [profile], next: null });
   mocks.health.mockResolvedValue(null);
 });
 
 describe('Activity page domain and navigation semantics', () => {
+  it('shows complete member game and application time for the selected period', async () => {
+    const output = await html(await MemberPage({ params: Promise.resolve({ guildId, userId }), searchParams: Promise.resolve({ period: '7d' }) }));
+    expect(mocks.memberGameTime).toHaveBeenCalledExactlyOnceWith(guildId, userId, '7d');
+    expect(output).toContain('Загальний час в іграх та застосунках');
+    expect(output).toContain('10 год');
+  });
+  it('shows full participant game time for the selected period independently of the top games', async () => {
+    const output = await html(await GamesPage({ params, searchParams: Promise.resolve({ period: '30d' }) }));
+    expect(mocks.gameTime).toHaveBeenCalledExactlyOnceWith(guildId, '30d');
+    expect(output).toContain('Загальний час усіх учасників в іграх та застосунках');
+    expect(output).toContain('20 год');
+    expect(mocks.overview).not.toHaveBeenCalled();
+  });
   it.each([OverviewPage, VoicePage, MessagesPage, RankingPage, GamesPage, MembersPage])('gates disabled module analytics before domain queries', async (Page) => {
     mocks.settings.mockResolvedValue(activitySettingsSchema.parse({ enabled: false }));
     const output = await html(await Page({ params, searchParams: Promise.resolve({}) }));
@@ -88,7 +105,7 @@ describe('Activity page domain and navigation semantics', () => {
     expect(output).toContain(`/servers/${guildId}/activity/settings`);
     expect(mocks.overview).not.toHaveBeenCalled(); expect(mocks.voice).not.toHaveBeenCalled();
     expect(mocks.messages).not.toHaveBeenCalled(); expect(mocks.ranking).not.toHaveBeenCalled();
-    expect(mocks.games).not.toHaveBeenCalled(); expect(mocks.directory).not.toHaveBeenCalled();
+    expect(mocks.games).not.toHaveBeenCalled(); expect(mocks.gameTime).not.toHaveBeenCalled(); expect(mocks.directory).not.toHaveBeenCalled();
   });
   it('Voice renders only Voice metrics and queries no overview/message totals', async () => {
     const output = await html(await VoicePage({ params, searchParams: Promise.resolve({ period: '7d' }) }));

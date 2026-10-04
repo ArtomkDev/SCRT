@@ -11,6 +11,58 @@ const start = Date.parse('2026-10-01T20:30:00Z');
 const session = (patch = {}) => activitySessionSchema.parse({ id: randomUUID(), guildId, userId, tracker: 'voice', channelId: '32345678901234567', startedAt: start, cursorAt: start, lastObservedAt: start, qualified: false, timezone: 'Europe/Kyiv', minimumSeconds: 60, streakMinimum: 300, streakEpoch: 'Europe/Kyiv:300:true:0', game: null, schemaVersion: 1, ...patch });
 function setup(missingIndexes = false) { const store = activityTestStore(missingIndexes); const repository = new ActivityRepository(store.db); return { ...store, repository, row: (collection: string, id: string) => store.records.get(`guilds/${guildId}/${collection}/${id}`) }; }
 
+describe('total member game time', () => {
+  it.each(['today', '7d', '30d', 'all'] as const)('sums all activities for %s with one shared read and guild/member isolation', async (period) => {
+    const { records, repository, queries } = setup();
+    records.set(`guilds/${guildId}/activitySettings/main`, activitySettingsSchema.parse({ games: { ignoredGameKeys: ['name:ignored'] } }));
+    const collection = period === 'all' ? 'activityGameMembers' : 'activityDailyGameMembers';
+    for (let index = 0; index < 30; index++) records.set(`guilds/${guildId}/${collection}/game-${index}`, { userId, gameKey: `name:game ${index}`, displayName: `Game ${index}`, totalSeconds: 60, sessionCount: 1, date: '2026-10-01' });
+    records.set(`guilds/${guildId}/${collection}/ignored`, { userId, gameKey: 'name:ignored', totalSeconds: 99999, date: '2026-10-01' });
+    records.set(`guilds/${guildId}/${collection}/other-member`, { userId: '32345678901234567', gameKey: 'name:other', totalSeconds: 99999, date: '2026-10-01' });
+    records.set(`guilds/42345678901234567/${collection}/other-guild`, { userId, gameKey: 'name:other', totalSeconds: 99999, date: '2026-10-01' });
+    if (period !== 'all') records.set(`guilds/${guildId}/${collection}/old`, { userId, gameKey: 'name:old', totalSeconds: 99999, date: '2026-08-01' });
+    const service = new ActivityLeaderboardService(repository, () => start);
+    const [games, total] = await Promise.all([service.memberGames(guildId, userId, period), service.memberGameTimeTotal(guildId, userId, period)]);
+    expect(games).toHaveLength(25);
+    expect(total).toBe(1800);
+    expect(games[0]?.activityPercent).toBeCloseTo(100 / 30);
+    expect(queries.filter((query) => query.collection.endsWith(collection))).toHaveLength(1);
+  });
+});
+
+describe('total participant game time', () => {
+  async function gameTotals() {
+    const { records, repository, queries } = setup();
+    records.set(`guilds/${guildId}/activitySettings/main`, activitySettingsSchema.parse({ games: { ignoredGameKeys: ['name:ignored', 'name:missing'] } }));
+    for (let index = 0; index < 30; index++) {
+      const gameKey = `name:game ${index}`;
+      records.set(`guilds/${guildId}/activityGames/${activityKey(gameKey)}`, { gameKey, totalSeconds: 600 });
+      for (const [date, totalSeconds] of [['2026-10-01', 60], ['2026-09-29', 120], ['2026-09-10', 180], ['2026-08-01', 240], ['2026-10-02', 999]] as const) {
+        records.set(`guilds/${guildId}/activityDailyGames/${activityKey(gameKey + date)}`, { gameKey, date, totalSeconds });
+      }
+    }
+    records.set(`guilds/${guildId}/activityGames/${activityKey('name:ignored')}`, { gameKey: 'name:ignored', totalSeconds: 10000 });
+    records.set(`guilds/${guildId}/activityDailyGames/ignored`, { gameKey: 'name:ignored', date: '2026-10-01', totalSeconds: 10000 });
+    records.set('guilds/32345678901234567/activityGames/other', { gameKey: 'name:other', totalSeconds: 99999 });
+    records.set('guilds/32345678901234567/activityDailyGames/other', { gameKey: 'name:other', date: '2026-10-01', totalSeconds: 99999 });
+    return { service: new ActivityLeaderboardService(repository, () => start), queries };
+  }
+
+  it.each([['today', 1800], ['7d', 5400], ['30d', 10800], ['all', 18000]] as const)('sums every game for %s without ignored games or other guilds', async (period, expected) => {
+    const { service, queries } = await gameTotals();
+    expect(await service.gameTimeTotal(guildId, period)).toBe(expected);
+    expect(queries.filter((query) => query.collection.endsWith('/activityGameMembers') || query.collection.endsWith('/activityDailyGameMembers'))).toEqual([]);
+    if (period === 'all') expect(queries.find((query) => query.collection.endsWith('/activityGames'))?.limit).toBe(Infinity);
+  });
+
+  it('returns zero for an empty guild', async () => {
+    const { repository } = setup();
+    const service = new ActivityLeaderboardService(repository, () => start);
+    expect(await service.gameTimeTotal(guildId, 'all')).toBe(0);
+    expect(await service.gameTimeTotal(guildId, 'today')).toBe(0);
+  });
+});
+
 describe('continuous Voice records', () => {
   it('accumulates eligible segments without gaps or duplicate checkpoint/start/close counts', async () => {
     const { repository, row } = setup(); const voiceRunEpoch = randomUUID();

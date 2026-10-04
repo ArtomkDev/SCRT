@@ -1,8 +1,9 @@
 'use client';
 
-import { usePathname, useRouter } from 'next/navigation';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useRef, useState, useTransition } from 'react';
 import { guildAction, type ManageableGuild } from '@/lib/guild-presentation';
+import { guildSwitchHref } from '@/lib/guild-screen';
 import { AppMark } from './app-brand';
 import { GuildIcon } from './guild-icon';
 import { NavigationIcon } from './navigation-icon';
@@ -31,21 +32,23 @@ function AddGuildLink({ guild, compact = false, 'aria-describedby': describedBy 
   </a>;
 }
 
-function GuildRail({ groups, selectedId, development, unavailable, retry, pending }: NavigationProps & { selectedId?: string; retry: () => void; pending: boolean }) {
+type SwitchProps = { selectedId?: string; retry: () => void; pending: boolean; guildHref: (guildId: string) => string };
+
+function GuildRail({ groups, selectedId, development, unavailable, retry, pending, guildHref }: NavigationProps & SwitchProps) {
   return <nav className="guild-rail" aria-label="Перемикання серверів">
     <Tooltip label="Усі сервери"><PrefetchLink href="/servers" className="guild-rail-item guild-rail-home" aria-label="Усі сервери" aria-current={!selectedId ? 'page' : undefined}><AppMark development={development} /></PrefetchLink></Tooltip>
     <span className="guild-rail-separator" aria-hidden="true" />
-    {groups.installed.map((guild) => <Tooltip key={guild.id} label={guild.name}><PrefetchLink href={guildAction(guild).href} className="guild-rail-item" aria-label={guild.name} aria-current={selectedId === guild.id ? 'page' : undefined}><GuildIcon {...guild} size={44} /></PrefetchLink></Tooltip>)}
+    {groups.installed.map((guild) => <Tooltip key={guild.id} label={guild.name}><PrefetchLink href={guildHref(guild.id)} className="guild-rail-item" aria-label={guild.name} aria-current={selectedId === guild.id ? 'page' : undefined}><GuildIcon {...guild} size={44} /></PrefetchLink></Tooltip>)}
     {groups.available.length > 0 && <span className="guild-rail-separator" aria-hidden="true" />}
     {groups.available.map((guild) => <Tooltip key={guild.id} label={`Додати SCRT до ${guild.name}`}><AddGuildLink guild={guild} compact /></Tooltip>)}
     {unavailable && <>
-      {selectedId && !groups.installed.some((guild) => guild.id === selectedId) && <Tooltip label="Поточний сервер"><PrefetchLink href={`/servers/${selectedId}`} className="guild-rail-item" aria-label="Поточний сервер" aria-current="page"><GuildIcon id={selectedId} name="Поточний сервер" icon={null} size={44} /></PrefetchLink></Tooltip>}
+      {selectedId && !groups.installed.some((guild) => guild.id === selectedId) && <Tooltip label="Поточний сервер"><PrefetchLink href={guildHref(selectedId)} className="guild-rail-item" aria-label="Поточний сервер" aria-current="page"><GuildIcon id={selectedId} name="Поточний сервер" icon={null} size={44} /></PrefetchLink></Tooltip>}
       <Tooltip label="Не вдалося завантажити сервери. Спробувати ще раз"><button type="button" className="guild-rail-item guild-rail-retry" aria-label="Повторити завантаження серверів" onClick={retry} disabled={pending}><NavigationIcon kind="retry" /></button></Tooltip>
     </>}
   </nav>;
 }
 
-function MobileGuildSwitcher({ groups, selectedId, unavailable, retry, pending }: NavigationProps & { selectedId?: string; retry: () => void; pending: boolean }) {
+function MobileGuildSwitcher({ groups, selectedId, unavailable, retry, pending, guildHref }: NavigationProps & SwitchProps) {
   const picker = useRef<HTMLDetailsElement>(null);
   const selected = groups.installed.find((guild) => guild.id === selectedId);
   useEffect(() => {
@@ -61,7 +64,7 @@ function MobileGuildSwitcher({ groups, selectedId, unavailable, retry, pending }
       <PrefetchLink href="/servers" className="guild-picker-item">Усі сервери</PrefetchLink>
       {unavailable ? <div className="guild-picker-error"><p role="status">Не вдалося завантажити сервери.</p><button type="button" className="secondary-button" onClick={retry} disabled={pending}>Спробувати ще раз</button></div> : <>
         <span className="sidebar-label">Підключені</span>
-        {groups.installed.map((guild) => <PrefetchLink key={guild.id} href={guildAction(guild).href} className="guild-picker-item" aria-current={selectedId === guild.id ? 'page' : undefined}><GuildIcon {...guild} size={32} /><span className="guild-picker-copy"><strong>{guild.name}</strong><small>SCRT підключено</small></span></PrefetchLink>)}
+        {groups.installed.map((guild) => <PrefetchLink key={guild.id} href={guildHref(guild.id)} className="guild-picker-item" aria-current={selectedId === guild.id ? 'page' : undefined}><GuildIcon {...guild} size={32} /><span className="guild-picker-copy"><strong>{guild.name}</strong><small>SCRT підключено</small></span></PrefetchLink>)}
         {!groups.installed.length && <p className="guild-picker-empty">Немає підключених серверів.</p>}
         {groups.available.length > 0 && <span className="sidebar-label">Доступні для підключення</span>}
         {groups.available.map((guild) => <AddGuildLink key={guild.id} guild={guild} />)}
@@ -72,9 +75,10 @@ function MobileGuildSwitcher({ groups, selectedId, unavailable, retry, pending }
 
 export function GuildNavigation(props: NavigationProps) {
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const selectedId = pathname.match(/^\/servers\/(\d{17,20})(?:\/|$)/u)?.[1];
   const router = useRouter();
   const [pending, startTransition] = useTransition();
-  const shared = { ...props, selectedId, pending, retry: () => startTransition(() => router.refresh()) };
+  const shared = { ...props, selectedId, pending, retry: () => startTransition(() => router.refresh()), guildHref: (guildId: string) => guildSwitchHref(guildId, pathname, searchParams) };
   return <><GuildRail {...shared} /><MobileGuildSwitcher key={selectedId ?? 'all'} {...shared} /></>;
 }

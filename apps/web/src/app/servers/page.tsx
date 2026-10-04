@@ -4,6 +4,7 @@ import { ServerGroupsLoading } from './loading-content';
 import { groupGuilds } from '@/lib/guild-presentation';
 import { ServerCard } from '../components/server-card';
 import { LiveRefresh } from '../components/live-refresh';
+import { DataBoundary } from '../components/data-boundary';
 
 async function ServerGroups() {
   const { list, installedIds } = await manageableGuildList();
@@ -19,6 +20,6 @@ export default async function Servers({ searchParams }: { searchParams: Promise<
   return <main className="content-page"><div className="page-heading"><h1>Сервери</h1><p>Виберіть сервер для налаштування SCRT.</p></div>
     {install === 'failed' && <p className="form-feedback form-feedback-error" role="alert">Не вдалося завершити встановлення. Якщо бот уже на сервері, зверніться до власника, щоб отримати доступ до панелі.</p>}
     {install === 'denied' && <p className="form-feedback" role="status">Встановлення бота скасовано.</p>}
-    <Suspense fallback={<ServerGroupsLoading />}><ServerGroups /></Suspense>
+    <DataBoundary title="Список серверів не завантажився"><Suspense fallback={<ServerGroupsLoading />}><ServerGroups /></Suspense></DataBoundary>
   </main>;
 }

@@ -9,6 +9,7 @@ export const summaryLabels = {
   voice: [activityMetrics.voiceSeconds.label, activityMetrics.streamSeconds.label, 'Учасники Voice'],
 };
 export const gameSummaryLabels = ['Загальний час', 'Учасники', 'Сесії', 'Остання активність'];
+export const gamesTimeLabel = 'Загальний час усіх учасників в іграх та застосунках';
 export const streakLabels = ['Поточна серія', 'Найдовша серія', 'Остання врахована активність'];
 export const contributorColumns = ['#', 'Учасник', 'Час', 'Внесок', 'Сесії', 'Остання активність'];
 
@@ -66,7 +67,7 @@ export function ActivityPageLoading({ view = 'overview', guildId, period = 'all'
     {view === 'overview' && <><MetricsLoading labels={summaryLabels.overview} /><div className="voice-columns"><RankingLoading title="Найактивніші в чаті" /><RankingLoading title="Найактивніші у Voice" /></div><section className="detail-panel"><h3>Найпопулярніші ігри та застосунки</h3><GamesLoading /></section><StreakNoteLoading /><RankingLoading title="Поточні Voice-серії" /></>}
     {view === 'messages' && <><MetricsLoading labels={summaryLabels.messages} /><RankingLoading title="Топ повідомлень" /></>}
     {view === 'voice' && <><MetricsLoading labels={summaryLabels.voice} /><div className="voice-columns"><RankingLoading title="Топ Voice" /><RankingLoading title="Топ демонстрації екрана" /></div><VoiceRunNoteLoading /><RankingLoading title="Топ безперервного Voice" /><h2 className="subheading">Voice-серії</h2><StreakNoteLoading /><div className="voice-columns"><RankingLoading title="Поточні серії" /><RankingLoading title="Найдовші серії" /></div></>}
-    {view === 'games' && <GamesLoading />}
+    {view === 'games' && <><div className="activity-games-total"><MetricsLoading labels={[gamesTimeLabel]} /></div><GamesLoading /></>}
     {view === 'leaderboard' && <>{metric && !activityMetrics[metric].periodAware && (metric === 'longestVoiceRunSeconds' ? <VoiceRunNoteLoading /> : <StreakNoteLoading />)}<RankingLoading title={metric ? activityMetrics[metric].label : 'Рейтинг учасників'} /></>}
     {view === 'members' && <><div className="activity-search"><div className="loading-field"><span>Пошук</span><div className="loading-control"><LoadingValue width="18ch" /></div></div></div><RowsLoading label="Завантаження учасників…" /></>}
     {view === 'member' && <><MemberStatsLoading /><section className="detail-panel"><h3>Найпопулярніші ігри та застосунки</h3><GamesLoading member /></section></>}

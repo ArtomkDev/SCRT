@@ -113,6 +113,36 @@ describe('live dashboard refresh lifecycle', () => {
     expect(mocks.refresh).toHaveBeenCalledOnce();
   });
 
+  it('does not confuse activity Voice analytics with voice channel management', async () => {
+    mocks.pathname = '/servers/123/activity/voice';
+    render(<LiveRefresh endpoint="/events" />);
+    latest().emit('change', 'rooms'); latest().emit('change', 'creators');
+    await advance(3000);
+    expect(mocks.refresh).not.toHaveBeenCalled();
+  });
+
+  it('subscribes to voice documents only on voice management pages', () => {
+    mocks.pathname = '/servers/123/activity/games';
+    const page = render(<LiveRefresh endpoint="/api/guilds/123/events" />);
+    expect(latest().url).toBe('/api/guilds/123/events?scope=guild');
+    const old = latest(); mocks.pathname = '/servers/123/voice/rooms';
+    page.rerender(<LiveRefresh endpoint="/api/guilds/123/events" />);
+    expect(old.close).toHaveBeenCalledOnce();
+    expect(latest().url).toBe('/api/guilds/123/events?scope=voice');
+  });
+
+  it('backs off even when each faulty connection sends sync before failing', async () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    render(<LiveRefresh endpoint="/events" />);
+    latest().emit('sync'); latest().fail(); await advance(1000);
+    latest().emit('sync'); latest().fail(); await advance(1000);
+    expect(Events.instances).toHaveLength(2);
+    await advance(1000); expect(Events.instances).toHaveLength(3);
+    latest().emit('sync'); latest().fail(); await advance(3000);
+    expect(Events.instances).toHaveLength(3);
+    await advance(1000); expect(Events.instances).toHaveLength(4);
+  });
+
   it('ignores callbacks from closed sources and reconnects only once after a stream fault', async () => {
     render(<LiveRefresh endpoint="/events" />);
     const old = latest(); old.emit('fault'); old.fail();

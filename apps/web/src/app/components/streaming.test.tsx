@@ -23,7 +23,7 @@ vi.mock('@/lib/activity-data', () => ({
 vi.mock('@/lib/voice-data', () => ({ voiceResources: mocks.resources }));
 vi.mock('../servers/[guildId]/activity/actions', () => ({ saveActivitySettings: vi.fn(), setActivityGameIgnored: vi.fn(), enableActivity: vi.fn() }));
 vi.mock('./action-form', () => ({ ActionForm: ({ children }: { children: React.ReactNode }) => <form>{children}</form> }));
-vi.mock('next/navigation', () => ({ usePathname: () => '/servers/12345678901234567/activity', useRouter: () => ({ refresh: vi.fn() }), unstable_rethrow: vi.fn() }));
+vi.mock('next/navigation', () => ({ usePathname: () => '/servers/12345678901234567/activity', useSearchParams: () => new URLSearchParams(), useRouter: () => ({ refresh: vi.fn() }), unstable_rethrow: vi.fn() }));
 vi.mock('next/link', () => ({ default: ({ children, ...props }: React.ComponentProps<'a'>) => <a {...props}>{children}</a> }));
 vi.mock('./prefetch-link', () => ({ PrefetchLink: ({ children, ...props }: React.ComponentProps<'a'>) => <a {...props}>{children}</a> }));
 vi.mock('./unsaved-changes', () => ({ UnsavedChangesProvider: ({ children }: { children: React.ReactNode }) => children }));

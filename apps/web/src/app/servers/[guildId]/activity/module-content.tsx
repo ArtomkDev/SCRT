@@ -7,6 +7,7 @@ import { Button } from '@/app/components/controls';
 import { ActivityPageLoading } from './loading-content';
 import { InlineAction } from '@/app/components/inline-action';
 import { enableActivity } from './actions';
+import { DataBoundary } from '@/app/components/data-boundary';
 
 export async function ActivityStatus({ guildId }: { guildId: string }) {
   const settings = await activitySettings(guildId);
@@ -24,5 +25,5 @@ async function ActivityState({ guildId, children }: { guildId: string; children:
 }
 
 export function ActivityModuleContent({ fallback = <ActivityPageLoading />, ...props }: { guildId: string; children: ReactNode; fallback?: ReactNode }) {
-  return <Suspense fallback={fallback}><ActivityState {...props} /></Suspense>;
+  return <DataBoundary title="Дані активності не завантажилися"><Suspense fallback={fallback}><ActivityState {...props} /></Suspense></DataBoundary>;
 }

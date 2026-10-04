@@ -31,11 +31,12 @@
 .activity-content .activity-identity > span:last-child { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .activity-content .activity-identity small { overflow: hidden; text-overflow: ellipsis; font-size: 11px; }
 .activity-content .activity-identity > img { flex-shrink: 0; border-radius: 50%; }
-.activity-content .activity-game-detail > .activity-more { margin: 2px 0 4px; color: var(--muted); font-size: 12px; }
+.activity-content .activity-game-detail { display: flex; flex-direction: column; gap: 20px; padding-top: 12px; }
+.activity-content .activity-game-detail > :is(.activity-artwork-hero, .activity-periods, .activity-summary.activity-game-metrics, .detail-panel.activity-contributors) { margin: 0; }
+.activity-content .activity-game-detail > .activity-more { align-self: flex-start; margin: 0; color: var(--muted); font-size: 12px; }
 .activity-content .activity-game-detail > .activity-more:hover { color: var(--text); }
-.activity-content .activity-summary.activity-game-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; margin: 16px 0 24px; border: 0; border-radius: 7px; background: #2b2d31; overflow: hidden; }
-.activity-content .activity-game-metrics > div { display: flex; flex-direction: column; padding: 14px 18px; border: 0; border-right: 1px solid var(--border); border-radius: 0; background: transparent; }
-.activity-content .activity-game-metrics > div:last-child { border-right: 0; }
+.activity-content .activity-summary.activity-game-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; margin: 16px 0 24px; }
+.app-shell .activity-content .activity-game-metrics > div { display: flex; flex-direction: column; padding: 16px 20px; border: 1px solid var(--border-default); border-radius: var(--radius-md); background: var(--surface-card); }
 .activity-content .activity-game-metrics dt { order: 1; margin-top: 5px; }
 .activity-content .activity-game-metrics dd { font-size: 22px; margin: 0; font-variant-numeric: tabular-nums; }
 .activity-content .activity-contributors { scroll-margin-top: 20px; }
@@ -59,6 +60,7 @@
  .activity-content .voice-columns { grid-template-columns: 1fr; }
 }
 @media (max-width: 640px) {
+ .activity-content .activity-game-detail { gap: 16px; }
  .activity-content .activity-games-scroll { overflow: visible; border: 0; }
  .activity-content .activity-games-table tr { position: relative; grid-template-columns: 40px minmax(0, 1fr) minmax(0, 1fr) 34px; column-gap: 10px; row-gap: 5px; padding: 14px 0; }
  .activity-content .activity-games-table td { padding: 0; text-align: left !important; }
@@ -72,9 +74,7 @@
  .activity-content .activity-games-table td:nth-child(5):not(:last-child) { font-size: 11px; color: var(--muted); }
  .activity-content .activity-games-table .activity-row-actions { position: absolute; top: 14px; right: 0; }
  .activity-content .activity-summary.activity-game-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
- .activity-content .activity-game-metrics > div { padding: 12px 14px; }
- .activity-content .activity-game-metrics > div:nth-child(2) { border-right: 0; }
- .activity-content .activity-game-metrics > div:nth-child(-n+2) { border-bottom: 1px solid var(--border); }
+ .app-shell .activity-content .activity-game-metrics > div { padding: 12px 14px; }
  .activity-content .activity-game-metrics dd { font-size: 20px; }
  .activity-content .activity-contributors { padding: 16px 12px; }
  .activity-content .activity-contributors-table tr { grid-template-columns: 24px repeat(2, minmax(0, 1fr)); gap: 8px 10px; }
@@ -83,3 +83,4 @@
  .activity-content .activity-contributors-table td:nth-child(3), .activity-content .activity-contributors-table td:nth-child(5) { grid-column: 2; text-align: left; }
  .activity-content .activity-contributors-table td:nth-child(4), .activity-content .activity-contributors-table td:nth-child(6) { grid-column: 3; }
 }
+.activity-content .activity-games-total .activity-summary { display: block; }
