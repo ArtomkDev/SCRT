@@ -44,7 +44,7 @@ export async function GET(request: NextRequest) {
   const expected = jar.get('scrt_oauth_state')?.value;
   const verifier = jar.get('scrt_oauth_verifier')?.value;
   jar.delete('scrt_oauth_state'); jar.delete('scrt_oauth_verifier');
-  if (!state || !expected || !verifier || state.length !== expected.length || !timingSafeEqual(Buffer.from(state), Buffer.from(expected))) return NextResponse.redirect(new URL('/?error=oauth_state', appUrl()));
+  if (!state || !expected || !verifier || Buffer.byteLength(state) !== Buffer.byteLength(expected) || !timingSafeEqual(Buffer.from(state), Buffer.from(expected))) return NextResponse.redirect(new URL('/?error=oauth_state', appUrl()));
   const code = request.nextUrl.searchParams.get('code');
   if (!code) return NextResponse.redirect(new URL('/?error=oauth_denied', appUrl()));
   try {

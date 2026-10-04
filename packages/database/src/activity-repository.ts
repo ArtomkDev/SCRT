@@ -131,13 +131,16 @@ export class ActivityRepository {
       const player = playerRef ? await tx.get(playerRef) : null;
       const dailyGameRefs = gameId ? slices.map((slice) => this.collection(guildId, 'activityDailyGames').doc(`${slice.date}_${gameId}`)) : [];
       const dailyPlayerRefs = gameId ? slices.map((slice) => this.collection(guildId, 'activityDailyGameMembers').doc(`${slice.date}_${gameId}_${session.userId}`)) : [];
+      const dailyGames = dailyGameRefs.length ? await tx.getAll(...dailyGameRefs) : [];
       const dailyPlayers = dailyPlayerRefs.length ? await tx.getAll(...dailyPlayerRefs) : [];
       const duration = slices.reduce((total, slice) => total + slice.seconds, 0);
       const epochMatches = member.get('streakEpoch') === session.streakEpoch;
       const lastQualified = member.get('lastQualifiedVoiceDate');
       let streak = { currentVoiceStreak: epochMatches ? counter(member.get('currentVoiceStreak')) : 0, longestVoiceStreak: counter(member.get('longestVoiceStreak')), lastQualifiedVoiceDate: epochMatches && typeof lastQualified === 'string' ? lastQualified : null };
+      let sliceEnd = session.cursorAt;
       for (let index = 0; index < slices.length; index++) {
         const slice = slices[index]!;
+        sliceEnd += slice.seconds * 1000;
         const metric = session.tracker === 'voice' ? 'voiceSeconds' : session.tracker === 'stream' ? 'streamSeconds' : null;
         if (metric) {
           const patch: Record<string, unknown> = { userId: session.userId, date: slice.date, [metric]: FieldValue.increment(slice.seconds), updatedAt: FieldValue.serverTimestamp(), schemaVersion: 1 };
@@ -148,9 +151,9 @@ export class ActivityRepository {
           tx.set(dailyRefs[index]!, patch, { merge: true });
         }
         if (session.game) {
-          const common = { ...session.game, date: slice.date, totalSeconds: FieldValue.increment(slice.seconds), sessionCount: FieldValue.increment(!session.qualified && index === 0 ? 1 : 0), lastPlayedAt: boundary, updatedAt: FieldValue.serverTimestamp(), schemaVersion: 1 };
-          tx.set(dailyGameRefs[index]!, { ...common, uniquePlayers: FieldValue.increment(dailyPlayers[index]?.exists ? 0 : 1) }, { merge: true });
-          tx.set(dailyPlayerRefs[index]!, { ...common, userId: session.userId }, { merge: true });
+          const common = { ...session.game, date: slice.date, totalSeconds: FieldValue.increment(slice.seconds), sessionCount: FieldValue.increment(!session.qualified && index === 0 ? 1 : 0), updatedAt: FieldValue.serverTimestamp(), schemaVersion: 1 };
+          tx.set(dailyGameRefs[index]!, { ...common, lastPlayedAt: Math.max(counter(dailyGames[index]?.get('lastPlayedAt')), sliceEnd), uniquePlayers: FieldValue.increment(dailyPlayers[index]?.exists ? 0 : 1) }, { merge: true });
+          tx.set(dailyPlayerRefs[index]!, { ...common, lastPlayedAt: Math.max(counter(dailyPlayers[index]?.get('lastPlayedAt')), sliceEnd), userId: session.userId }, { merge: true });
         }
       }
       if (duration > 0) {
@@ -158,9 +161,9 @@ export class ActivityRepository {
         tx.set(memberRef, { userId: session.userId, ...(metric ? { [metric]: FieldValue.increment(duration) } : {}), ...(session.tracker === 'voice' ? { ...streak, streakEpoch: session.streakEpoch, ...voiceRun } : {}), lastActivityAt: Math.max(counter(member.get('lastActivityAt')), boundary), updatedAt: FieldValue.serverTimestamp(), schemaVersion: 1 }, { merge: true });
         if (session.game && gameRef && playerRef) {
           // First observed spelling is canonical; presentation never oscillates with capitalization.
-          const common = { ...session.game, totalSeconds: FieldValue.increment(duration), sessionCount: FieldValue.increment(session.qualified ? 0 : 1), lastPlayedAt: boundary, updatedAt: FieldValue.serverTimestamp(), schemaVersion: 1 };
-          tx.set(gameRef, { ...common, displayName: game?.get('displayName') ?? session.game.displayName, uniquePlayers: FieldValue.increment(player?.exists ? 0 : 1) }, { merge: true });
-          tx.set(playerRef, { ...common, userId: session.userId }, { merge: true });
+          const common = { ...session.game, totalSeconds: FieldValue.increment(duration), sessionCount: FieldValue.increment(session.qualified ? 0 : 1), updatedAt: FieldValue.serverTimestamp(), schemaVersion: 1 };
+          tx.set(gameRef, { ...common, lastPlayedAt: Math.max(counter(game?.get('lastPlayedAt')), boundary), displayName: game?.get('displayName') ?? session.game.displayName, uniquePlayers: FieldValue.increment(player?.exists ? 0 : 1) }, { merge: true });
+          tx.set(playerRef, { ...common, lastPlayedAt: Math.max(counter(player?.get('lastPlayedAt')), boundary), userId: session.userId }, { merge: true });
         }
       } else if (voiceRun) {
         tx.set(memberRef, { userId: session.userId, ...voiceRun, updatedAt: FieldValue.serverTimestamp(), schemaVersion: 1 }, { merge: true });

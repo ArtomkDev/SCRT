@@ -6,8 +6,14 @@ const discord = { DISCORD_CLIENT_ID: nonempty, DISCORD_CLIENT_SECRET: nonempty }
 const base = { NODE_ENV: z.enum(['development', 'test', 'production']).default('development') };
 const optionalCredential = z.string().trim().max(512).optional().transform((value) => value || undefined);
 const artwork = { STEAMGRIDDB_API_KEY: optionalCredential, IGDB_TWITCH_CLIENT_ID: optionalCredential, IGDB_TWITCH_CLIENT_SECRET: optionalCredential };
+const appOrigin = z.url().refine((value) => {
+  try {
+    const url = new URL(value);
+    return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password && url.pathname === '/' && !url.search && !url.hash;
+  } catch { return false; }
+}, 'Expected an HTTP(S) origin without credentials, path, query or fragment');
 export const botEnvSchema = z.object({ ...base, ...artwork, ...firebase, DISCORD_BOT_TOKEN: nonempty, DISCORD_CLIENT_ID: nonempty, DISCORD_GUILD_ID: z.string().optional(), DISCORD_GUILD_MEMBERS_INTENT: z.enum(['true', 'false']).default('false').transform((value) => value === 'true') });
-export const webEnvSchema = z.object({ ...base, ...artwork, ...firebase, ...discord, NEXT_PUBLIC_APP_URL: z.url(), SESSION_SECRET: z.string().min(32), DISCORD_BOT_TOKEN: nonempty });
+export const webEnvSchema = z.object({ ...base, ...artwork, ...firebase, ...discord, NEXT_PUBLIC_APP_URL: appOrigin, SESSION_SECRET: z.string().min(32), DISCORD_BOT_TOKEN: nonempty });
 
 export function parseEnvironment<T extends z.ZodType>(schema: T, source: Record<string, unknown>): z.infer<T> {
   const result = schema.safeParse(source);

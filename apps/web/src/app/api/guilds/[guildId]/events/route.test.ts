@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const mocks = vi.hoisted(() => ({ accessToken: vi.fn(), requireGuildAccess: vi.fn(), watchDashboard: vi.fn() }));
+const mocks = vi.hoisted(() => ({ accessToken: vi.fn(), requireGuildAccess: vi.fn(), watchDashboard: vi.fn(), watchArtwork: vi.fn() }));
 vi.mock('@/lib/session', () => ({ accessToken: mocks.accessToken }));
 vi.mock('@/lib/guards', () => ({ requireGuildAccess: mocks.requireGuildAccess }));
-vi.mock('@/lib/server', () => ({ voice: () => ({ watchDashboard: mocks.watchDashboard }) }));
+vi.mock('@/lib/server', () => ({ voice: () => ({ watchDashboard: mocks.watchDashboard }), activityArtworkStore: () => ({ watch: mocks.watchArtwork }) }));
 vi.mock('@/lib/live-stream', () => ({ liveStream: (_request: Request, subscribe: (emit: () => void, fail: () => void) => void) => {
   subscribe(() => {}, () => {});
   return new Response(null, { status: 200 });
@@ -21,6 +21,7 @@ describe('guild event authorization', () => {
     vi.clearAllMocks();
     mocks.accessToken.mockResolvedValue('token');
     mocks.watchDashboard.mockReturnValue(() => {});
+    mocks.watchArtwork.mockReturnValue(() => {});
   });
 
   it('does not subscribe without a session or guild access', async () => {
@@ -29,6 +30,7 @@ describe('guild event authorization', () => {
     mocks.requireGuildAccess.mockRejectedValueOnce(new Error('Forbidden'));
     expect((await GET(request, context)).status).toBe(403);
     expect(mocks.watchDashboard).not.toHaveBeenCalled();
+    expect(mocks.watchArtwork).not.toHaveBeenCalled();
   });
 
   it('subscribes only to the authorized guild and permitted voice data', async () => {
@@ -52,5 +54,18 @@ describe('guild event authorization', () => {
   it('rejects unknown scopes before starting data subscriptions', async () => {
     expect((await GET(new Request(request.url + '?scope=all'), context)).status).toBe(400);
     expect(mocks.watchDashboard).not.toHaveBeenCalled();
+  });
+
+  it('subscribes to guild artwork only with activity.view and without voice data', async () => {
+    mocks.requireGuildAccess.mockResolvedValueOnce({ permissions: new Set(['dashboard.access', 'activity.view', 'voice.view']) });
+    expect((await GET(new Request(request.url + '?scope=activity'), context)).status).toBe(200);
+    expect(mocks.watchArtwork).toHaveBeenCalledExactlyOnceWith(guildId, expect.any(Function), expect.any(Function));
+    expect(mocks.watchDashboard).toHaveBeenCalledWith(guildId, false, expect.any(Function), expect.any(Function));
+  });
+
+  it('does not grant artwork access through a requested scope', async () => {
+    mocks.requireGuildAccess.mockResolvedValueOnce({ permissions: new Set(['dashboard.access', 'voice.view']) });
+    expect((await GET(new Request(request.url + '?scope=activity'), context)).status).toBe(200);
+    expect(mocks.watchArtwork).not.toHaveBeenCalled();
   });
 });

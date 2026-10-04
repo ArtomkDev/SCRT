@@ -15,9 +15,9 @@ const refresh = (guildId: string, channelsChanged = false) => {
   revalidatePath(`/servers/${guildId}/voice`, 'layout');
 };
 
-async function audit(guildId: string, action: string, details: { channelId?: string; creatorId?: string } = {}) {
+async function audit(guildId: string, action: string, actorId: string, details: { channelId?: string; creatorId?: string } = {}) {
   try {
-    await voice().audit({ guildId, action, source: 'dashboard', ...details });
+    await voice().audit({ guildId, action, actorId, source: 'dashboard', ...details });
   } catch (error) {
     // A completed mutation must not be reported as failed because its audit write failed.
     console.error('Voice audit write failed', { guildId, action, error });
@@ -25,7 +25,7 @@ async function audit(guildId: string, action: string, details: { channelId?: str
 }
 
 export async function saveVoiceSettings(guildId: string, form: FormData) {
-  await requireGuildAccess(guildId, 'voice.manage');
+  const { user } = await requireGuildAccess(guildId, 'voice.manage');
   const logChannelId = one(form, 'logChannelId') || null;
   const bypassRoleIds = selected(form, 'bypassRoleIds');
   const token = env().DISCORD_BOT_TOKEN;
@@ -37,20 +37,20 @@ export async function saveVoiceSettings(guildId: string, form: FormData) {
   if (bypassRoleIds.some((id) => !roles.some((role) => role.id === id))) throw new Error('Invalid bypass role');
   const value = voiceSettingsSchema.parse({ enabled: bool(form, 'enabled'), cleanupDelaySeconds: num(form, 'cleanupDelaySeconds'), ownerLeaveGraceSeconds: num(form, 'ownerLeaveGraceSeconds'), ownerExitBehavior: one(form, 'ownerExitBehavior'), duplicateRoomPolicy: one(form, 'duplicateRoomPolicy'), maxRoomsPerUser: num(form, 'maxRoomsPerUser'), defaultInterfaceMode: one(form, 'defaultInterfaceMode'), logChannelId, bypassRoleIds, schemaVersion: 1 });
   await voice().saveSettings(guildId, value);
-  await audit(guildId, 'voice.settings_updated');
+  await audit(guildId, 'voice.settings_updated', user.id);
   revalidatePath(`/servers/${guildId}`, 'layout');
 }
 
 export async function enableVoice(guildId: string): Promise<void> {
-  await requireGuildAccess(guildId, 'voice.manage');
+  const { user } = await requireGuildAccess(guildId, 'voice.manage');
   const settings = await voice().getSettings(guildId);
   await voice().saveSettings(guildId, { ...settings, enabled: true });
-  await audit(guildId, 'voice.settings_updated');
+  await audit(guildId, 'voice.settings_updated', user.id);
   revalidatePath(`/servers/${guildId}`, 'layout');
 }
 
 export async function saveVoiceCreator(guildId: string, form: FormData) {
-  await requireGuildAccess(guildId, 'voice.manage');
+  const { user } = await requireGuildAccess(guildId, 'voice.manage');
   const token = env().DISCORD_BOT_TOKEN;
   const [channels, roles] = await Promise.all([botGuildChannels(token, guildId), botGuildRoles(token, guildId)]);
   const targetCategoryId = one(form, 'targetCategoryId') || null;
@@ -94,7 +94,7 @@ export async function saveVoiceCreator(guildId: string, form: FormData) {
     }
     await voice().saveCreator(guildId, creator);
     saved = true;
-    await audit(guildId, prior ? 'creator.updated' : 'creator.created', { creatorId: creator.id });
+    await audit(guildId, prior ? 'creator.updated' : 'creator.created', user.id, { creatorId: creator.id });
   } catch (error) {
     if (created && !saved) await botDeleteChannel(token, channelId);
     if (renamed && !saved && existingChannel?.name) {
@@ -108,7 +108,7 @@ export async function saveVoiceCreator(guildId: string, form: FormData) {
 }
 
 export async function deleteVoiceCreator(guildId: string, form: FormData) {
-  await requireGuildAccess(guildId, 'voice.manage');
+  const { user } = await requireGuildAccess(guildId, 'voice.manage');
   const creatorId = snowflakeSchema.parse(one(form, 'creatorId'));
   const creator = await voice().getCreator(guildId, creatorId);
   if (!creator) return;
@@ -120,24 +120,24 @@ export async function deleteVoiceCreator(guildId: string, form: FormData) {
     await botDeleteChannel(env().DISCORD_BOT_TOKEN, creator.channelId);
   }
   await voice().deleteCreator(guildId, creatorId);
-  await audit(guildId, 'creator.deleted', { creatorId });
+  await audit(guildId, 'creator.deleted', user.id, { creatorId });
   refresh(guildId, alsoDeleteChannel);
 }
 
 export async function deleteVoiceRoom(guildId: string, form: FormData) {
-  await requireGuildAccess(guildId, 'voice.manage');
+  const { user } = await requireGuildAccess(guildId, 'voice.manage');
   if (!bool(form, 'confirm')) throw new Error('Confirm room deletion');
   const channelId = snowflakeSchema.parse(one(form, 'channelId'));
   const room = await voice().getRoom(guildId, channelId);
   if (!room) return;
   await botDeleteChannel(env().DISCORD_BOT_TOKEN, channelId);
   await voice().deleteRoom(guildId, channelId);
-  await audit(guildId, 'room.deleted', { channelId, creatorId: room.creatorId });
+  await audit(guildId, 'room.deleted', user.id, { channelId, creatorId: room.creatorId });
   refresh(guildId, true);
 }
 
 export async function publishVoiceInterface(guildId: string, form: FormData) {
-  await requireGuildAccess(guildId, 'voice.manage');
+  const { user } = await requireGuildAccess(guildId, 'voice.manage');
   const channelId = snowflakeSchema.parse(one(form, 'channelId'));
   const token = env().DISCORD_BOT_TOKEN;
   const channels = await botGuildChannels(token, guildId);
@@ -157,27 +157,27 @@ export async function publishVoiceInterface(guildId: string, form: FormData) {
       console.error('Previous voice interface message cleanup failed', { guildId, channelId, error });
     }
   }
-  await audit(guildId, previous ? 'interface.repaired' : 'interface.created', { channelId });
+  await audit(guildId, previous ? 'interface.repaired' : 'interface.created', user.id, { channelId });
   refresh(guildId);
 }
 
 export async function deleteVoiceInterface(guildId: string, form: FormData) {
-  await requireGuildAccess(guildId, 'voice.manage');
+  const { user } = await requireGuildAccess(guildId, 'voice.manage');
   const channelId = snowflakeSchema.parse(one(form, 'channelId'));
   const item = (await voice().listInterfaces(guildId)).find((value) => value.id === channelId);
   if (!item) return;
   if (item.messageId) await botDeleteVoiceInterfaceMessage(env().DISCORD_BOT_TOKEN, item.channelId, item.messageId);
   await voice().deleteInterface(guildId, item.id);
-  await audit(guildId, 'interface.deleted', { channelId });
+  await audit(guildId, 'interface.deleted', user.id, { channelId });
   refresh(guildId);
 }
 
 export async function setVoiceInterfaceEnabled(guildId: string, form: FormData) {
-  await requireGuildAccess(guildId, 'voice.manage');
+  const { user } = await requireGuildAccess(guildId, 'voice.manage');
   const channelId = snowflakeSchema.parse(one(form, 'channelId'));
   const item = (await voice().listInterfaces(guildId)).find((value) => value.id === channelId);
   if (!item) throw new Error('Interface missing');
   await voice().saveInterface({ ...item, enabled: bool(form, 'enabled') });
-  await audit(guildId, bool(form, 'enabled') ? 'interface.enabled' : 'interface.disabled', { channelId });
+  await audit(guildId, bool(form, 'enabled') ? 'interface.enabled' : 'interface.disabled', user.id, { channelId });
   refresh(guildId);
 }

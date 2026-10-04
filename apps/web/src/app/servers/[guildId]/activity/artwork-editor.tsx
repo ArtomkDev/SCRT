@@ -25,26 +25,32 @@ function manualAsset(url: string, field: ArtworkField): ArtworkAsset {
 export function ArtworkEditor({ guildId, identity, artwork, initialField = 'icon', close, returnFocus }: ArtworkEditorProps) {
   const dialog = useRef<HTMLDialogElement>(null);
   const body = useRef<HTMLDivElement>(null);
-  const customUrl = useRef<HTMLInputElement>(null);
   const customFile = useRef<HTMLInputElement>(null);
   const id = useId(); const router = useRouter();
   const [field, setField] = useState(initialField);
   const [filter, setFilter] = useState<GallerySource | 'all'>('all');
-  const [custom, setCustom] = useState(false);
-  const [draft, setDraft] = useState<Draft | null>(null);
-  const [failedPreview, setFailedPreview] = useState(false);
+  const [customFields, setCustomFields] = useState({ icon: false, hero: false });
+  const [drafts, setDrafts] = useState<Record<ArtworkField, Draft | null>>({ icon: null, hero: null });
+  const [customUrls, setCustomUrls] = useState({ icon: '', hero: '' });
+  const [failedPreviews, setFailedPreviews] = useState({ icon: false, hero: false });
+  const previewUrls = useRef(new Set<string>());
+  const [saved, setSaved] = useState(false);
   const [error, setError] = useState('');
   const [pending, startTransition] = useTransition();
   const submitting = useRef(false);
   const [ratio, setRatio] = useState(heroRatio);
   const { results, query, searched, search, refine, more } = useArtworkSearch(guildId, identity.gameKey, artwork?.revision ?? 0, identity.displayName);
   const current = effectiveArtwork(artwork, field);
+  const draft = drafts[field];
+  const custom = customFields[field];
+  const changedFields = (['icon', 'hero'] as const).filter((target) => drafts[target]);
+  const invalidDraft = changedFields.some((target) => failedPreviews[target] && drafts[target]?.mode !== 'automatic');
   const candidates = artworkCandidates(results, field, filter);
   const loading = artworkSources.some(([source]) => (filter === 'all' || filter === source) && results[field][source]?.loading);
   const unavailable = artworkSources.filter(([source]) => results[field][source]?.unavailable);
   const automatic = draft?.mode === 'automatic';
   const preview = draft?.mode === 'candidate' ? draft.candidate.asset : draft?.mode === 'url' || draft?.mode === 'upload' ? manualAsset(draft.url, field) : automatic ? artwork?.[field] ?? null : current;
-  const previewFailure = useCallback(() => setFailedPreview(true), []);
+  const previewFailure = useCallback(() => setFailedPreviews((current) => ({ ...current, [field]: true })), [field]);
 
   useEffect(() => {
     const node = dialog.current;
@@ -57,25 +63,44 @@ export function ArtworkEditor({ guildId, identity, artwork, initialField = 'icon
     return () => { window.removeEventListener('resize', resize); document.body.style.overflow = overflow; node?.close(); trigger?.focus(); };
   }, [returnFocus]);
   useEffect(() => {
-    const url = draft?.mode === 'upload' ? draft.url : null;
-    return () => { if (url) URL.revokeObjectURL(url); };
-  }, [draft]);
+    const retained = new Set(Object.values(drafts).flatMap((value) => value?.mode === 'upload' ? [value.url] : []));
+    for (const url of previewUrls.current) if (!retained.has(url)) { URL.revokeObjectURL(url); previewUrls.current.delete(url); }
+    for (const url of retained) previewUrls.current.add(url);
+  }, [drafts]);
+  useEffect(() => {
+    const urls = previewUrls.current;
+    return () => { for (const url of urls) URL.revokeObjectURL(url); urls.clear(); };
+  }, []);
   useEffect(() => { if (body.current) body.current.scrollTop = 0; }, [field]);
 
-  function choose(value: Draft | null) { setDraft(value); setError(''); setFailedPreview(false); }
-  function changeField(target: ArtworkField) { setField(target); choose(null); }
+  function choose(value: Draft | null) {
+    setDrafts((current) => ({ ...current, [field]: value })); setError(''); setSaved(false);
+    setFailedPreviews((current) => ({ ...current, [field]: false }));
+  }
+  function changeField(target: ArtworkField) { setField(target); }
+  function setCustom(value: boolean) { setCustomFields((current) => ({ ...current, [field]: value })); }
   function apply() {
-    if (!draft || submitting.current || pending || failedPreview && !automatic) return;
-    const form = new FormData();
-    form.set('gameKey', identity.gameKey); form.set('field', field); form.set('mode', draft.mode);
-    if (draft.mode === 'candidate') form.set('token', draft.candidate.token);
-    if (draft.mode === 'url') form.set('url', draft.url);
-    if (draft.mode === 'upload') form.set('file', draft.file);
+    if (!changedFields.length || submitting.current || pending || invalidDraft) return;
     submitting.current = true; setError('');
     startTransition(async () => {
-      try { await selectActivityArtwork(guildId, form); router.refresh(); close(); }
-      catch { setError('Не вдалося зберегти оформлення. Спробуйте ще раз.'); }
-      finally { submitting.current = false; }
+      let applied = 0;
+      try {
+        for (const target of changedFields) {
+          const value = drafts[target]!;
+          const form = new FormData();
+          form.set('gameKey', identity.gameKey); form.set('field', target); form.set('mode', value.mode);
+          if (value.mode === 'candidate') form.set('token', value.candidate.token);
+          if (value.mode === 'url') form.set('url', value.url);
+          if (value.mode === 'upload') form.set('file', value.file);
+          await selectActivityArtwork(guildId, form);
+          applied++;
+          setDrafts((current) => ({ ...current, [target]: null }));
+          setFailedPreviews((current) => ({ ...current, [target]: false }));
+        }
+        setSaved(true);
+      }
+      catch { setError(applied ? 'Частину змін збережено. Застосуйте решту ще раз.' : 'Не вдалося зберегти оформлення. Спробуйте ще раз.'); }
+      finally { if (applied) router.refresh(); submitting.current = false; }
     });
   }
   function previewUrl(event: FormEvent<HTMLFormElement>) {
@@ -111,17 +136,17 @@ export function ArtworkEditor({ guildId, identity, artwork, initialField = 'icon
             {artworkSources.some(([source]) => (filter === 'all' || source === filter) && results[field][source]?.result?.nextPage != null) && <button className="secondary-button" type="button" disabled={loading || pending} onClick={() => more(field, filter)}>Показати ще</button>}
             {unavailable.length > 0 && <p className="field-help" role="status">{unavailable.map(([, label]) => label).join(', ')} {unavailable.length === 1 ? 'тимчасово недоступний' : 'тимчасово недоступні'}. Інші результати можна використовувати.</p>}
             {searched && <details className="artwork-game-choices"><summary>Інший збіг за назвою</summary><p className="field-help">Якщо знайдено іншу гру, уточніть збіг або змініть запит.</p>{artworkSources.filter(([source]) => Boolean(results[field][source]?.result?.games.length)).map(([source, label]) => <label key={source}>{label}<select disabled={loading || pending} value={results[field][source]?.entityId ?? ''} onChange={(event) => refine(source, event.target.value || undefined)}><option value="">Автоматичний збіг</option>{results[field][source]?.result?.games.map((game) => <option key={game.id} value={game.id}>{game.name}</option>)}</select></label>)}</details>}
-          </> : <section className="artwork-custom" key={field}><h3>Власне зображення</h3><form onSubmit={previewUrl}><label>URL зображення<input ref={customUrl} type="url" name="url" placeholder="https://…" maxLength={2048} required disabled={pending} onChange={() => { if (customFile.current) customFile.current.value = ''; choose(null); }} /></label><button className="secondary-button" type="submit" disabled={pending}>Переглянути</button></form><div className="artwork-upload"><label>Завантажити зображення<input ref={customFile} type="file" accept="image/png,image/jpeg,image/webp" disabled={pending} onChange={(event) => {
+          </> : <section className="artwork-custom" key={field}><h3>Власне зображення</h3><form onSubmit={previewUrl}><label>URL зображення<input type="url" name="url" placeholder="https://…" maxLength={2048} required value={customUrls[field]} disabled={pending} onChange={(event) => { setCustomUrls((current) => ({ ...current, [field]: event.target.value })); if (customFile.current) customFile.current.value = ''; choose(null); }} /></label><button className="secondary-button" type="submit" disabled={pending}>Переглянути</button></form><div className="artwork-upload"><label>Завантажити зображення<input ref={customFile} type="file" accept="image/png,image/jpeg,image/webp" disabled={pending} onChange={(event) => {
             const file = event.target.files?.[0]; choose(null);
-            if (customUrl.current) customUrl.current.value = '';
+            setCustomUrls((current) => ({ ...current, [field]: '' }));
             if (!file) return;
             if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type) || file.size > 4 * 1024 * 1024) { setError('Оберіть PNG, JPEG або WebP до 4 МБ.'); return; }
             choose({ mode: 'upload', file, url: URL.createObjectURL(file) });
           }} /></label><p className="field-help">Статичні PNG, JPEG або WebP до 4 МБ. Зображення збережеться після застосування.</p></div></section>}
         </div>
-        <ArtworkPreview key={preview?.url ?? 'generated'} identity={identity} field={field} asset={preview} automatic={automatic} ratio={ratio} onFailure={previewFailure} />
+        <ArtworkPreview key={field + (preview?.url ?? 'generated')} identity={identity} field={field} asset={preview} automatic={automatic} ratio={ratio} onFailure={previewFailure} />
       </div>
     </div>
-    <footer className="artwork-dialog-footer"><div className="artwork-editor-feedback" aria-live="polite">{error ? <p role="alert">{error}</p> : pending ? <p role="status">Збереження оформлення…</p> : failedPreview && !automatic ? <p role="alert">Зображення недоступне. Оберіть інше.</p> : draft ? <p>Обрано нове оформлення. Застосуйте, щоб зберегти.</p> : <p>Зміни зберігаються лише після застосування.</p>}</div><div className="artwork-footer-actions"><button className="secondary-button" type="button" disabled={pending} onClick={() => choose({ mode: 'automatic' })}>Автоматичний вибір</button><span /><button className="secondary-button" type="button" disabled={pending} onClick={close}>Скасувати</button><button className="action-link" type="button" disabled={!draft || pending || failedPreview && !automatic} onClick={apply}>Застосувати</button></div></footer>
+    <footer className="artwork-dialog-footer"><div className="artwork-editor-feedback" aria-live="polite">{error ? <p role="alert">{error}</p> : pending ? <p role="status">Збереження оформлення…</p> : invalidDraft ? <p role="alert">Зображення недоступне. Оберіть інше для {failedPreviews.icon && drafts.icon?.mode !== 'automatic' ? 'іконки' : 'банера'}.</p> : changedFields.length ? <p>Обрано: {changedFields.map((target) => target === 'icon' ? 'іконка' : 'банер').join(', ')}. Застосуйте, щоб зберегти.</p> : saved ? <p role="status">Оформлення збережено.</p> : <p>Зміни зберігаються лише після застосування.</p>}</div><div className="artwork-footer-actions"><button className="secondary-button" type="button" disabled={pending} onClick={() => choose({ mode: 'automatic' })}>Автоматичний вибір</button><span /><button className="secondary-button" type="button" disabled={pending} onClick={close}>{saved && !changedFields.length ? 'Закрити' : 'Скасувати'}</button><button className="action-link" type="button" disabled={!changedFields.length || pending || invalidDraft} onClick={apply}>Застосувати</button></div></footer>
   </dialog>, document.body);
 }

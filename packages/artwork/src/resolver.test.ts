@@ -76,9 +76,26 @@ describe('artwork resolution', () => {
     const discord = provider('discord', { icon: asset('discord'), confidence: 1 });
     const result = await new ActivityArtworkResolver(store(cached), [discord, broken]).resolve(guildId, identity);
     expect(result.icon?.source).toBe('discord');
-    const source = provider('steamgriddb', { icon: asset('steamgriddb'), confidence: 1 }); const resolver = new ActivityArtworkResolver(store(), [source]);
+    const source = provider('steamgriddb', { icon: asset('steamgriddb'), hero: asset('steamgriddb', 'hero'), confidence: 1 }); const resolver = new ActivityArtworkResolver(store(), [source]);
     const success = await resolver.resolve(guildId, identity); await resolver.resolve(guildId, identity);
     expect(success.nextRefreshAt - success.resolvedAt).toBe(ARTWORK_TTL.success); expect(source.resolve).toHaveBeenCalledOnce();
+  });
+  it('automatically retries a missing banner after the partial cache expires, preserving a manual icon', async () => {
+    const cached = generatedArtwork(identity); cached.overrides.iconUrl = 'https://images.example.com/manual.png';
+    const source = provider('steamgriddb', null);
+    const resolver = new ActivityArtworkResolver(store(cached), [source]);
+    const first = await resolver.resolve(guildId, identity);
+    expect(first.nextRefreshAt - first.resolvedAt).toBe(ARTWORK_TTL.incomplete);
+    expect(resolver.needsRefresh(first)).toBe(false);
+    source.resolve = vi.fn(async () => ({ hero: asset('steamgriddb', 'hero'), confidence: 1 }));
+    const now = vi.spyOn(Date, 'now').mockReturnValue(first.nextRefreshAt + 1);
+    try {
+      expect(resolver.needsRefresh(first)).toBe(true);
+      const result = await resolver.resolve(guildId, identity);
+      expect(result.hero?.source).toBe('steamgriddb');
+      expect(result.overrides.iconUrl).toBe(cached.overrides.iconUrl);
+      expect(result.nextRefreshAt - result.resolvedAt).toBe(ARTWORK_TTL.success);
+    } finally { now.mockRestore(); }
   });
   it('generates both assets after all external providers fail and accepts software fallback after IGDB errors', async () => {
     const broken = provider('igdb', null); broken.resolve = vi.fn(async () => { throw new Error('unauthorized'); });

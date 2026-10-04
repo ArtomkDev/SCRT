@@ -202,8 +202,8 @@ export class VoiceService {
     const now = Date.now();
     const room: VoiceRoom = { guildId: guild.id, channelId: channel.id, creatorId: creator.id, ownerId: actor.id, state: 'creating', locked: creator.defaultLocked, hidden: creator.defaultHidden, chatClosed: creator.defaultChatClosed, permittedUserIds: [], blockedUserIds: [], memberCount: 0, ownerLeftAt: null, createdAt: now, updatedAt: now, lastActivityAt: now, nameCounter: counter, schemaVersion: 1 };
     try {
-      await this.placeRoom(guild, channel, creator, source);
       await this.repository.saveRoom(room);
+      await this.placeRoom(guild, channel, creator, source);
       try {
         await reconcileRoomPermissions(guild, channel, creator, freshSettings, room);
       } catch (error) {
@@ -234,8 +234,15 @@ export class VoiceService {
       await this.audit(active, 'room.created', actor.id);
     } catch (error) {
       if (channel.members.size === 0) {
-        await channel.delete('SCRT voice creation rollback').catch((failure: unknown) => log('error', 'voice', 'rollback.channel.failed', { guildId: guild.id, channelId: channel.id }, failure));
-        await this.repository.deleteRoom(guild.id, channel.id).catch((failure: unknown) => log('error', 'voice', 'rollback.record.failed', { guildId: guild.id, channelId: channel.id }, failure));
+        try {
+          await channel.delete('SCRT voice creation rollback');
+          await this.repository.deleteRoom(guild.id, channel.id);
+        } catch (failure) {
+          // Keep the managed record until Discord deletion actually succeeds.
+          log('error', 'voice', 'rollback.failed', { guildId: guild.id, channelId: channel.id }, failure);
+          this.setRoom(room);
+          this.queueCleanup(guild, channel.id, 30_000);
+        }
       }
       throw error;
     }
@@ -272,11 +279,20 @@ export class VoiceService {
   }
 
   private scheduleCleanup(guild: Guild, room: VoiceRoom, settings: VoiceSettings) {
-    if (!this.creatorWatches.has(guild.id)) return;
-    const key = this.key(guild.id, room.channelId);
-    this.cancel(this.cleanupTimers, key);
     const remaining = Math.max(0, room.lastActivityAt + settings.cleanupDelaySeconds * 1000 - Date.now());
-    this.cleanupTimers.set(key, setTimeout(() => { void this.deleteIfEmpty(guild, room.channelId).catch((error: unknown) => log('error', 'voice', 'cleanup.failed', { guildId: guild.id, channelId: room.channelId }, error)); }, remaining));
+    this.queueCleanup(guild, room.channelId, remaining);
+  }
+  private queueCleanup(guild: Guild, channelId: string, delay: number, retryDelay = 30_000) {
+    if (!this.creatorWatches.has(guild.id) || !this.cachedRoom(guild.id, channelId)) return;
+    const key = this.key(guild.id, channelId);
+    this.cancel(this.cleanupTimers, key);
+    this.cleanupTimers.set(key, setTimeout(() => {
+      this.cleanupTimers.delete(key);
+      void this.deleteIfEmpty(guild, channelId).catch((error: unknown) => {
+        log('error', 'voice', 'cleanup.failed', { guildId: guild.id, channelId }, error);
+        this.queueCleanup(guild, channelId, retryDelay, Math.min(retryDelay * 2, 300_000));
+      });
+    }, delay));
   }
   private async deleteIfEmpty(guild: Guild, channelId: string) {
     await this.exclusive(this.key(guild.id, channelId), async () => {
@@ -310,26 +326,42 @@ export class VoiceService {
     if (this.ownerTimers.has(key)) return;
     const leftAt = room.ownerLeftAt ?? Date.now();
     const remaining = Math.max(0, leftAt + settings.ownerLeaveGraceSeconds * 1000 - Date.now());
-    this.ownerTimers.set(key, setTimeout(() => { void this.resolveOwnerExit(guild, room.channelId).catch((error: unknown) => log('error', 'voice', 'owner.exit.failed', { guildId: guild.id, channelId: room.channelId }, error)); }, remaining));
+    this.queueOwnerExit(guild, room.channelId, remaining);
     if (room.ownerLeftAt === null) {
       // Await this write under the room lock so a return cannot overtake it.
       await this.repository.updateRoom(guild.id, room.channelId, { ownerLeftAt: leftAt });
       if (this.cachedRoom(guild.id, room.channelId)) this.setRoom({ ...room, ownerLeftAt: leftAt });
     }
   }
+  private queueOwnerExit(guild: Guild, channelId: string, delay: number, retryDelay = 30_000) {
+    if (!this.creatorWatches.has(guild.id) || !this.cachedRoom(guild.id, channelId)) return;
+    const key = this.key(guild.id, channelId);
+    this.cancel(this.ownerTimers, key);
+    this.ownerTimers.set(key, setTimeout(() => {
+      void this.resolveOwnerExit(guild, channelId).catch((error: unknown) => {
+        log('error', 'voice', 'owner.exit.failed', { guildId: guild.id, channelId }, error);
+        this.queueOwnerExit(guild, channelId, retryDelay, Math.min(retryDelay * 2, 300_000));
+      });
+    }, delay));
+  }
   private async resolveOwnerExit(guild: Guild, channelId: string) {
     await this.exclusive(this.key(guild.id, channelId), async () => {
       this.ownerTimers.delete(this.key(guild.id, channelId));
       const room = this.cachedRoom(guild.id, channelId);
       const channel = this.channel(guild, channelId);
-      if (!room?.ownerId || !channel || channel.members.has(room.ownerId)) return;
+      if (!room || !channel) return;
       const settings = await this.settings(guild.id);
+      const creator = await this.repository.getCreator(guild.id, room.creatorId);
+      if (!room.ownerId || channel.members.has(room.ownerId)) {
+        // Ownership may already be committed while its Discord overwrite update failed.
+        if (creator) await reconcileRoomPermissions(guild, channel, creator, settings, room);
+        return;
+      }
       if (settings.ownerExitBehavior === 'keep_owner') return;
       const nextOwner = settings.ownerExitBehavior === 'auto_transfer' ? this.humanMembers(channel).filter((member) => !room.blockedUserIds.includes(member.id)).sort((a, b) => a.id.localeCompare(b.id))[0]?.id ?? null : null;
       if (!await this.repository.changeOwner(guild.id, channelId, room.ownerId, nextOwner)) return;
       const next = { ...room, ownerId: nextOwner, ownerLeftAt: null, updatedAt: Date.now() };
       this.setRoom(next);
-      const creator = await this.repository.getCreator(guild.id, room.creatorId);
       if (creator) await reconcileRoomPermissions(guild, channel, creator, settings, next);
       await this.audit(next, nextOwner ? 'room.owner_auto_transferred' : 'room.owner_released', null, nextOwner);
     });

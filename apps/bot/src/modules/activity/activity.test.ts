@@ -112,6 +112,30 @@ describe('persistent session lifecycle', () => {
     return { persisted, startSession, settleSession, listSessions: vi.fn(async () => [...persisted.values()]) };
   }
   const desired = [{ tracker: 'voice' as const, channelId, game: null }];
+  it.each(['checkpoint', 'suspend'] as const)('settles the current session when %s waits behind a settings change', async (operation) => {
+    const repository = store(); const service = new ActivitySessionService(repository);
+    await service.reconcile(guildId, userId, desired, settings, 1000);
+    const oldId = service.sessions(guildId)[0]!.id;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const change = service.exclusive(guildId, userId, async () => {
+      await gate;
+      await service.reconcile(guildId, userId, desired, { ...settings, streakRevision: 1 }, 2000);
+    });
+    const pending = operation === 'checkpoint' ? service.checkpoint(guildId, 3000) : service.suspend(guildId);
+    release();
+    await change;
+    await pending;
+    const replacement = repository.startSession.mock.calls[1]![0];
+    expect(replacement.id).not.toBe(oldId);
+    expect(repository.settleSession).toHaveBeenLastCalledWith(guildId, replacement.id, operation === 'checkpoint' ? 3000 : 2000, operation === 'suspend');
+    if (operation === 'checkpoint') {
+      expect(service.sessions(guildId)).toMatchObject([{ id: replacement.id, cursorAt: 3000 }]);
+    } else {
+      expect(repository.persisted.size).toBe(0);
+      expect(service.hasSessions(guildId, userId)).toBe(false);
+    }
+  });
   it('isolates active-member lookup across guilds and releases it after the last tracker closes', async () => {
     const repository = store(); const service = new ActivitySessionService(repository);
     const otherGuild = '92345678901234567'; const otherUser = '82345678901234567';

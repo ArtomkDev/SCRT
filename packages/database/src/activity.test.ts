@@ -11,7 +11,37 @@ const start = Date.parse('2026-10-01T20:30:00Z');
 const session = (patch = {}) => activitySessionSchema.parse({ id: randomUUID(), guildId, userId, tracker: 'voice', channelId: '32345678901234567', startedAt: start, cursorAt: start, lastObservedAt: start, qualified: false, timezone: 'Europe/Kyiv', minimumSeconds: 60, streakMinimum: 300, streakEpoch: 'Europe/Kyiv:300:true:0', game: null, schemaVersion: 1, ...patch });
 function setup(missingIndexes = false) { const store = activityTestStore(missingIndexes); const repository = new ActivityRepository(store.db); return { ...store, repository, row: (collection: string, id: string) => store.records.get(`guilds/${guildId}/${collection}/${id}`) }; }
 
+it('preserves the latest game and player dates when older sessions settle later', async () => {
+  const { repository, row } = setup();
+  const game = { gameKey: 'name:ordered', displayName: 'Ordered', applicationId: null };
+  const recent = session({ tracker: 'game', game });
+  const earlier = session({ tracker: 'game', game });
+  await repository.startSession(recent);
+  await repository.startSession(earlier);
+  await repository.settleSession(guildId, recent.id, start + 120000, true);
+  await repository.settleSession(guildId, earlier.id, start + 60000, true);
+  const hash = activityKey(game.gameKey);
+  for (const [collection, id] of [
+    ['activityGames', hash], ['activityGameMembers', `${hash}_${userId}`],
+    ['activityDailyGames', `2026-10-01_${hash}`], ['activityDailyGameMembers', `2026-10-01_${hash}_${userId}`],
+  ]) expect(row(collection!, id!)?.lastPlayedAt).toBe(start + 120000);
+  expect(row('activityGames', hash)?.totalSeconds).toBe(180);
+});
+
 describe('total member game time', () => {
+  it('records each daily game date at its own boundary when a session crosses midnight', async () => {
+    const { repository, row } = setup();
+    const game = { gameKey: 'name:overnight', displayName: 'Overnight', applicationId: null };
+    const active = session({ tracker: 'game', game });
+    await repository.startSession(active);
+    await repository.settleSession(guildId, active.id, start + 7_200_000, true);
+    const hash = activityKey(game.gameKey);
+    for (const [date, boundary, seconds] of [['2026-10-01', start + 1_800_000, 1800], ['2026-10-02', start + 7_200_000, 5400]] as const) {
+      expect(row('activityDailyGames', `${date}_${hash}`)).toMatchObject({ lastPlayedAt: boundary, totalSeconds: seconds });
+      expect(row('activityDailyGameMembers', `${date}_${hash}_${userId}`)).toMatchObject({ lastPlayedAt: boundary, totalSeconds: seconds });
+    }
+  });
+
   it.each(['today', '7d', '30d', 'all'] as const)('sums all activities for %s with one shared read and guild/member isolation', async (period) => {
     const { records, repository, queries } = setup();
     records.set(`guilds/${guildId}/activitySettings/main`, activitySettingsSchema.parse({ games: { ignoredGameKeys: ['name:ignored'] } }));

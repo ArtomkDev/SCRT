@@ -4,8 +4,13 @@ import { useEffect, useRef, useState, useTransition } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { useUnsavedChanges } from './unsaved-changes';
 
+function showsActivityArtwork(pathname: string): boolean {
+  return /^\/servers\/[^/]+\/activity(?:\/?$|\/(?:games|members|settings)(?:\/|$))/.test(pathname);
+}
+
 function affectsPage(kind: string, pathname: string): boolean {
   if (kind === 'guild' || kind === 'access' || kind === 'guilds' || kind === 'settings') return true;
+  if (kind === 'artwork') return showsActivityArtwork(pathname);
   const match = pathname.match(/^\/servers\/[^/]+\/voice(\/.*)?$/);
   if (!match) return false;
   const voice = match[1] ?? '';
@@ -21,8 +26,9 @@ function affectsPage(kind: string, pathname: string): boolean {
 export function LiveRefresh({ endpoint }: { endpoint: string }) {
   const router = useRouter();
   const pathname = usePathname();
+  const scope = /^\/servers\/[^/]+\/voice(?:\/|$)/.test(pathname) ? 'voice' : showsActivityArtwork(pathname) ? 'activity' : 'guild';
   const scopedEndpoint = /^\/api\/guilds\/[^/]+\/events$/.test(endpoint)
-    ? `${endpoint}?scope=${/^\/servers\/[^/]+\/voice(?:\/|$)/.test(pathname) ? 'voice' : 'guild'}`
+    ? `${endpoint}?scope=${scope}`
     : endpoint;
   const { hasChanges } = useUnsavedChanges();
   const dirty = useRef(hasChanges);

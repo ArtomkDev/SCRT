@@ -147,6 +147,11 @@ describe('Activity page domain and navigation semantics', () => {
     const output = await html(await OverviewPage({ params, searchParams: Promise.resolve({ period: '7d' }) }));
     expect(mocks.games).toHaveBeenCalledWith(guildId, '7d', 3);
     expect(mocks.ranking).toHaveBeenCalledWith(guildId, 'messages', '7d', 3);
+    expect(mocks.ranking).toHaveBeenCalledWith(guildId, 'currentVoiceStreak', 'all', 3);
+    expect(mocks.ranking).toHaveBeenCalledWith(guildId, 'longestVoiceRunSeconds', 'all', 3);
+    expect(output).toContain('Топ безперервного Voice');
+    expect(output).toContain('/leaderboard?metric=longestVoiceRunSeconds');
+    expect(output).toContain('51 год 24 хв');
     expect(output).toContain('/games/name%3Adota%202?period=7d');
     expect(output).toContain('/members/' + userId + '?period=7d');
     expect(output).toContain('Дії: Dota 2');

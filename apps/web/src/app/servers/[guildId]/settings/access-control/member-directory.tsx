@@ -133,6 +133,7 @@ export function MemberDirectoryProvider({ guildId, scope, children }: { guildId:
     if (disabled) return;
     let source: EventSource | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+    let stableTimer: ReturnType<typeof setTimeout> | undefined;
     let retryDelay = 1000;
     let active = true;
     let publishTimer: ReturnType<typeof setTimeout> | undefined;
@@ -172,12 +173,21 @@ export function MemberDirectoryProvider({ guildId, scope, children }: { guildId:
       source?.close(); source = null;
       if (reconnectTimer) clearTimeout(reconnectTimer);
       reconnectTimer = undefined;
+      if (stableTimer) clearTimeout(stableTimer);
+      stableTimer = undefined;
     };
     const connect = () => {
       if (!active || document.hidden || !navigator.onLine || source || reconnectTimer) return;
       const events = new EventSource(`${baseUrl}/events`);
       source = events;
-      events.onopen = () => { if (source === events) retryDelay = 1000; };
+      events.onopen = () => {
+        if (!active || source !== events) return;
+        if (stableTimer) clearTimeout(stableTimer);
+        stableTimer = setTimeout(() => {
+          stableTimer = undefined;
+          if (source === events) retryDelay = 1000;
+        }, 30_000);
+      };
       events.addEventListener('change', (message) => { if (source === events) onChange(message); });
       events.onerror = () => {
         if (!active || source !== events) return;

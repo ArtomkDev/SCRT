@@ -4,7 +4,6 @@ import { DiscordLoginButton } from './discord-login-button';
 import { ScrtFaceMotion } from './scrt-face-motion';
 import { ScrtFace } from './scrt-face';
 import environmentArtwork from './assets/cosmic-environment.webp';
-import './auth-screen.css';
 
 const authErrors: Record<string, string> = {
   oauth_denied: 'Вхід через Discord скасовано. Ви можете спробувати ще раз.',

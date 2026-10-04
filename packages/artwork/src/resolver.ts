@@ -3,7 +3,7 @@ import { activityArtworkSchema, artworkIdentitySchema, artworkOverridesSchema, g
 import { isKnownSoftware } from './local-providers';
 import type { ActivityArtworkProvider, ArtworkProviderResult, ArtworkStore, ProviderHealth } from './types';
 
-export const ARTWORK_TTL = { success: 30 * 86400_000, notFound: 7 * 86400_000, error: 3 * 3600_000, manualRefresh: 60_000 } as const;
+export const ARTWORK_TTL = { success: 30 * 86400_000, incomplete: 6 * 3600_000, notFound: 6 * 3600_000, error: 5 * 60_000, manualRefresh: 60_000 } as const;
 export const ARTWORK_PROVIDER_TIMEOUT_MS = 5000;
 const sourcePriority = ['manual', 'discord', 'steamgriddb', 'igdb', 'simple-icons', 'brand', 'generated'];
 export function generatedArtwork(input: ArtworkIdentity, now = Date.now()): ActivityArtwork {
@@ -16,7 +16,7 @@ export class ActivityArtworkResolver {
   constructor(private readonly store: ArtworkStore, private readonly providers: readonly ActivityArtworkProvider[], private readonly timeoutMs = ARTWORK_PROVIDER_TIMEOUT_MS) {}
   health(): Record<string, ProviderHealth> { return Object.fromEntries(this.providers.map((provider) => [provider.id, provider.health()])); }
   provider(id: string) { return this.providers.find((provider) => provider.id === id && provider.id !== 'generated'); }
-  private version() { return `3:${this.providers.map((provider) => `${provider.id}:${Number(provider.health().status !== 'not_configured')}`).join(',')}`; }
+  private version() { return `4:${this.providers.map((provider) => `${provider.id}:${Number(provider.health().status !== 'not_configured')}`).join(',')}`; }
   needsRefresh(cached: ActivityArtwork | null | undefined) { return !cached || cached.resolutionVersion !== this.version() || cached.nextRefreshAt <= Date.now(); }
   async resolve(guildId: string, identity: ArtworkIdentity, options: { force?: boolean; discord?: ActivityArtwork['discord'] } = {}): Promise<ActivityArtwork> {
     guildIdSchema.parse(guildId); artworkIdentitySchema.parse(identity);
@@ -72,9 +72,10 @@ export class ActivityArtworkResolver {
       if (old && failed.has(old.source) && (!selected || sourcePriority.indexOf(old.source) < sourcePriority.indexOf(selected.source))) output[field] = old;
     }
     const found = Boolean(output.icon || output.hero || output.overrides.iconUrl || output.overrides.heroUrl);
+    const complete = Boolean((output.icon || output.overrides.iconUrl) && (output.hero || output.overrides.heroUrl));
     output.status = failed.size ? 'error' : found ? 'resolved' : 'not_found';
     output.resolvedAt = Date.now();
-    output.nextRefreshAt = output.resolvedAt + (failed.size ? ARTWORK_TTL.error : found ? ARTWORK_TTL.success : ARTWORK_TTL.notFound);
+    output.nextRefreshAt = output.resolvedAt + (failed.size ? ARTWORK_TTL.error : complete ? ARTWORK_TTL.success : found ? ARTWORK_TTL.incomplete : ARTWORK_TTL.notFound);
     const validated = activityArtworkSchema.parse(output);
     const saved = await this.store.saveResolved(guildId, validated, cached);
     await this.store.saveProviderHealth(guildId, this.health()).catch(() => undefined);

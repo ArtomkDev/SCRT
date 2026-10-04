@@ -40,6 +40,22 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.stubGlobal('React', React); });
 
 describe('member directory suspension', () => {
+  it('backs off when streams open successfully but immediately fail', async () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    fetchMock.mockResolvedValue(snapshot('Учасник'));
+    render(<Page />); await advance(0);
+    act(() => { Events.instances[0]!.onopen?.(); Events.instances[0]!.onerror?.(); });
+    await advance(1000); expect(Events.instances).toHaveLength(2);
+    act(() => { Events.instances[1]!.onopen?.(); Events.instances[1]!.onerror?.(); });
+    await advance(1000); expect(Events.instances).toHaveLength(2);
+    await advance(1000); expect(Events.instances).toHaveLength(3);
+    act(() => { Events.instances[2]!.onopen?.(); });
+    await advance(30_000);
+    act(() => { Events.instances[2]!.onerror?.(); });
+    await advance(1000); expect(Events.instances).toHaveLength(4);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
   it('cancels a partial snapshot while hidden and ignores its late result after resuming', async () => {
     const old = deferred<Response>();
     fetchMock.mockReturnValueOnce(old.promise).mockResolvedValueOnce(snapshot('Свіжі дані'));

@@ -97,7 +97,8 @@ export class ActivitySessionService {
       if (!entry) return;
       if (!entry.started) { await this.repository.startSession(entry.session); entry.started = true; }
       if (entry.closeAt !== null) { await this.close(guildId, this.key(session), entry); this.forget(this.key(session)); return; }
-      const next = await this.repository.settleSession(guildId, session.id, now, false);
+      // Reconciliation can replace this key while checkpoint waits for the member lock.
+      const next = await this.repository.settleSession(guildId, entry.session.id, Math.max(now, entry.session.lastObservedAt), false);
       if (next) entry.session = next; else this.forget(this.key(session));
     });
   }
@@ -117,7 +118,7 @@ export class ActivitySessionService {
       const entry = this.active.get(this.key(session));
       if (!entry) return;
       if (!entry.started) await this.repository.startSession(entry.session);
-      await this.repository.settleSession(guildId, session.id, entry.session.lastObservedAt, true);
+      await this.repository.settleSession(guildId, entry.session.id, entry.session.lastObservedAt, true);
       this.forget(this.key(session));
     });
   }

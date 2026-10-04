@@ -124,11 +124,30 @@ describe('live dashboard refresh lifecycle', () => {
   it('subscribes to voice documents only on voice management pages', () => {
     mocks.pathname = '/servers/123/activity/games';
     const page = render(<LiveRefresh endpoint="/api/guilds/123/events" />);
-    expect(latest().url).toBe('/api/guilds/123/events?scope=guild');
+    expect(latest().url).toBe('/api/guilds/123/events?scope=activity');
     const old = latest(); mocks.pathname = '/servers/123/voice/rooms';
     page.rerender(<LiveRefresh endpoint="/api/guilds/123/events" />);
     expect(old.close).toHaveBeenCalledOnce();
     expect(latest().url).toBe('/api/guilds/123/events?scope=voice');
+  });
+
+  it.each(['/servers/123/activity', '/servers/123/activity/games', '/servers/123/activity/games/name%3Avalheim', '/servers/123/activity/members/456', '/servers/123/activity/settings'])('automatically reconciles artwork changes on %s', async (pathname) => {
+    mocks.pathname = pathname;
+    render(<LiveRefresh endpoint="/api/guilds/123/events" />);
+    latest().emit('sync');
+    latest().emit('change', 'artwork');
+    latest().emit('change', 'artwork');
+    await advance(1500);
+    expect(mocks.refresh).toHaveBeenCalledOnce();
+  });
+
+  it('ignores artwork events on activity pages without artwork', async () => {
+    mocks.pathname = '/servers/123/activity/messages';
+    render(<LiveRefresh endpoint="/api/guilds/123/events" />);
+    expect(latest().url).toBe('/api/guilds/123/events?scope=guild');
+    latest().emit('change', 'artwork');
+    await advance(3000);
+    expect(mocks.refresh).not.toHaveBeenCalled();
   });
 
   it('backs off even when each faulty connection sends sync before failing', async () => {

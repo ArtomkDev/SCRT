@@ -47,6 +47,19 @@ describe('installer callback', () => {
     expect(mocks.createSession).not.toHaveBeenCalled();
   });
 
+  it('rejects multibyte login state without throwing or exchanging a code', async () => {
+    const remove = vi.fn();
+    mocks.cookies.mockResolvedValue({
+      get: (name: string) => name === 'scrt_oauth_state' ? { value: state } : name === 'scrt_oauth_verifier' ? { value: verifier } : undefined,
+      delete: remove,
+    });
+    const invalid = new NextRequest(`https://scrt.example/api/auth/callback?state=${encodeURIComponent('я'.repeat(state.length))}&code=code`);
+    expect((await GET(invalid)).headers.get('location')).toBe('https://scrt.example/?error=oauth_state');
+    expect(mocks.exchangeCode).not.toHaveBeenCalled();
+    expect(remove).toHaveBeenCalledWith('scrt_oauth_state');
+    expect(remove).toHaveBeenCalledWith('scrt_oauth_verifier');
+  });
+
   it('passes live ownership to installation defaults when the owner installs the bot', async () => {
     mocks.botGuild.mockResolvedValue({ id: guildId, name: 'Server', icon: null, owner_id: userId });
     expect((await GET(request())).headers.get('location')).toBe(`https://scrt.example/servers/${guildId}/settings/access-control`);

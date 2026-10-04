@@ -1,15 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-const mocks = vi.hoisted(() => ({ access: vi.fn(), observed: vi.fn(), edit: vi.fn(), field: vi.fn(), record: vi.fn(), resolve: vi.fn(), revalidate: vi.fn(), batch: vi.fn(), getMany: vi.fn(), gallery: vi.fn() }));
+const mocks = vi.hoisted(() => ({ access: vi.fn(), observed: vi.fn(), edit: vi.fn(), field: vi.fn(), record: vi.fn(), resolve: vi.fn(), needsRefresh: vi.fn(), revalidate: vi.fn(), batch: vi.fn(), getMany: vi.fn(), gallery: vi.fn() }));
 vi.mock('server-only', () => ({}));
 vi.mock('@/lib/artwork-gallery', () => ({ artworkGallery: mocks.gallery }));
 vi.mock('next/cache', () => ({ revalidatePath: mocks.revalidate }));
 vi.mock('@/lib/guards', () => ({ requireGuildAccess: mocks.access }));
-vi.mock('@/lib/server', () => ({ env: () => ({ SESSION_SECRET: 'test-session-secret-for-artwork-tests' }), activityArtworkStore: () => ({ observed: mocks.observed, edit: mocks.edit, setField: mocks.field, recordRefresh: mocks.record, observedBatch: mocks.batch, getMany: mocks.getMany }), activityArtworkResolver: () => ({ resolve: mocks.resolve }) }));
+vi.mock('@/lib/server', () => ({ env: () => ({ SESSION_SECRET: 'test-session-secret-for-artwork-tests' }), activityArtworkStore: () => ({ observed: mocks.observed, edit: mocks.edit, setField: mocks.field, recordRefresh: mocks.record, observedBatch: mocks.batch, getMany: mocks.getMany }), activityArtworkResolver: () => ({ resolve: mocks.resolve, needsRefresh: mocks.needsRefresh }) }));
 import { editActivityArtwork, enrichMissingArtworkBatch, refreshActivityArtwork, resetActivityArtwork, findActivityArtwork, selectActivityArtwork } from './artwork-actions';
 const guildId = '12345678901234567'; const key = 'name:dota 2';
 function form() { const value = new FormData(); value.set('gameKey', key); return value; }
 describe('artwork administrator actions', () => {
-  beforeEach(() => { vi.resetAllMocks(); mocks.access.mockResolvedValue({ user: { id: '22345678901234567' } }); mocks.observed.mockResolvedValue({ gameKey: key, displayName: 'Dota 2', applicationId: null }); mocks.resolve.mockResolvedValue({ status: 'not_found' }); });
+  beforeEach(() => { vi.resetAllMocks(); mocks.needsRefresh.mockImplementation((cached) => !cached || cached.nextRefreshAt <= Date.now()); mocks.access.mockResolvedValue({ user: { id: '22345678901234567' } }); mocks.observed.mockResolvedValue({ gameKey: key, displayName: 'Dota 2', applicationId: null }); mocks.resolve.mockResolvedValue({ status: 'not_found' }); });
   it.each([editActivityArtwork, refreshActivityArtwork, resetActivityArtwork])('requires activity.manage before accessing guild artwork', async (action) => {
     mocks.access.mockRejectedValue(new Error('Forbidden'));
     await expect(action(guildId, form())).rejects.toThrow('Forbidden'); expect(mocks.access).toHaveBeenCalledWith(guildId, 'activity.manage'); expect(mocks.observed).not.toHaveBeenCalled(); expect(mocks.edit).not.toHaveBeenCalled();
@@ -27,9 +27,16 @@ describe('artwork administrator actions', () => {
   it('scans bounded batches, skips manual and fresh negative caches, and reports progress', async () => {
     const identities = ['manual', 'negative', 'new'].map((name) => ({ gameKey: `name:${name}`, displayName: name, applicationId: null }));
     mocks.batch.mockResolvedValue({ identities, next: 'a'.repeat(64) });
-    mocks.getMany.mockResolvedValue([{ gameKey: 'name:manual', overrides: { iconUrl: 'https://images.example.com/a.png', heroUrl: null }, nextRefreshAt: 0 }, { gameKey: 'name:negative', overrides: { iconUrl: null, heroUrl: null }, nextRefreshAt: Date.now() + 60_000 }]);
+    mocks.getMany.mockResolvedValue([{ gameKey: 'name:manual', overrides: { iconUrl: 'https://images.example.com/a.png', heroUrl: 'https://images.example.com/b.png' }, nextRefreshAt: 0 }, { gameKey: 'name:negative', overrides: { iconUrl: null, heroUrl: null }, nextRefreshAt: Date.now() + 60_000 }]);
     const result = await enrichMissingArtworkBatch(guildId, null);
     expect(result).toMatchObject({ scanned: 3, skipped: 2, fallback: 1, next: 'a'.repeat(64) }); expect(mocks.resolve).toHaveBeenCalledExactlyOnceWith(guildId, identities[2]);
+  });
+  it.each(['icon', 'hero'])('fills missing artwork when only the %s is manually overridden', async (field) => {
+    const identity = { gameKey: key, displayName: 'Dota 2', applicationId: null };
+    mocks.batch.mockResolvedValue({ identities: [identity], next: null });
+    mocks.getMany.mockResolvedValue([{ gameKey: key, overrides: { iconUrl: field === 'icon' ? 'https://images.example.com/icon.png' : null, heroUrl: field === 'hero' ? 'https://images.example.com/hero.png' : null }, icon: null, hero: null, nextRefreshAt: 0 }]);
+    expect(await enrichMissingArtworkBatch(guildId, null)).toMatchObject({ scanned: 1, skipped: 0, fallback: 1 });
+    expect(mocks.resolve).toHaveBeenCalledExactlyOnceWith(guildId, identity);
   });
   it('authorizes both candidate searches and selections before any data or file work', async () => {
     mocks.access.mockRejectedValue(new Error('Forbidden'));

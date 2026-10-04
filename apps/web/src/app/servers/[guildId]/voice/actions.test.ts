@@ -36,7 +36,7 @@ describe('Voice dashboard mutations', () => {
   });
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.requireGuildAccess.mockResolvedValue({ permissions: new Set(['voice.manage']) });
+    mocks.requireGuildAccess.mockResolvedValue({ permissions: new Set(['voice.manage']), user: { id: '42345678901234567' } });
     mocks.channels.mockResolvedValue([]);
     mocks.roles.mockResolvedValue([{ id: guildId, name: '@everyone', permissions: '0' }]);
     mocks.saveSettings.mockResolvedValue(undefined);
@@ -66,6 +66,12 @@ describe('Voice dashboard mutations', () => {
     expect(mocks.roles).not.toHaveBeenCalled();
     expect(mocks.updateTag).not.toHaveBeenCalled();
     expect(mocks.revalidatePath).toHaveBeenCalledWith(`/servers/${guildId}`, 'layout');
+  });
+  it('records the authenticated actor instead of submitted audit identity', async () => {
+    const data = form();
+    data.set('actorId', '52345678901234567');
+    await saveVoiceSettings(guildId, data);
+    expect(mocks.audit).toHaveBeenCalledWith({ guildId, action: 'voice.settings_updated', source: 'dashboard', actorId: '42345678901234567' });
   });
   it('does not report a completed settings write as failed when auditing fails', async () => {
     mocks.audit.mockRejectedValue(new Error('audit unavailable'));

@@ -10,6 +10,7 @@ import { ActionForm } from './action-form';
 import { UnsavedChangesProvider } from './unsaved-changes';
 import { UserExclusions } from '../servers/[guildId]/activity/settings/user-exclusions';
 import { Dialog } from './dialog';
+import { VoiceNameEditor } from './voice-name-editor';
 
 vi.stubGlobal('React', React);
 beforeEach(() => {
@@ -23,6 +24,16 @@ function Settings({ action = vi.fn(), children }: { action?: (form: FormData) =>
 }
 
 describe('dashboard controls and form lifecycle', () => {
+  it('restores both the room name and its preview when changes are discarded', async () => {
+    render(<Settings><VoiceNameEditor defaultValue="🎧 {displayName}" /></Settings>);
+    const input = screen.getByRole('textbox', { name: 'Назва кімнати' }) as HTMLInputElement;
+    fireEvent.input(input, { target: { value: 'Кімната {username}' } });
+    expect(document.querySelector('.name-preview')?.textContent).toContain('Кімната artom');
+    fireEvent.click(screen.getByRole('button', { name: 'Скасувати зміни' }));
+    await waitFor(() => expect(input.value).toBe('🎧 {displayName}'));
+    expect(document.querySelector('.name-preview')?.textContent).toContain('🎧 Артем');
+    expect(screen.queryByText('Незбережені зміни')).toBeNull();
+  });
   it('keeps labels, switches, disabled checkboxes and native form values accessible', () => {
     render(<Settings><Checkbox name="messages" label="Повідомлення" defaultChecked /><Checkbox name="voice" label="Voice" disabled /><Switch name="enabled" label="Модуль активності" /></Settings>);
     const checkbox = screen.getByRole('checkbox', { name: 'Повідомлення' }) as HTMLInputElement;

@@ -172,6 +172,7 @@ async function performRequest<T>(url: string, init: RequestInit, schema: z.ZodTy
       rememberCooldown(routeCooldowns, route, resetAfter);
     }
     if ([502, 503, 504].includes(response.status) && attempt < 2 && readable) {
+      await response.body?.cancel().catch(() => undefined);
       await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
       continue;
     }

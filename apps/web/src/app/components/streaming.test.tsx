@@ -84,7 +84,7 @@ describe('dashboard server streaming', () => {
   });
 
   it('sends Activity headings and tabs immediately, then streams enabled analytics independently', async () => {
-    const settings = deferred<{ enabled: boolean; streak: { timezone: string; minimumVoiceSecondsPerDay: number } }>();
+    const settings = deferred<ReturnType<typeof activitySettingsSchema.parse>>();
     const overview = deferred<ActivityTotals & { activeMembers: number }>();
     const chat = deferred<ActivityLeaderboardEntry[]>();
     const slowRankings = deferred<ActivityLeaderboardEntry[]>();
@@ -109,7 +109,7 @@ describe('dashboard server streaming', () => {
       expect(output.html()).toContain('<th>Активність</th>');
       expect(output.html()).not.toContain('skeleton-card');
       expect(mocks.overview).not.toHaveBeenCalled();
-      settings.resolve({ enabled: true, streak: { timezone: 'Europe/Kyiv', minimumVoiceSecondsPerDay: 300 } });
+      settings.resolve(activitySettingsSchema.parse({ enabled: true, streak: { timezone: 'Europe/Kyiv', minimumVoiceSecondsPerDay: 300 } }));
       await vi.waitFor(() => expect(output.html()).toContain('Найактивніші в чаті'));
       expect(output.html()).toContain('Найактивніші в чаті');
       expect(output.html()).toContain('Завантаження рейтингу');

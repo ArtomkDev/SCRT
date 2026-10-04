@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { botGuildMember, botSearchGuildMembers, directoryMember } from '@scrt/discord';
+import { botGuildMember, botSearchGuildMembers, directoryMember, DiscordApiError } from '@scrt/discord';
 import { guildIdSchema, snowflakeSchema } from '@scrt/validation';
 import { requireGuildAccess } from '@/lib/guards';
 import { accessToken } from '@/lib/session';
@@ -14,7 +14,14 @@ export async function GET(request: Request, context: { params: Promise<{ guildId
   try {
     await requireGuildAccess(parsed.data, 'activity.manage');
     const token = env().DISCORD_BOT_TOKEN;
-    const members = snowflakeSchema.safeParse(query).success ? [await botGuildMember(token, parsed.data, query)] : await botSearchGuildMembers(token, parsed.data, query);
+    let members: Awaited<ReturnType<typeof botSearchGuildMembers>>;
+    if (snowflakeSchema.safeParse(query).success) {
+      try { members = [await botGuildMember(token, parsed.data, query)]; }
+      catch (error) {
+        if (!(error instanceof DiscordApiError) || error.status !== 404) throw error;
+        members = [];
+      }
+    } else members = await botSearchGuildMembers(token, parsed.data, query);
     return NextResponse.json({ members: members.filter((member) => !member.user.bot).map((member) => directoryMember(parsed.data, member)) }, { headers: { 'Cache-Control': 'private, no-store' } });
   } catch (error) {
     if (error instanceof Error && error.message === 'Forbidden') return NextResponse.json({ error: 'Недостатньо прав.' }, { status: 403 });

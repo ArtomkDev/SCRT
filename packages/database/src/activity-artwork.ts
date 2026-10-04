@@ -1,13 +1,26 @@
-import { FieldPath, FieldValue, type Firestore, type Transaction } from 'firebase-admin/firestore';
+import { FieldPath, FieldValue, type Firestore, type QuerySnapshot, type Transaction } from 'firebase-admin/firestore';
 import { createHash } from 'node:crypto';
 import type { ActivityArtwork, ArtworkAsset, ArtworkIdentity, ArtworkMapping } from '@scrt/shared';
 import { activityArtworkSchema, activityGameKeySchema, artworkAssetSchema, artworkMappingSchema, artworkOverridesSchema, guildIdSchema, snowflakeSchema } from '@scrt/validation';
 import { activityKey } from './activity-repository';
+import { sharedSubscriptions } from './shared-subscriptions';
+
+const subscribeArtwork = sharedSubscriptions<QuerySnapshot>();
 
 export class ActivityArtworkRepository {
   constructor(readonly db: Firestore) {}
   private root(guildId: string) { return this.db.collection('guilds').doc(guildIdSchema.parse(guildId)); }
   private ref(guildId: string, gameKey: string) { return this.root(guildId).collection('activityArtwork').doc(activityKey(activityGameKeySchema.parse(gameKey))); }
+  /** One shared, bounded listener per guild; uploads are stored in a separate collection. */
+  watch(guildId: string, onChange: (kind: 'artwork') => void, onError: (error: Error) => void): () => void {
+    const collection = this.root(guildId).collection('activityArtwork');
+    const query = collection.orderBy('updatedAt', 'desc').limit(50);
+    let first = true;
+    return subscribeArtwork(this.db, `${collection.path}:recent`, (next, fail) => query.onSnapshot(next, fail), { next: (snapshot) => {
+      // Reconcile writes made between the page read and the browser subscription, including an empty initial snapshot.
+      if (first || snapshot.docChanges().length) { first = false; onChange('artwork'); }
+    }, error: onError });
+  }
   async getMany(guildId: string, keys: readonly string[]): Promise<ActivityArtwork[]> {
     if (keys.length > 100) throw new Error('Artwork batch exceeds 100 identities');
     if (!keys.length) return [];

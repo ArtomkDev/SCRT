@@ -3,6 +3,7 @@
 @import "./activity-games.css";
 @import "./shell.css";
 @import "./dashboard-ui.css";
+@import "./components/auth/auth-screen.css";
 
 :root {
   color-scheme: dark;

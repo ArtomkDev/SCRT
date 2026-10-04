@@ -70,9 +70,13 @@ export async function enrichMissingArtworkBatch(guildId: string, cursor: string 
   const page = await store.observedBatch(guildId, cursor);
   const existing = await store.getMany(guildId, page.identities.map((identity) => identity.gameKey));
   const byKey = new Map(existing.map((item) => [item.gameKey, item]));
+  const resolver = activityArtworkResolver();
   const eligible = page.identities.filter((identity) => {
     const cached = byKey.get(identity.gameKey);
-    return !cached || !cached.overrides.iconUrl && !cached.overrides.heroUrl && (!cached.icon || !cached.hero) && cached.nextRefreshAt <= Date.now();
+    if (!cached) return true;
+    const missingIcon = !cached.icon && !cached.overrides.iconUrl;
+    const missingHero = !cached.hero && !cached.overrides.heroUrl;
+    return (missingIcon || missingHero) && resolver.needsRefresh(cached);
   });
   let index = 0;
   let resolved = 0; let fallback = 0; let errors = 0;
@@ -80,7 +84,7 @@ export async function enrichMissingArtworkBatch(guildId: string, cursor: string 
     while (index < eligible.length) {
       const identity = eligible[index++]!;
       try {
-        const result = await activityArtworkResolver().resolve(guildId, identity);
+        const result = await resolver.resolve(guildId, identity);
         if (result.status === 'error') errors++; else if (result.icon || result.hero) resolved++; else fallback++;
       } catch { errors++; }
     }

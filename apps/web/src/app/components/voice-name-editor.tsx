@@ -1,6 +1,6 @@
 'use client';
 
-import { useId, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { renderVoiceRoomName, voiceNameVariables } from '@scrt/validation/voice-name';
 
 const example = {
@@ -17,6 +17,17 @@ export function VoiceNameEditor({ defaultValue }: { defaultValue: string }) {
   const menu = useRef<HTMLDetailsElement>(null);
   const [template, setTemplate] = useState(defaultValue);
   const [notice, setNotice] = useState('');
+  useEffect(() => {
+    const form = input.current?.form;
+    if (!form) return;
+    function resetPreview() {
+      setTemplate(input.current?.value ?? defaultValue);
+      setNotice('');
+      if (menu.current) menu.current.open = false;
+    }
+    form.addEventListener('scrt:reset', resetPreview);
+    return () => form.removeEventListener('scrt:reset', resetPreview);
+  }, [defaultValue]);
   let preview: string;
   try { preview = renderVoiceRoomName(template, example); }
   catch { preview = 'Перевірте змінні та довжину назви (до 100 символів).'; }

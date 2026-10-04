@@ -43,7 +43,7 @@ function harness(overrides: { enabled?: boolean; bot?: boolean; moveFails?: bool
   };
   const service = new VoiceService({ guilds: { cache: new Map() } } as unknown as Client, repository as unknown as VoiceRepository, { accessMappings: vi.fn(async () => ({ roles: [], members: [] })) } as unknown as GuildRepository);
   const state = (channelId: string | null) => ({ guild, member, id: userId, channelId }) as unknown as VoiceState;
-  return { service, repository, guild, member, rooms, create, setPosition, deleteChannel, state, members };
+  return { service, repository, guild, member, rooms, create, setPosition, deleteChannel, state, members, channel };
 }
 
 describe('creator joins', () => {
@@ -101,6 +101,37 @@ describe('creator joins', () => {
     expect(h.deleteChannel).toHaveBeenCalledOnce();
     expect(h.rooms.size).toBe(0);
     h.service.stop();
+  });
+  it('retains a failed creation for recovery when Discord rejects rollback deletion', async () => {
+    const h = harness({ moveFails: true }); await h.service.recover(h.guild);
+    h.deleteChannel.mockRejectedValueOnce(new Error('Discord unavailable'));
+    try {
+      await expect(h.service.onVoiceState(h.state(null), h.state(creatorId))).rejects.toThrow('Move failed');
+      expect(h.rooms.get(roomId)?.state).toBe('creating');
+      expect(h.repository.deleteRoom).not.toHaveBeenCalled();
+    } finally { h.service.stop(); }
+  });
+  it.each(['retry', 'occupied', 'stopped'] as const)('handles cleanup failure when the room becomes %s', async (outcome) => {
+    vi.useFakeTimers();
+    const h = harness();
+    try {
+      await h.service.recover(h.guild);
+      await h.service.onVoiceState(h.state(null), h.state(creatorId));
+      h.members.clear(); h.member.voice.channelId = null;
+      h.deleteChannel.mockRejectedValueOnce(new Error('Discord unavailable'));
+      await h.service.onVoiceState(h.state(roomId), h.state(null));
+      await vi.advanceTimersByTimeAsync(1);
+      expect(h.deleteChannel).toHaveBeenCalledOnce();
+      expect(h.rooms.has(roomId)).toBe(true);
+      if (outcome === 'occupied') {
+        h.members.set(userId, h.member); h.member.voice.channelId = roomId;
+        await h.service.onVoiceState(h.state(null), h.state(roomId));
+      }
+      if (outcome === 'stopped') h.service.stop();
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(h.deleteChannel).toHaveBeenCalledTimes(outcome === 'retry' ? 2 : 1);
+      expect(h.rooms.has(roomId)).toBe(outcome !== 'retry');
+    } finally { h.service.stop(); vi.useRealTimers(); }
   });
   it('enforces the room limit when duplicate rooms are allowed', async () => {
     const h = harness({ duplicateRoomPolicy: 'allow', maxRoomsPerUser: 1 }); await h.service.recover(h.guild);
@@ -166,6 +197,24 @@ describe('creator joins', () => {
 
 describe('startup recovery', () => {
   const savedRoom = () => voiceRoomSchema.parse({ guildId, channelId: roomId, creatorId, ownerId: userId, state: 'active', locked: false, hidden: false, chatClosed: false, permittedUserIds: [], blockedUserIds: [], memberCount: 1, ownerLeftAt: null, createdAt: Date.now(), updatedAt: Date.now(), lastActivityAt: Date.now(), schemaVersion: 1 });
+  it.each(['ownership', 'permissions'] as const)('retries owner exit after a transient %s failure', async (stage) => {
+    vi.useFakeTimers();
+    const h = harness({ ownerLeaveGraceSeconds: 0 });
+    try {
+      h.rooms.set(roomId, { ...savedRoom(), locked: true });
+      h.members.set('72345678901234567', { id: '72345678901234567', user: { bot: false } });
+      await h.service.recover(h.guild);
+      h.channel.permissionOverwrites.set.mockClear();
+      if (stage === 'ownership') h.repository.changeOwner.mockRejectedValueOnce(new Error('Database unavailable'));
+      else h.channel.permissionOverwrites.set.mockRejectedValueOnce(new Error('Discord unavailable'));
+      await vi.advanceTimersByTimeAsync(1);
+      expect(h.rooms.get(roomId)?.ownerId).toBe(stage === 'ownership' ? userId : null);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(h.rooms.get(roomId)?.ownerId).toBeNull();
+      expect(h.channel.permissionOverwrites.set).toHaveBeenCalledTimes(stage === 'ownership' ? 1 : 2);
+    } finally { h.service.stop(); vi.useRealTimers(); }
+  });
+
   it('shares concurrent recovery and reuses loaded creator configuration', async () => {
     const h = harness(); h.rooms.set(roomId, savedRoom()); h.members.set(userId, h.member);
     await Promise.all([h.service.recover(h.guild), h.service.recover(h.guild)]);

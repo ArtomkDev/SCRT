@@ -119,6 +119,22 @@ describe('Discord API errors', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it('releases an unread gateway error body before retrying', async () => {
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({ cancel });
+    let releasedBeforeRetry = false;
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(body, { status: 503 }))
+      .mockImplementationOnce(async () => {
+        releasedBeforeRetry = cancel.mock.calls.length === 1;
+        return new Response(JSON.stringify({ id: '12345678901234567', username: 'Tester' }));
+      });
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(discordUser('gateway-body-release-token')).resolves.toMatchObject({ username: 'Tester' });
+    expect(releasedBeforeRetry).toBe(true);
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
   it('rejects an excessive cooldown instead of waiting without a bound', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 429, headers: { 'retry-after': '60' } })));
     await expect(discordUser('excessive-cooldown')).rejects.toMatchObject({ status: 429 });
