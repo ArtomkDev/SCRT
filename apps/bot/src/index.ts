@@ -1,7 +1,7 @@
 import { config } from 'dotenv';
 import { Client, Events, PermissionsBitField, type Guild, type GuildMember, type PartialGuildMember } from 'discord.js';
 import { botEnv } from '@scrt/config';
-import { firestore, GuildRepository, VoiceRepository, ActivityRepository, ActivityArtworkRepository } from '@scrt/database';
+import { firestore, GuildRepository, VoiceRepository, ActivityRepository, ActivityArtworkRepository, MediaRepository } from '@scrt/database';
 import { createArtworkResolver } from '@scrt/artwork';
 import { log } from '@scrt/shared';
 import { commands } from './commands';
@@ -9,16 +9,22 @@ import { VoiceError, VoiceService } from './voice/voice-service';
 import { handleVoiceComponent } from './voice/voice-command';
 import { ActivityModule } from './modules/activity/activity.module';
 import { activityGatewayIntents, presenceIntentAvailable } from './modules/activity/gateway';
+import { MediaModule } from './modules/media/media.module';
 
-config({ path: '../../.env' });
+if (process.env.NODE_ENV !== 'production' && !process.env.RAILWAY_ENVIRONMENT_ID && !process.env.RAILWAY_PROJECT_ID) config({ path: '../../.env' });
 const env = botEnv();
+log('info', 'bot', 'startup.environment.ready', { mediaConfigured: Boolean(env.MEDIA_INTERNAL_SECRET) });
 const db = firestore({ projectId: env.FIREBASE_PROJECT_ID, clientEmail: env.FIREBASE_CLIENT_EMAIL, privateKey: env.FIREBASE_PRIVATE_KEY });
 const repository = new GuildRepository(db);
+log('info', 'bot', 'startup.firebase.ready');
 async function runBot(presenceAvailable: boolean): Promise<void> {
   const intents = activityGatewayIntents(presenceAvailable, env.DISCORD_GUILD_MEMBERS_INTENT);
   const client = new Client({ intents });
   const voice = new VoiceService(client, new VoiceRepository(db), repository);
   const activity = new ActivityModule(client, new ActivityRepository(db), presenceAvailable, createArtworkResolver(new ActivityArtworkRepository(db), env));
+  log('info', 'media', 'engine.loading');
+  const media = await MediaModule.create(client, new MediaRepository(db), repository, env);
+  log('info', 'media', 'engine.loaded');
   const resourceSignals = new Map<string, NodeJS.Timeout>();
   let stopping = false;
 
@@ -41,9 +47,9 @@ async function runBot(presenceAvailable: boolean): Promise<void> {
   }
   async function initializeGuild(guild: Guild) {
     if (stopping || !guild.available) return;
-    const results = await Promise.allSettled([syncGuild(guild), voice.recover(guild), activity.recover(guild)]);
+    const results = await Promise.allSettled([syncGuild(guild), voice.recover(guild), activity.recover(guild), media.recover(guild)]);
     results.forEach((result, index) => {
-      if (result.status === 'rejected') log('error', ['bot', 'voice', 'activity'][index]!, index === 0 ? 'guild.sync.failed' : 'recovery.failed', { guildId: guild.id }, result.reason);
+      if (result.status === 'rejected') log('error', ['bot', 'voice', 'activity', 'media'][index]!, index === 0 ? 'guild.sync.failed' : 'recovery.failed', { guildId: guild.id }, result.reason);
     });
   }
   client.once(Events.ClientReady, (ready) => {
@@ -56,12 +62,15 @@ async function runBot(presenceAvailable: boolean): Promise<void> {
   client.on(Events.GuildCreate, (guild) => { void initializeGuild(guild); });
   client.on(Events.GuildAvailable, (guild) => { if (client.isReady()) void initializeGuild(guild); });
   client.on(Events.GuildUnavailable, (guild) => {
+    media.commands.sessions.suspendAudio(guild.id);
+    void media.commands.sessions.interruptGuild(guild.id, 'Сервер тимчасово недоступний.').catch((error: unknown) => log('error', 'media', 'guild.suspend.failed', { guildId: guild.id }, error));
     voice.stopGuild(guild.id);
     void activity.suspendGuild(guild.id).catch((error: unknown) => log('error', 'activity', 'guild.suspend.failed', { guildId: guild.id }, error));
   });
   client.on(Events.GuildUpdate, (_previous, guild) => { void syncGuild(guild).catch((error: unknown) => log('error', 'bot', 'guild.update.failed', { guildId: guild.id }, error)); });
-  client.on(Events.GuildDelete, (guild) => { const pending = resourceSignals.get(guild.id); if (pending) clearTimeout(pending); resourceSignals.delete(guild.id); voice.stopGuild(guild.id); void activity.stopGuild(guild.id).catch((error: unknown) => log('error', 'activity', 'guild.leave.failed', { guildId: guild.id }, error)); void repository.markDisconnected(guild.id).catch((error: unknown) => log('error', 'bot', 'guild.leave.failed', { guildId: guild.id }, error)); });
+  client.on(Events.GuildDelete, (guild) => { const pending = resourceSignals.get(guild.id); if (pending) clearTimeout(pending); resourceSignals.delete(guild.id); voice.stopGuild(guild.id); void media.stopGuild(guild.id).catch((error: unknown) => log('error', 'media', 'guild.leave.failed', { guildId: guild.id }, error)); void activity.stopGuild(guild.id).catch((error: unknown) => log('error', 'activity', 'guild.leave.failed', { guildId: guild.id }, error)); void repository.markDisconnected(guild.id).catch((error: unknown) => log('error', 'bot', 'guild.leave.failed', { guildId: guild.id }, error)); });
   client.on(Events.VoiceStateUpdate, (oldState, newState) => {
+    void media.commands.sessions.voiceState(oldState, newState).catch((error: unknown) => log('error', 'media', 'voice.state.failed', { guildId: newState.guild.id }, error));
     void activity.onVoiceState(oldState, newState).catch((error: unknown) => log('error', 'activity', 'voice.state.failed', { guildId: newState.guild.id, userId: newState.id }, error));
     void voice.onVoiceState(oldState, newState).catch(async (error: unknown) => {
     log('error', 'voice', 'state.failed', { guildId: newState.guild.id, userId: newState.id, oldChannelId: oldState.channelId, newChannelId: newState.channelId }, error);
@@ -75,7 +84,7 @@ async function runBot(presenceAvailable: boolean): Promise<void> {
   client.on(Events.ShardReady, () => { if (client.isReady()) recoverActivity(); });
   client.on(Events.ChannelCreate, (channel) => { if (!channel.isDMBased()) signalResourcesChanged(channel.guild.id); });
   client.on(Events.ChannelUpdate, (_previous, channel) => { if (!channel.isDMBased()) signalResourcesChanged(channel.guild.id); });
-  client.on(Events.ChannelDelete, (channel) => { if (!channel.isDMBased()) { signalResourcesChanged(channel.guild.id); void voice.onChannelDelete(channel.guild, channel.id).catch((error: unknown) => log('error', 'voice', 'channel.delete.failed', { guildId: channel.guild.id, channelId: channel.id }, error)); } });
+  client.on(Events.ChannelDelete, (channel) => { if (!channel.isDMBased()) { signalResourcesChanged(channel.guild.id); void media.commands.sessions.channelDeleted(channel.guild.id, channel.id).catch((error: unknown) => log('error', 'media', 'channel.delete.failed', { guildId: channel.guild.id }, error)); void voice.onChannelDelete(channel.guild, channel.id).catch((error: unknown) => log('error', 'voice', 'channel.delete.failed', { guildId: channel.guild.id, channelId: channel.id }, error)); } });
   client.on(Events.GuildRoleCreate, (role) => signalResourcesChanged(role.guild.id));
   client.on(Events.GuildRoleUpdate, (_previous, role) => signalResourcesChanged(role.guild.id));
   client.on(Events.GuildRoleDelete, (role) => signalResourcesChanged(role.guild.id));
@@ -102,7 +111,7 @@ async function runBot(presenceAvailable: boolean): Promise<void> {
     if (!interaction.isChatInputCommand()) return;
     const command = commands.find((item) => item.data.name === interaction.commandName);
     if (!command) return;
-    void command.execute(interaction, voice).catch(async (error: unknown) => {
+    void command.execute(interaction, voice, media.commands).catch(async (error: unknown) => {
       log('error', 'bot', 'command.failed', { guildId: interaction.guildId, userId: interaction.user.id, command: interaction.commandName }, error);
       const content = error instanceof VoiceError ? error.message : 'Не вдалося виконати команду. Спробуйте пізніше.';
       try { if (interaction.deferred && !interaction.replied) await interaction.editReply({ content }); else if (interaction.replied || interaction.deferred) await interaction.followUp({ content, ephemeral: true }); else await interaction.reply({ content, ephemeral: true }); } catch (replyError) { log('error', 'bot', 'command.error-reply.failed', {}, replyError); }
@@ -116,17 +125,20 @@ async function runBot(presenceAvailable: boolean): Promise<void> {
     resourceSignals.clear();
     voice.stop();
     const deadline = setTimeout(() => { log('error', 'activity', 'shutdown.deadline'); process.exit(code || 1); }, 12_000);
-    try { await activity.shutdown(); } catch (error) { log('error', 'activity', 'shutdown.flush.failed', {}, error); code = 1; }
+    try { await Promise.all([activity.shutdown(), media.shutdown()]); } catch (error) { log('error', 'bot', 'shutdown.flush.failed', {}, error); code = 1; }
     await client.destroy();
     clearTimeout(deadline);
     log('info', 'bot', 'shutdown');
     process.exitCode = code;
   }
+  await media.start();
+  log('info', 'bot', 'gateway.connecting');
   try { await client.login(env.DISCORD_BOT_TOKEN); } catch (error) {
     // Portal settings can change after preflight. Preserve core trackers on a presence rejection.
     if (presenceAvailable && error instanceof Error && /disallowed intents/i.test(error.message)) {
       log('warn', 'activity', 'presence.gateway.rejected');
       await activity.shutdown().catch(() => undefined);
+      await media.shutdown().catch(() => undefined);
       voice.stop();
       await client.destroy();
       return runBot(false);
@@ -137,4 +149,7 @@ async function runBot(presenceAvailable: boolean): Promise<void> {
   process.once('uncaughtException', (error) => { log('error', 'bot', 'uncaught-exception', {}, error); void shutdown(1); });
 }
 process.on('unhandledRejection', (error) => log('error', 'bot', 'unhandled-rejection', {}, error));
-await runBot(await presenceIntentAvailable(env.DISCORD_BOT_TOKEN));
+log('info', 'bot', 'startup.presence.checking');
+const presenceAvailable = await presenceIntentAvailable(env.DISCORD_BOT_TOKEN);
+log('info', 'bot', 'startup.presence.checked', { presenceAvailable });
+await runBot(presenceAvailable);

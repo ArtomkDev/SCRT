@@ -16,8 +16,10 @@ function changed(baseline: FieldState[], current: FieldState[]) {
   return baseline.length !== current.length || baseline.some((field, index) => field.name !== current[index]?.name || field.value !== current[index]?.value || field.checked !== current[index]?.checked);
 }
 
+export type ActionFormResult = void | { error: string };
+
 type ActionFormProps = {
-  action: (form: FormData) => Promise<void>;
+  action: (form: FormData) => Promise<ActionFormResult>;
   children: ReactNode;
   className?: string;
   successMessage?: string;
@@ -69,14 +71,20 @@ export function ActionForm({ action, children, className, successMessage = 'Зм
   }
 
   function submit(data: FormData) {
-    if (submitting.current || pending) return;
+    // React can keep the transition pending after the request has settled.
+    // The synchronous request guard also allows an immediate retry after an error.
+    if (submitting.current) return;
     submitting.current = true;
     const sentFields = trackChanges && formRef.current ? snapshot(formRef.current) : [];
     setFeedback(null);
     startTransition(async () => {
       try {
-        await action(data);
+        const result = await action(data);
         if (!mounted.current) return;
+        if (result?.error) {
+          setFeedback({ kind: 'error', text: result.error });
+          return;
+        }
         baseline.current = sentFields;
         baselineData.current = data;
         updateDirty();
@@ -91,7 +99,7 @@ export function ActionForm({ action, children, className, successMessage = 'Зм
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (submitting.current || pending) return;
+    if (submitting.current) return;
     const data = new FormData(event.currentTarget);
     if (confirmation) {
       pendingData.current = data;

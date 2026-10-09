@@ -2,16 +2,17 @@ import { AggregateField, FieldValue, type Firestore } from 'firebase-admin/fires
 
 type Row = Record<string, unknown>;
 type Ref = { path: string; id: string; get: () => Promise<Snapshot>; set: (data: Row, options?: { merge?: boolean }) => Promise<void>; collection: (name: string) => { doc: (id?: string) => Ref } };
-type Snapshot = { id: string; exists: boolean; data: () => Row | undefined; get: (key: string) => unknown };
+type Snapshot = { id: string; ref: Ref; exists: boolean; data: () => Row | undefined; get: (key: string) => unknown };
 type QueryFilter = { field: string; operator: string; value: unknown };
 /** Test double models atomic commit, transforms, ordering and bounded queries. */
 export function activityTestStore(missingIndexes = false) {
   const records = new Map<string, Row>();
   const queries: Array<{ collection: string; limit: number; filters: QueryFilter[] }> = [];
   const batches: number[] = [];
+  const field = (row: Row | undefined, key: string): unknown => key.split('.').reduce<unknown>((value, part) => value && typeof value === 'object' ? (value as Row)[part] : undefined, row);
   const snapshot = (path: string): Snapshot => {
     const value = records.get(path);
-    return { id: path.split('/').at(-1)!, exists: value !== undefined, data: () => value ? structuredClone(value) : undefined, get: (key) => value?.[key] };
+    return { id: path.split('/').at(-1)!, ref: ref(path), exists: value !== undefined, data: () => value ? structuredClone(value) : undefined, get: (key) => field(value, key) };
   };
   const write = (path: string, data: Row, merge = false) => {
     const current = merge ? { ...records.get(path) } : {};
@@ -30,7 +31,7 @@ export function activityTestStore(missingIndexes = false) {
     private queryFilters: QueryFilter[] = [];
     private order: Array<{ field: string; direction: string }> = [];
     private count = Infinity;
-    private cursor: unknown;
+    private cursor: unknown[] | undefined;
     constructor(readonly path: string) {}
     doc(id = String(Math.random())) { return ref(`${this.path}/${id}`); }
     private copy() { const next = new QueryStore(this.path); next.filters = [...this.filters]; next.filterFields = new Set(this.filterFields); next.queryFilters = [...this.queryFilters]; next.order = [...this.order]; next.count = this.count; next.cursor = this.cursor; return next; }
@@ -39,19 +40,20 @@ export function activityTestStore(missingIndexes = false) {
       next.filterFields.add(field);
       next.queryFilters.push({ field, operator, value });
       next.filters.push((row) => {
-        const actual = row[field];
+        const actual = field.split('.').reduce<unknown>((value, part) => value && typeof value === 'object' ? (value as Row)[part] : undefined, row);
         if (operator === '==') return actual === value;
         if (operator === 'in') return Array.isArray(value) && value.includes(actual);
         if (operator === 'array-contains') return Array.isArray(actual) && actual.includes(value);
         if (operator === '>=') return String(actual) >= String(value);
         if (operator === '<=') return String(actual) <= String(value);
+        if (operator === '<') return String(actual) < String(value);
         return false;
       });
       return next;
     }
     orderBy(field: unknown, direction = 'asc') { const next = this.copy(); next.order.push({ field: typeof field === 'string' ? field : '__name__', direction }); return next; }
     limit(count: number) { const next = this.copy(); next.count = count; return next; }
-    startAfter(cursor: unknown) { const next = this.copy(); next.cursor = cursor; return next; }
+    startAfter(...cursor: unknown[]) { const next = this.copy(); next.cursor = cursor; return next; }
     aggregate(fields: Record<string, AggregateField<number>>) {
       return { get: async () => {
         const { docs } = await this.get();
@@ -83,7 +85,15 @@ export function activityTestStore(missingIndexes = false) {
         }
         return this.order[0]?.direction === 'desc' ? b.id.localeCompare(a.id) : a.id.localeCompare(b.id);
       });
-      if (this.cursor) rows = rows.filter(({ id }) => id > String(this.cursor));
+      if (this.cursor) rows = rows.filter(({ row, id }) => {
+        for (let index = 0; index < this.cursor!.length; index++) {
+          const order = this.order[index] ?? { field: '__name__', direction: 'asc' };
+          const actual = order.field === '__name__' ? id : row[order.field]; const cursor = this.cursor![index];
+          const comparison = typeof actual === 'number' && typeof cursor === 'number' ? actual - cursor : String(actual).localeCompare(String(cursor));
+          if (comparison) return order.direction === 'desc' ? comparison < 0 : comparison > 0;
+        }
+        return false;
+      });
       const docs = rows.slice(0, this.count).map(({ path }) => snapshot(path));
       return { docs, size: docs.length, empty: docs.length === 0 };
     }

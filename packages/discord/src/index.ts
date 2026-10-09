@@ -10,11 +10,13 @@ export const requiredBotPermissions = [
   PermissionFlagsBits.ManageRoles,
   PermissionFlagsBits.MoveMembers,
   PermissionFlagsBits.Connect,
+  PermissionFlagsBits.Speak,
   PermissionFlagsBits.SendMessages,
   PermissionFlagsBits.EmbedLinks,
   PermissionFlagsBits.ReadMessageHistory,
 ] as const;
 export const botPermissions = requiredBotPermissions.reduce((value, permission) => value | permission, 0n);
+export const requiredMediaBotPermissions = [['ViewChannel', PermissionFlagsBits.ViewChannel], ['Connect', PermissionFlagsBits.Connect], ['Speak', PermissionFlagsBits.Speak]] as const;
 export const discordScopes = 'identify guilds guilds.members.read';
 const api = 'https://discord.com/api/v10';
 

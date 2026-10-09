@@ -24,6 +24,18 @@ function Settings({ action = vi.fn(), children }: { action?: (form: FormData) =>
 }
 
 describe('dashboard controls and form lifecycle', () => {
+  it('coalesces repeated save clicks while the request is active', async () => {
+    let finish!: () => void;
+    const action = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    render(<Settings action={action}><Switch name="enabled" label="Модуль" /></Settings>);
+    fireEvent.click(screen.getByRole('switch', { name: 'Модуль' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Зберегти' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Зберегти' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Зберегти форму' }));
+    expect(action).toHaveBeenCalledOnce();
+    finish();
+    await waitFor(() => expect(screen.queryByText('Незбережені зміни')).toBeNull());
+  });
   it('restores both the room name and its preview when changes are discarded', async () => {
     render(<Settings><VoiceNameEditor defaultValue="🎧 {displayName}" /></Settings>);
     const input = screen.getByRole('textbox', { name: 'Назва кімнати' }) as HTMLInputElement;

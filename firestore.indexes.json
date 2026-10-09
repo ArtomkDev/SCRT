@@ -9,6 +9,9 @@
     { "collectionGroup": "activityDailyGames", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "gameKey", "order": "ASCENDING" }, { "fieldPath": "date", "order": "ASCENDING" }] }
   ],
   "fieldOverrides": [
+    { "collectionGroup": "mediaHistory", "fieldPath": "expiresAt", "ttl": true, "indexes": [] },
+    { "collectionGroup": "mediaAudit", "fieldPath": "expiresAt", "ttl": true, "indexes": [] },
+    { "collectionGroup": "mediaCommands", "fieldPath": "expiresAt", "ttl": true, "indexes": [] },
     { "collectionGroup": "activityArtworkUploads", "fieldPath": "bytes", "indexes": [] },
     { "collectionGroup": "activityProfiles", "fieldPath": "searchPrefixes", "indexes": [{ "arrayConfig": "CONTAINS", "queryScope": "COLLECTION" }] }
   ]

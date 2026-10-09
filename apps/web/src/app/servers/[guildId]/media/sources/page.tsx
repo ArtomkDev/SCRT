@@ -1,0 +1,7 @@
+import { requireGuildAccess } from '@/lib/guards';
+import { initialMediaSnapshot } from '@/lib/media-data';
+const labels = { available: 'Доступно', degraded: 'Тимчасово недоступне', unconfigured: 'Не налаштовано', error: 'Помилка конфігурації' };
+export default async function MediaSourcesPage({ params }: { params: Promise<{ guildId: string }> }) {
+  const { guildId } = await params; const { user } = await requireGuildAccess(guildId, 'media.view'); const { snapshot, unavailable } = await initialMediaSnapshot(guildId, user.id);
+  return <section><h2>Джерела</h2>{unavailable && <p className="form-feedback">{unavailable}</p>}<div className="media-health-grid">{snapshot.providers.map((provider) => <section key={provider.id}><h3>{provider.name}</h3><p>{labels[provider.state]}</p><dl><dt>Пошук</dt><dd>{provider.capabilities.search ? 'Так' : 'Ні'}</dd><dt>Інформація</dt><dd>{provider.capabilities.metadata ? 'Так' : 'Ні'}</dd><dt>Відтворення</dt><dd>{provider.capabilities.playback ? 'Так' : 'Лише інформація'}</dd><dt>Прямі трансляції</dt><dd>{provider.capabilities.live ? 'Так' : 'Ні'}</dd><dt>Перемотування</dt><dd>{provider.capabilities.seek ? 'Так' : 'Ні'}</dd></dl></section>)}</div><p className="field-help">YouTube, YouTube Music і SoundCloud підтримують відтворення доступних публічних треків. Також доступні HTTP аудіо та радіокаталог. Spotify надає лише інформацію. Приватні треки й обмеження доступу джерел не обходяться.</p></section>;
+}

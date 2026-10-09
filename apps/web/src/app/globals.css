@@ -1,6 +1,7 @@
 @import "tailwindcss";
 @import "./activity-artwork.css";
 @import "./activity-games.css";
+@import "./media.css";
 @import "./shell.css";
 @import "./dashboard-ui.css";
 @import "./components/auth/auth-screen.css";

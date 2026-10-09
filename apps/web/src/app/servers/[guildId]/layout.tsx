@@ -7,16 +7,17 @@ import { voiceSettings } from '@/lib/voice-data';
 import { activitySettings } from '@/lib/activity-data';
 import { LoadingValue } from '../../components/data-loading';
 import { DataBoundary } from '../../components/data-boundary';
+import { initialMediaSnapshot } from '@/lib/media-data';
 
-async function ModuleNavigation({ guildId, showVoice, showActivity, showAccess }: { guildId: string; showVoice: boolean; showActivity: boolean; showAccess: boolean }) {
-  const [voice, activity] = await Promise.all([showVoice ? voiceSettings(guildId) : null, showActivity ? activitySettings(guildId) : null]);
-  return <DashboardNav guildId={guildId} showVoice={showVoice} showActivity={showActivity} showAccess={showAccess} voiceState={voice ? voice.enabled ? 'enabled' : 'disabled' : undefined} activityState={activity ? activity.enabled ? 'enabled' : 'disabled' : undefined} />;
+async function ModuleNavigation({ guildId, userId, showVoice, showActivity, showMedia, showAccess }: { guildId: string; userId: string; showVoice: boolean; showActivity: boolean; showMedia: boolean; showAccess: boolean }) {
+  const [voice, activity, media] = await Promise.all([showVoice ? voiceSettings(guildId) : null, showActivity ? activitySettings(guildId) : null, showMedia ? initialMediaSnapshot(guildId, userId) : null]);
+  return <DashboardNav guildId={guildId} showVoice={showVoice} showActivity={showActivity} showMedia={showMedia} showAccess={showAccess} voiceState={voice ? voice.enabled ? 'enabled' : 'disabled' : undefined} activityState={activity ? activity.enabled ? 'enabled' : 'disabled' : undefined} mediaState={media ? !media.snapshot.settings.enabled ? 'disabled' : media.unavailable || !media.snapshot.engine.available || media.snapshot.session?.lastError ? 'degraded' : 'enabled' : undefined} />;
 }
 
 async function GuildSidebar({ params }: { params: Promise<{ guildId: string }> }) {
   const { guildId } = await params;
-  const { discordGuild, permissions } = await requireGuildAccess(guildId);
-  const navigation = { guildId, showVoice: permissions.has('voice.view'), showActivity: permissions.has('activity.view'), showAccess: permissions.has('settings.view') };
+  const { discordGuild, permissions, user } = await requireGuildAccess(guildId);
+  const navigation = { guildId, userId: user.id, showVoice: permissions.has('voice.view'), showActivity: permissions.has('activity.view'), showMedia: permissions.has('media.view'), showAccess: permissions.has('settings.view') };
   return <aside className="guild-sidebar"><div className="guild-context"><GuildIcon id={guildId} name={discordGuild.name} icon={discordGuild.icon} size={32} /><span className="guild-context-name">{discordGuild.name}</span></div><span className="sidebar-label">Сервер</span><DataBoundary title="Статус модулів недоступний" compact fallback={<DashboardNav {...navigation} />}><Suspense fallback={<DashboardNav {...navigation} />}><ModuleNavigation {...navigation} /></Suspense></DataBoundary><LiveRefresh endpoint={`/api/guilds/${guildId}/events`} /></aside>;
 }
 

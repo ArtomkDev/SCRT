@@ -11,6 +11,7 @@ export function parseGuildScreen(value: unknown): GuildScreen | null {
   if (typeof value !== 'string') return null;
   if (activityScreens.has(value)) return { path: value, permission: 'activity.view' };
   if (voiceScreens.has(value)) return { path: value, permission: 'voice.view' };
+  if (['media', 'media/history', 'media/settings', 'media/sources', 'media/diagnostics'].includes(value)) return { path: value, permission: 'media.view' };
   if (value === 'settings/access-control') return { path: value, permission: 'settings.view' };
   const game = value.match(/^activity\/games\/([^/]+)$/u);
   if (game) {

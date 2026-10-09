@@ -58,7 +58,7 @@ describe('dashboard server streaming', () => {
 
   it('sends the dashboard and page shell before session and guild sidebar reads finish', async () => {
     const session = deferred<{ user: { id: string; username: string; global_name: null; avatar: null } }>();
-    const access = deferred<{ discordGuild: { name: string; icon: null }; permissions: Set<string> }>();
+    const access = deferred<{ discordGuild: { name: string; icon: null }; permissions: Set<string>; user: { id: string } }>();
     mocks.session.mockReturnValue(session.promise);
     mocks.access.mockReturnValue(access.promise);
     const list = deferred<{ list: []; installedIds: Set<string> }>();
@@ -72,7 +72,7 @@ describe('dashboard server streaming', () => {
       expect(output.html()).toContain('Завантаження серверів');
       expect(output.html()).not.toContain('Private guild name');
 
-      access.resolve({ discordGuild: { name: 'Private guild name', icon: null }, permissions: new Set(['activity.view']) });
+      access.resolve({ discordGuild: { name: 'Private guild name', icon: null }, permissions: new Set(['activity.view']), user: { id: guildId } });
       await vi.waitFor(() => expect(output.html()).toContain('Private guild name'));
       expect(output.html()).not.toContain('Signed-in username');
       session.resolve({ user: { id: guildId, username: 'Signed-in username', global_name: null, avatar: null } });

@@ -1,4 +1,5 @@
-export const permissions = ['dashboard.access', 'members.view', 'members.manage', 'activity.view', 'activity.manage', 'voice.view', 'voice.manage', 'moderation.view', 'moderation.manage', 'automation.view', 'automation.manage', 'logs.view', 'settings.view', 'settings.manage'] as const;
+export * from './media';
+export const permissions = ['dashboard.access', 'members.view', 'members.manage', 'activity.view', 'activity.manage', 'voice.view', 'voice.manage', 'media.view', 'media.request', 'media.control', 'media.manage', 'moderation.view', 'moderation.manage', 'automation.view', 'automation.manage', 'logs.view', 'settings.view', 'settings.manage'] as const;
 export type AppPermission = typeof permissions[number];
 export type AppRole = 'SUPER_ADMIN' | 'ADMIN' | 'VIEWER';
 export type AccessGrant = { appRole: AppRole; grantedBy?: string };
@@ -20,7 +21,7 @@ export function requireAccessGrantEditor(actor: AccessActor, mappings: AccessMap
 const rolePermissions: Record<AppRole, readonly AppPermission[]> = {
   SUPER_ADMIN: permissions,
   ADMIN: permissions.filter((value) => value !== 'settings.manage'),
-  VIEWER: ['dashboard.access', 'members.view', 'activity.view', 'voice.view', 'logs.view', 'settings.view'],
+  VIEWER: ['dashboard.access', 'members.view', 'activity.view', 'voice.view', 'media.view', 'media.request', 'logs.view', 'settings.view'],
 };
 
 export function permissionsForRole(role: AppRole): readonly AppPermission[] {

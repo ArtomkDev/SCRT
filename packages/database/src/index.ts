@@ -1,6 +1,7 @@
 export * from './activity-repository';
 export * from './activity-artwork';
 export * from './activity-leaderboards';
+export * from './media-repository';
 import { getApps, initializeApp, cert } from 'firebase-admin/app';
 import { getFirestore, FieldPath, FieldValue } from 'firebase-admin/firestore';
 import type { GuildRecord } from '@scrt/shared';
@@ -216,6 +217,7 @@ export class VoiceRepository {
     const sources = [
       { kind: 'guild' as const, ref: root },
       { kind: 'access' as const, ref: root.collection('access').doc('roles') },
+      { kind: 'settings' as const, ref: root.collection('mediaSettings').doc('main') },
     ];
     const collections = includeVoice ? [
       { kind: 'rooms' as const, ref: this.rooms(guildId) },

@@ -79,6 +79,10 @@ Messages flush every 60 seconds. Persistent sessions aggregate at close and five
 
 Activity documents are under `guilds/{guildId}/activity*`. Daily/all-time aggregates remain; closed sessions are removed after aggregation. AFK/channel/category/role/user exclusions are centralized. Streaks require five minutes per guild-calendar day by default. See [Activity architecture, schema, recovery, indexes and manual verification](docs/activity.md). Run `pnpm --filter @scrt/bot verify:activity` for isolated Firestore/Gateway verification; deploy `firestore.indexes.json` for efficient compound queries. Bounded server fallbacks keep private-server rankings correct while indexes are unavailable.
 
+## Media
+
+The guild-scoped **Медіа** module provides a web remote player, Discord Voice audio, protected controls, search, a fair queue, vote skip, history and conservative restart recovery. Direct audio, an approved radio catalog and accessible public YouTube/SoundCloud audio can play. Bot dev/build scripts install the pinned extractor automatically; Spotify provides metadata only. See [Media setup, security, providers and manual acceptance](docs/media.md). Railway's bot service needs FFmpeg and an authenticated Media control endpoint shared with the separate web service.
+
 ## Firebase setup
 
 Create a Firebase project and Firestore database in production mode. Create a dedicated service account with Firestore access. Put its project ID, client email and private key into the server environment. The Admin SDK bypasses Firestore client rules; this app uses only server-side Admin access and the web guard enforces Discord identity and guild permissions. No browser Firebase configuration is needed. Restrict service account access and rotate it if exposed.
@@ -93,7 +97,9 @@ The private key must contain only the PEM value, including its BEGIN/END markers
 
 ## Railway
 
-Deploy the bot as a persistent worker from this repository. Build command: `pnpm install --frozen-lockfile && pnpm --filter @scrt/bot build`. Start command: `pnpm --filter @scrt/bot start`. Set the bot's required environment variables in Railway; no local `.env` or persistent volume is required. Deploy the web app as a separate service with build command `pnpm install --frozen-lockfile && pnpm --filter @scrt/web build`, start command `pnpm --filter @scrt/web start`, and its required environment variables. Set `NEXT_PUBLIC_APP_URL` to the web service's public HTTPS origin and add its OAuth callback URL in Discord. Register global commands from a credentialed deployment environment using `pnpm deploy:commands`.
+Deploy the bot as a persistent worker from the repository root. Select Railpack and set `RAILPACK_CONFIG_FILE=railpack.bot.json` on the **bot service only**. This configuration installs FFmpeg in the runtime image, installs development dependencies needed for compilation even with `NODE_ENV=production`, and selects the bot build/start commands. If overriding commands in Railway settings, use build `pnpm install --frozen-lockfile --prod=false && pnpm --filter @scrt/bot build` and start `pnpm --filter @scrt/bot start`. Set `MEDIA_INTERNAL_HOST=::`, `MEDIA_INTERNAL_PORT=3100`, an independent `MEDIA_INTERNAL_SECRET` of at least 32 characters, and one bot replica. Before enabling Media, run `node apps/bot/dist/verify-media.js` from the repository root in the deployed container; this diagnostic does not connect to Discord. See [Media deployment configuration](docs/media.md#railway-release-check).
+
+Set the bot's required environment variables in Railway; no local `.env` or persistent volume is required. Deploy the web app as a separate service with build command `pnpm install --frozen-lockfile --prod=false && pnpm --filter @scrt/web build`, start command `pnpm --filter @scrt/web start`, and its required environment variables. Configure the same `MEDIA_INTERNAL_SECRET` on web and bot and a web-only `MEDIA_BOT_URL` that reaches the bot. Set `NEXT_PUBLIC_APP_URL` to the web service's public HTTPS origin and add its OAuth callback URL in Discord. Register global commands from a credentialed deployment environment using `pnpm deploy:commands`.
 
 The bot tolerates reconnects and restart through guild and Voice reconciliation. Firestore is the persistent store. Guild and room recovery failures are logged individually; there is no local disk dependency.
 
