@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import type { IncomingMessage } from 'node:http';
+import { IncomingMessage } from 'node:http';
+import { Socket } from 'node:net';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Guild } from 'discord.js';
 
@@ -41,7 +42,7 @@ function fixture() {
 }
 beforeEach(() => vi.resetAllMocks());
 
-function input() { return Object.assign(new PassThrough(), { setTimeout: vi.fn() }) as unknown as IncomingMessage; }
+function input() { return Object.assign(new PassThrough(), { socket: { setTimeout: vi.fn(), destroyed: false } }) as unknown as IncomingMessage; }
 async function decodedEof(resource: unknown) {
   const stream = (resource as { playStream: PassThrough }).playStream;
   const ended = new Promise<void>((resolve) => stream.once('end', resolve));
@@ -61,11 +62,36 @@ describe('Media track replacement lifecycle', () => {
   it('disables the read timeout under pipeline backpressure and restores it when reading resumes', async () => {
     const f = fixture(); const source = input(); await f.engine.play(source, 'current', 60, 60);
     await new Promise<void>((resolve) => setImmediate(resolve));
-    source.pause(); expect(source.setTimeout).toHaveBeenLastCalledWith(0);
-    f.engine.resume(); expect(source.setTimeout).toHaveBeenLastCalledWith(0);
+    source.pause(); expect(source.socket.setTimeout).toHaveBeenLastCalledWith(0);
+    f.engine.resume(); expect(source.socket.setTimeout).toHaveBeenLastCalledWith(0);
     source.resume(); await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(source.setTimeout).toHaveBeenLastCalledWith(15000);
+    expect(source.socket.setTimeout).toHaveBeenLastCalledWith(15000);
     f.engine.destroy();
+  });
+  it('keeps decoded audio playable when HTTP detaches its socket before the track finishes', async () => {
+    const f = fixture(); const socket = new Socket(); const source = new IncomingMessage(socket);
+    source.push(Buffer.alloc(3840)); source.complete = true; source.push(null);
+    try {
+      await f.engine.play(source, 'downloaded', 60, 60);
+      const resource = f.player.state.resource;
+      // Node's HTTP client detaches a completed response from its keep-alive socket.
+      Object.assign(source, { socket: null });
+      expect(() => source.emit('pause')).not.toThrow();
+      expect(() => source.emit('resume')).not.toThrow();
+      expect(() => f.engine.pause()).not.toThrow();
+      expect(() => f.engine.resume()).not.toThrow();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(f.player.state.resource).toBe(resource); expect(f.event).not.toHaveBeenCalled();
+      expect(f.player.pause).toHaveBeenCalledOnce(); expect(f.player.unpause).toHaveBeenCalledOnce();
+    } finally { f.engine.destroy(); socket.destroy(); }
+  });
+  it('does not rearm the read timer on a socket that has already been destroyed', async () => {
+    const f = fixture(); const source = input(); await f.engine.play(source, 'closing', 60, 60);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const timeout = vi.mocked(source.socket.setTimeout); timeout.mockClear();
+    Object.assign(source.socket, { destroyed: true });
+    source.emit('pause'); source.emit('resume'); f.engine.pause(); f.engine.resume();
+    expect(timeout).not.toHaveBeenCalled(); expect(f.event).not.toHaveBeenCalled(); f.engine.destroy();
   });
   it('reports the actual played duration on EOF so truncated tracks cannot be treated as completed', async () => {
     const f = fixture(); await f.engine.play(input(), 'short', 60, 60);
@@ -166,7 +192,7 @@ describe('Media seek preparation', () => {
     expect(args).toContain('pipe:0'); expect(args).toContain('pipe:1'); expect(args.join(' ')).not.toContain('http');
     expect(commit).toHaveBeenCalledOnce(); expect(oldInput.destroyed).toBe(true); expect(f.processes[0]!.kill).toHaveBeenCalledOnce();
     expect(f.player.state.resource).not.toBe(oldResource); expect(f.player.pause).toHaveBeenCalledTimes(paused ? 1 : 0);
-    expect(nextInput.setTimeout).toHaveBeenLastCalledWith(paused ? 0 : 15000);
+    expect(nextInput.socket.setTimeout).toHaveBeenLastCalledWith(paused ? 0 : 15000);
     f.player.emit('error', { resource: oldResource }); f.processes[0]!.emit('close', 1);
     expect(f.event).not.toHaveBeenCalled();
     await decodedEof(f.player.state.resource);

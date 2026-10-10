@@ -11,6 +11,12 @@ import { audioStreamRequestId } from '@scrt/media';
 const { AudioPlayerStatus, NoSubscriberBehavior, StreamType, VoiceConnectionStatus, createAudioPlayer, createAudioResource, entersState, joinVoiceChannel } = createRequire(import.meta.url)('@discordjs/voice') as typeof import('@discordjs/voice');
 // Each Discord audio frame lasts 20 ms. Allow short network/CPU stalls before failing.
 const maxMissedFrames = 150;
+function setReadTimeout(input: IncomingMessage, timeoutMs: number): void {
+  // HTTP can finish and detach its socket while buffered audio is still playing.
+  // Only a live, unread response owns a socket inactivity timer.
+  const socket = input.socket;
+  if (!input.destroyed && !input.readableEnded && socket && !socket.destroyed) socket.setTimeout(timeoutMs);
+}
 
 export type EngineEvent = { type: 'ended' | 'failed'; queueItemId: string; reason?: string; playedMs?: number } | { type: 'reconnecting' | 'reconnected' | 'disconnected' };
 export interface PlaybackEngine {
@@ -112,9 +118,13 @@ export class MediaPlaybackEngine implements PlaybackEngine {
   private decode(input: IncomingMessage, queueItemId: string, volume: number, maxSeconds: number | null, positionMs: number, failed: (child: ChildProcessWithoutNullStreams, reason: string) => void) {
     // Backpressure is expected: decoded audio is consumed at realtime speed.
     // A socket inactivity timer must run only while the pipeline wants bytes.
-    const updateTimeout = () => input.setTimeout(input.isPaused() ? 0 : 15000);
+    const updateTimeout = () => setReadTimeout(input, input.isPaused() ? 0 : 15000);
+    const detachTimeoutUpdates = () => {
+      input.off('pause', updateTimeout); input.off('resume', updateTimeout);
+      input.off('end', detachTimeoutUpdates); input.off('close', detachTimeoutUpdates);
+    };
     input.on('pause', updateTimeout); input.on('resume', updateTimeout);
-    input.once('close', () => { input.off('pause', updateTimeout); input.off('resume', updateTimeout); });
+    input.once('end', detachTimeoutUpdates); input.once('close', detachTimeoutUpdates);
     const args = ['-hide_banner', '-loglevel', 'error', '-protocol_whitelist', 'pipe', '-probesize', '1048576', '-analyzeduration', '5000000', '-i', 'pipe:0', '-map', '0:a:0', '-vn', '-sn', '-dn'];
     // Output seeking works on validated stdin bytes; FFmpeg never opens URLs.
     if (positionMs > 0) args.push('-ss', String(positionMs / 1000));
@@ -192,10 +202,10 @@ export class MediaPlaybackEngine implements PlaybackEngine {
   private cleanup() { const input = this.input; const child = this.process; this.input = null; this.process = null; this.resource = null; input?.destroy(); child?.kill('SIGKILL'); }
   pause() {
     // Paused PCM applies backpressure upstream; intentional inactivity is not a failed source.
-    this.input?.setTimeout(0);
+    if (this.input) setReadTimeout(this.input, 0);
     this.player.pause();
   }
-  resume() { if (this.input) this.input.setTimeout(this.input.isPaused() ? 0 : 15000); this.player.unpause(); }
+  resume() { if (this.input) setReadTimeout(this.input, this.input.isPaused() ? 0 : 15000); this.player.unpause(); }
   volume(value: number) { this.resource?.volume?.setVolume(value / 100); }
   stop() { this.generation++; this.cancelPreparation?.(); this.cancelPreparation = null; this.queueItemId = null; this.player.stop(true); this.cleanup(); }
   destroy() { this.stop(); const connection = this.connection; this.connection = null; this.reconnecting = false; connection?.removeAllListeners(); if (connection && connection.state.status !== VoiceConnectionStatus.Destroyed) connection.destroy(); }

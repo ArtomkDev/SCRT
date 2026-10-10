@@ -118,17 +118,18 @@ async function runBot(presenceAvailable: boolean): Promise<void> {
     });
   });
   client.on(Events.Error, (error) => log('error', 'bot', 'gateway.error', {}, error));
-  async function shutdown(code = 0) {
+  async function shutdown(code = 0, reason = 'requested') {
     if (stopping) return;
     stopping = true;
+    log('info', 'bot', 'shutdown.started', { code, reason, pid: process.pid });
     for (const pending of resourceSignals.values()) clearTimeout(pending);
     resourceSignals.clear();
     voice.stop();
-    const deadline = setTimeout(() => { log('error', 'activity', 'shutdown.deadline'); process.exit(code || 1); }, 12_000);
+    const deadline = setTimeout(() => { log('error', 'bot', 'shutdown.deadline', { code: code || 1, reason }); process.exit(code || 1); }, 12_000);
     try { await Promise.all([activity.shutdown(), media.shutdown()]); } catch (error) { log('error', 'bot', 'shutdown.flush.failed', {}, error); code = 1; }
     await client.destroy();
     clearTimeout(deadline);
-    log('info', 'bot', 'shutdown');
+    log('info', 'bot', 'shutdown', { code, reason });
     process.exitCode = code;
   }
   await media.start();
@@ -142,11 +143,15 @@ async function runBot(presenceAvailable: boolean): Promise<void> {
       voice.stop();
       await client.destroy();
       return runBot(false);
-    } else { log('error', 'bot', 'startup.failed', {}, error); await shutdown(1); return; }
+    } else { log('error', 'bot', 'startup.failed', {}, error); await shutdown(1, 'startup.failed'); return; }
   }
-  process.once('SIGINT', () => { void shutdown(); });
-  process.once('SIGTERM', () => { void shutdown(); });
-  process.once('uncaughtException', (error) => { log('error', 'bot', 'uncaught-exception', {}, error); void shutdown(1); });
+  process.once('SIGINT', () => { void shutdown(0, 'SIGINT'); });
+  process.once('SIGTERM', () => { void shutdown(0, 'SIGTERM'); });
+  process.once('uncaughtException', (error, origin) => {
+    // Hosted viewers may export only message, so retain the fatal stack there too.
+    log('error', 'bot', 'uncaught-exception', { origin, pid: process.pid, stack: error.stack }, error);
+    void shutdown(1, 'uncaughtException');
+  });
 }
 process.on('unhandledRejection', (error) => log('error', 'bot', 'unhandled-rejection', {}, error));
 log('info', 'bot', 'startup.presence.checking');

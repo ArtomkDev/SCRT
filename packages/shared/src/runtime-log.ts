@@ -20,9 +20,21 @@ export function runtimeLogSnapshot(cursor?: { runId: string; after: number }): R
   const entries = cursor ? state.entries.filter((entry) => entry.sequence > after).slice(0, 500) : state.entries;
   return { runId: state.runId, startedAt: state.startedAt, dropped: state.sequence - state.entries.length, entries: entries.map((entry) => ({ ...entry, context: { ...entry.context } })) };
 }
+function failureText(error: unknown, depth = 0, seen = new Set<Error>()): string {
+  if (depth >= 4 || seen.size >= 10) return '[truncated cause]';
+  if (!(error instanceof Error)) return error === undefined ? '' : redactLogText(String(error));
+  if (seen.has(error)) return '[circular cause]';
+  seen.add(error);
+  const code = 'code' in error && (typeof error.code === 'string' || typeof error.code === 'number') ? ` [${error.code}]` : '';
+  const summary = redactLogText(`${error.name}${code}: ${error.message}`);
+  const cause = error.cause === undefined ? '' : `; cause: ${failureText(error.cause, depth + 1, seen)}`;
+  const nested = error instanceof AggregateError && Array.isArray(error.errors)
+    ? `; errors: ${error.errors.slice(0, 5).map((item: unknown) => failureText(item, depth + 1, seen)).join('; ')}` : '';
+  return redactLogText(summary + cause + nested);
+}
 export function log(level: RuntimeLogEntry['level'], module: string, action: string, context: LogContext = {}, error?: unknown) {
   const safeContext = Object.fromEntries(Object.entries(context).filter(([, value]) => value !== undefined).slice(0, 30).map(([key, value]) => [key.slice(0, 100), /token|secret|password|authorization|cookie|key/i.test(key) ? '[REDACTED]' : typeof value === 'string' ? redactLogText(value) : typeof value === 'number' && !Number.isFinite(value) ? null : value]));
-  const failure = error instanceof Error ? redactLogText(`${error.name}: ${error.message}${error.cause instanceof Error ? `; cause: ${error.cause.message}` : ''}`) : error === undefined ? '' : redactLogText(String(error));
+  const failure = failureText(error);
   const message = redactLogText(`${module}/${action}${Object.keys(safeContext).length ? ` ${JSON.stringify(safeContext)}` : ''}${failure ? `: ${failure}` : ''}`);
   const state = buffer();
   const entry: RuntimeLogEntry = { sequence: ++state.sequence, time: new Date().toISOString(), level, module: redactLogText(module), action: redactLogText(action), message, context: safeContext, ...(error instanceof Error && error.stack ? { stack: redactLogText(error.stack) } : {}) };

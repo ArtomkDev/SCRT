@@ -35,4 +35,25 @@ describe('Worker log export', () => {
     expect(entry.message).toContain('Firestore unavailable');
     expect(entry.stack).toBeTypeOf('string');
   });
+  it('reports nested aggregate network codes even when the cause message is empty', () => {
+    const output = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const refused = Object.assign(new Error('connect failed'), { code: 'ECONNREFUSED' });
+    const unreachable = Object.assign(new Error('https://private.example/?token=private-signature'), { code: 'ENETUNREACH' });
+    const failure = new TypeError('fetch failed', { cause: new AggregateError([refused, unreachable], '') });
+    log('error', 'media', 'worker.request.failed', {}, failure);
+    const entry = runtimeLogSnapshot().entries.at(-1)!;
+    expect(entry.message).toContain('ECONNREFUSED'); expect(entry.message).toContain('ENETUNREACH');
+    expect(entry.message).toContain('AggregateError'); expect(entry.message).not.toContain('private-signature');
+    expect(output.mock.calls[0]![0]).not.toContain('private-signature');
+  });
+  it('bounds cyclic and excessive error causes without losing the primary failure', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const cycle = new Error('primary failure'); cycle.cause = cycle;
+    expect(() => log('error', 'bot', 'uncaught-exception', {}, cycle)).not.toThrow();
+    expect(runtimeLogSnapshot().entries.at(-1)!.message).toContain('primary failure');
+    const huge = new AggregateError(Array.from({ length: 100 }, (_, i) => new Error(`child-${i} ${'x'.repeat(8000)}`)), 'primary aggregate');
+    log('error', 'media', 'failed', {}, huge);
+    expect(runtimeLogSnapshot().entries.at(-1)!.message).toContain('primary aggregate');
+    expect(runtimeLogSnapshot().entries.at(-1)!.message.length).toBeLessThanOrEqual(4000);
+  });
 });
