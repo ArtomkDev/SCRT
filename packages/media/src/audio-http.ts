@@ -26,7 +26,7 @@ function audioTimeout(message: string): Error & { code: string } { return Object
 export class MediaAudioHttpError extends Error {
   constructor(readonly status: number) { super('Джерело не повернуло доступний аудіопотік.'); }
 }
-export async function mediaDestination(value: string, resolve: MediaDnsLookup = (host) => lookup(host, { all: true, verbatim: true })): Promise<{ url: URL; address: string; family: number }> {
+export async function mediaDestination(value: string, resolve: MediaDnsLookup = (host) => lookup(host, { all: true, verbatim: true }), requiredFamily?: 4 | 6): Promise<{ url: URL; address: string; family: number }> {
   const url = validateMediaUrl(value);
   const host = url.hostname.replace(/^\[|\]$/g, '');
   let timer: NodeJS.Timeout | undefined;
@@ -39,14 +39,16 @@ export async function mediaDestination(value: string, resolve: MediaDnsLookup = 
   if (!addresses.length || addresses.some((entry) => !isPublicMediaAddress(entry.address))) throw new Error('DNS адреса аудіо недозволена.');
   // Some hosting networks publish IPv6 DNS answers without an IPv6 outbound route.
   // Prefer validated IPv4 when available, retaining support for IPv6-only sources.
-  return { url, ...(addresses.find((entry) => entry.family === 4) ?? addresses[0]!) };
+  const selected = requiredFamily === undefined ? addresses.find((entry) => entry.family === 4) ?? addresses[0]! : addresses.find((entry) => entry.family === requiredFamily);
+  if (!selected) throw Object.assign(new Error(`Джерело не має доступної IPv${requiredFamily}-адреси.`), { code: 'EAFNOSUPPORT' });
+  return { url, ...selected };
 }
-export async function openAudioStream(value: string, signal?: AbortSignal, redirects = 0, resolve?: MediaDnsLookup, headers: Record<string, string> = {}): Promise<IncomingMessage> {
+export async function openAudioStream(value: string, signal?: AbortSignal, redirects = 0, resolve?: MediaDnsLookup, headers: Record<string, string> = {}, requiredFamily?: 4 | 6): Promise<IncomingMessage> {
   if (redirects > 3) throw new Error('Забагато переадресацій аудіо.');
   const requestId = globalThis.crypto.randomUUID(); const startedAt = Date.now();
   let destination: Awaited<ReturnType<typeof mediaDestination>>;
-  try { destination = await mediaDestination(value, resolve); }
-  catch (error) { log('error', 'media', 'source.http.dns.failed', { requestId, redirects, durationMs: Date.now() - startedAt }, error); throw error; }
+  try { destination = await mediaDestination(value, resolve, requiredFamily); }
+  catch (error) { log('error', 'media', 'source.http.dns.failed', { requestId, redirects, requiredFamily, durationMs: Date.now() - startedAt }, error); throw error; }
   const { url, address, family } = destination;
   log('info', 'media', 'source.http.connecting', { requestId, redirects, family, dnsMs: Date.now() - startedAt });
   const response = await new Promise<IncomingMessage>((accept, reject) => {
@@ -71,7 +73,7 @@ export async function openAudioStream(value: string, signal?: AbortSignal, redir
   if ([301, 302, 303, 307, 308].includes(response.statusCode ?? 0)) {
     response.destroy();
     if (!response.headers.location) throw new Error('Invalid audio redirect');
-    return openAudioStream(new URL(response.headers.location, url).href, signal, redirects + 1, resolve, headers);
+    return openAudioStream(new URL(response.headers.location, url).href, signal, redirects + 1, resolve, headers, requiredFamily);
   }
   const contentType = String(response.headers['content-type'] ?? '').split(';')[0]!.toLowerCase();
   if (response.statusCode !== 200) {

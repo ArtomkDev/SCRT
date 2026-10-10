@@ -8,6 +8,12 @@ describe('environment', () => {
     expect(botEnvSchema.parse({ ...base, STEAMGRIDDB_API_KEY: '', IGDB_TWITCH_CLIENT_ID: ' ', IGDB_TWITCH_CLIENT_SECRET: '' }).IGDB_TWITCH_CLIENT_ID).toBeUndefined();
   });
   it('reports missing required values', () => expect(() => parseEnvironment(botEnvSchema, {})).toThrow(/DISCORD_BOT_TOKEN/));
+  it('validates the bot-only YouTube address family and defaults to IPv4', () => {
+    const schema = botEnvSchema.pick({ MEDIA_YOUTUBE_IP_FAMILY: true });
+    expect(schema.parse({}).MEDIA_YOUTUBE_IP_FAMILY).toBe('ipv4');
+    expect(schema.parse({ MEDIA_YOUTUBE_IP_FAMILY: 'ipv6' }).MEDIA_YOUTUBE_IP_FAMILY).toBe('ipv6');
+    for (const value of ['auto', '6', '', '--proxy unsafe']) expect(() => schema.parse({ MEDIA_YOUTUBE_IP_FAMILY: value })).toThrow();
+  });
   it('rejects weak session secrets', () => expect(() => parseEnvironment(webEnvSchema, { SESSION_SECRET: 'short' })).toThrow(/SESSION_SECRET/));
   const web = { FIREBASE_PROJECT_ID: 'project', FIREBASE_CLIENT_EMAIL: 'service@example.com', FIREBASE_PRIVATE_KEY: 'key', DISCORD_BOT_TOKEN: 'token', DISCORD_CLIENT_ID: 'id', DISCORD_CLIENT_SECRET: 'secret', SESSION_SECRET: 's'.repeat(32) };
   it('keeps Media optional but requires a separate strong secret and secure public transport', () => {

@@ -9,6 +9,7 @@ const artwork = { STEAMGRIDDB_API_KEY: optionalCredential, IGDB_TWITCH_CLIENT_ID
 const mediaSecret = z.string().max(512).optional().transform((v) => v || undefined).pipe(z.string().min(32).optional());
 const mediaShared = { MEDIA_INTERNAL_SECRET: mediaSecret };
 const mediaProviders = { YOUTUBE_API_KEY: optionalCredential,
+  MEDIA_YOUTUBE_IP_FAMILY: z.enum(['ipv4', 'ipv6']).default('ipv4'),
   MEDIA_FFMPEG_PATH: z.string().max(1024).optional() };
 const appOrigin = z.url().refine((value) => {
   try {

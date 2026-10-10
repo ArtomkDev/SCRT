@@ -27,11 +27,12 @@ describe('audio HTTP redirect transport', () => {
     await vi.advanceTimersByTimeAsync(8000); await failure; expect(mocks.request).toHaveBeenCalledOnce();
   });
   function response(status: number, headers: Record<string, string>) { const stream = new PassThrough() as unknown as IncomingMessage; Object.assign(stream, { statusCode: status, headers }); return stream; }
-  function transport(reply: IncomingMessage) { mocks.request.mockImplementationOnce((_url, options, accept) => {
+  function transport(reply: IncomingMessage, pinnedAddress = '8.8.8.8', family = 4) { mocks.request.mockImplementationOnce((_url, options, accept) => {
     const req = new EventEmitter() as EventEmitter & { setTimeout: () => void; end: () => void; destroy: () => void };
     req.setTimeout = vi.fn(); req.destroy = vi.fn(); req.end = () => { req.emit('response', reply); accept(reply); };
     expect(options.autoSelectFamily).toBe(false);
-    let address: string | undefined; options.lookup('audio.example', {}, (_error: unknown, value: string) => { address = value; }); expect(address).toBe('8.8.8.8');
+    expect(options.family).toBe(family);
+    let address: string | undefined; options.lookup('audio.example', {}, (_error: unknown, value: string, actualFamily: number) => { address = value; expect(actualFamily).toBe(family); }); expect(address).toBe(pinnedAddress);
     return req;
   }); }
   it('blocks a redirect into private infrastructure before opening a second connection', async () => {
@@ -51,5 +52,18 @@ describe('audio HTTP redirect transport', () => {
     expect(audioStreamRequestId(stream)).toMatch(/^[0-9a-f-]{36}$/);
     expect(stream.readableFlowing).not.toBe(true); expect(stream.read(4)).toEqual(bytes);
     stream.destroy();
+  });
+  it('pins IPv6 through every redirect when the provider explicitly selects IPv6', async () => {
+    const address = '2606:4700:4700::1111';
+    transport(response(302, { location: 'https://cdn.example/file' }), address, 6);
+    const audio = response(200, { 'content-type': 'audio/mpeg' }); transport(audio, address, 6);
+    const dns = vi.fn(async () => [{ address: '8.8.8.8', family: 4 }, { address, family: 6 }]);
+    const stream = await openAudioStream('https://audio.example/file', undefined, 0, dns, {}, 6);
+    expect(stream).toBe(audio); expect(dns).toHaveBeenCalledTimes(2); stream.destroy();
+  });
+  it('does not fall back to another family or bypass private DNS checks in IPv6 mode', async () => {
+    await expect(openAudioStream('https://audio.example/a', undefined, 0, async () => [{ address: '8.8.8.8', family: 4 }], {}, 6)).rejects.toMatchObject({ code: 'EAFNOSUPPORT' });
+    await expect(mediaDestination('https://audio.example/a', async () => [{ address: '2606:4700:4700::1111', family: 6 }, { address: '10.0.0.1', family: 4 }], 6)).rejects.toThrow('DNS');
+    expect(mocks.request).not.toHaveBeenCalled();
   });
 });

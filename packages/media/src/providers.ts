@@ -128,6 +128,6 @@ export class MediaSourceRegistry {
     return { results: results.slice(0, 40), nextPage: more ? page + 1 : null, unavailable: providers.filter((_, i) => values[i]?.status === 'rejected').map((p) => p.health().name), ...(errors.length ? { errors } : {}) };
   }
 }
-export function createMediaSources(env: { YOUTUBE_API_KEY?: string }, extractor?: OnlineAudioExtractor) {
-  return new MediaSourceRegistry([new DirectAudioProvider(), extractor?.available() ? new OnlineAudioProvider('youtube', extractor) : new YouTubeProvider(env.YOUTUBE_API_KEY), new OnlineAudioProvider('soundcloud', extractor)]);
+export function createMediaSources(env: { YOUTUBE_API_KEY?: string; MEDIA_YOUTUBE_IP_FAMILY?: 'ipv4' | 'ipv6' }, extractor?: OnlineAudioExtractor) {
+  return new MediaSourceRegistry([new DirectAudioProvider(), extractor?.available() ? new OnlineAudioProvider('youtube', extractor, env.MEDIA_YOUTUBE_IP_FAMILY) : new YouTubeProvider(env.YOUTUBE_API_KEY), new OnlineAudioProvider('soundcloud', extractor)]);
 }

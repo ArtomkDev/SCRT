@@ -59,6 +59,41 @@ describe('online audio providers', () => {
     expect(adapter.inspect).toHaveBeenCalledTimes(1);
     expect(mocks.open).toHaveBeenCalledWith(details().url, signal, 0, undefined, { 'User-Agent': 'Provider-Agent', Origin: 'https://www.youtube.com' });
   });
+  it('uses configured IPv6 for YouTube audio while retaining the normal SoundCloud transport', async () => {
+    const adapter = extractor(); const registry = createMediaSources({ MEDIA_YOUTUBE_IP_FAMILY: 'ipv6' }, adapter);
+    const signal = new AbortController().signal; mocks.open.mockImplementation(async () => new PassThrough());
+    await registry.get('youtube').getPlayableResource('TwumA6YhQp4', signal);
+    expect(mocks.open).toHaveBeenLastCalledWith(details().url, signal, 0, undefined, expect.any(Object), 6);
+    adapter.inspect.mockResolvedValue(details('soundcloud'));
+    await registry.get('soundcloud').getPlayableResource(details('soundcloud').webpage_url, signal);
+    expect(mocks.open).toHaveBeenLastCalledWith(details('soundcloud').url, signal, 0, undefined, expect.any(Object));
+  });
+  it('pauses new extraction for a blocked provider for one minute without extending the deadline on clicks', async () => {
+    vi.useFakeTimers(); const adapter = extractor(); const provider = new OnlineAudioProvider('youtube', adapter);
+    adapter.inspect.mockRejectedValueOnce(new MediaSourceError('YouTube network blocked', 'NETWORK_BLOCKED'));
+    await expect(provider.resolve('TwumA6YhQp4')).rejects.toMatchObject({ code: 'NETWORK_BLOCKED' });
+    expect(provider.health().state).toBe('degraded');
+    await vi.advanceTimersByTimeAsync(30000);
+    await expect(provider.resolve('JB4RmAsA8K4')).rejects.toMatchObject({ code: 'NETWORK_BLOCKED' });
+    await expect(provider.search('Another track')).rejects.toMatchObject({ code: 'NETWORK_BLOCKED' });
+    expect(adapter.inspect).toHaveBeenCalledOnce(); expect(adapter.search).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(30000);
+    expect((await provider.resolve('TwumA6YhQp4')).playable).toBe(true);
+    expect(adapter.inspect).toHaveBeenCalledTimes(2); expect(provider.health().state).toBe('available');
+  });
+  it('retains usable cached audio and other providers when new YouTube extraction is blocked', async () => {
+    const adapter = extractor(); const registry = createMediaSources({}, adapter); const youtube = registry.get('youtube');
+    await youtube.resolve('TwumA6YhQp4');
+    adapter.inspect.mockRejectedValueOnce(new MediaSourceError('network blocked', 'NETWORK_BLOCKED'));
+    await expect(youtube.resolve('JB4RmAsA8K4')).rejects.toMatchObject({ code: 'NETWORK_BLOCKED' });
+    mocks.open.mockResolvedValue(new PassThrough());
+    await youtube.getPlayableResource('TwumA6YhQp4', new AbortController().signal);
+    expect(adapter.inspect).toHaveBeenCalledTimes(2); expect(mocks.open).toHaveBeenCalledOnce();
+    expect(registry.health().find((provider) => provider.id === 'youtube')?.state).toBe('degraded');
+    expect(registry.health().find((provider) => provider.id === 'soundcloud')?.state).toBe('available');
+    adapter.inspect.mockResolvedValue(details('soundcloud'));
+    expect((await registry.get('soundcloud').resolve(details('soundcloud').webpage_url)).playable).toBe(true);
+  });
   it('re-extracts an expired source instead of keeping a stale signed URL for queued tracks', async () => {
     const now = vi.spyOn(Date, 'now').mockReturnValue(1000);
     try {
@@ -184,6 +219,18 @@ describe('extractor process boundary', () => {
     expect(options.shell).toBeUndefined(); expect(options.signal).toBe(signal); expect(options.timeout).toBeGreaterThan(19000); expect(options.timeout).toBeLessThanOrEqual(20000);
     expect(options.env).not.toHaveProperty('DISCORD_BOT_TOKEN'); expect(options.env).not.toHaveProperty('NODE_OPTIONS');
   });
+  it('selects IPv6 only for YouTube extraction and logs the actual configured family', async () => {
+    const before = runtimeLogSnapshot(); const after = before.entries.at(-1)?.sequence ?? 0;
+    mocks.exec.mockImplementation((_file, _args, _options, callback) => callback(null, JSON.stringify(details()), ''));
+    const adapter = new YtDlpExtractor('/installed/yt-dlp', 'ipv6');
+    await adapter.inspect('youtube', 'TwumA6YhQp4');
+    expect(mocks.exec.mock.calls[0]![1]).toContain('--force-ipv6'); expect(mocks.exec.mock.calls[0]![1]).not.toContain('--force-ipv4');
+    mocks.exec.mockImplementation((_file, _args, _options, callback) => callback(null, JSON.stringify(details('soundcloud')), ''));
+    await adapter.inspect('soundcloud', details('soundcloud').webpage_url);
+    expect(mocks.exec.mock.calls[1]![1]).toContain('--force-ipv4');
+    const entries = runtimeLogSnapshot({ runId: before.runId, after }).entries.filter((entry) => entry.action === 'extractor.started');
+    expect(entries.map((entry) => entry.context.family)).toEqual([6, 4]);
+  });
   it('uses bounded provider searches and rejects arbitrary URL inputs before spawning', async () => {
     mocks.exec.mockImplementation((_file, _args, _options, callback) => callback(null, JSON.stringify(details()), ''));
     const adapter = new YtDlpExtractor('/installed/yt-dlp');
@@ -220,7 +267,6 @@ describe('extractor process boundary', () => {
     expect(mocks.exec).toHaveBeenCalledOnce();
   });
   it.each([
-    'ERROR: Sign in to confirm you’re not a bot https://secret.example/token',
     'ERROR: HTTP Error 503: Service Unavailable',
     'ERROR: The read operation timed out',
   ])('recovers from one transient extraction failure within the original time budget: %s', async (stderr) => {
@@ -233,12 +279,20 @@ describe('extractor process boundary', () => {
     expect(mocks.exec.mock.calls[1]![1]).toEqual(mocks.exec.mock.calls[0]![1]);
     expect(mocks.exec.mock.calls[1]![2].timeout).toBe(19500);
   });
-  it('stops after one repeated network refusal and never exposes the upstream response', async () => {
-    vi.useFakeTimers();
+  it('does not immediately retry a bot-verification refusal or expose the upstream response', async () => {
+    const before = runtimeLogSnapshot(); const after = before.entries.at(-1)?.sequence ?? 0;
     mocks.exec.mockImplementation((_file, _args, _options, callback) => callback(new Error('failed'), '', 'ERROR: Sign in to confirm you’re not a bot https://secret.example/token'));
     const result = new YtDlpExtractor('/installed/yt-dlp').inspect('youtube', 'TwumA6YhQp4');
-    const failure = expect(result).rejects.toThrow('YouTube тимчасово відхилив запит із мережі бота. Спробуйте ще раз трохи пізніше.');
-    await vi.advanceTimersByTimeAsync(500); await failure; expect(mocks.exec).toHaveBeenCalledTimes(2);
+    await expect(result).rejects.toMatchObject({ code: 'NETWORK_BLOCKED', message: expect.stringContaining('адміністратору') });
+    expect(mocks.exec).toHaveBeenCalledOnce();
+    const entries = runtimeLogSnapshot({ runId: before.runId, after }).entries;
+    expect(entries.find((entry) => entry.action === 'extractor.failed')?.context.sourceErrorCode).toBe('NETWORK_BLOCKED');
+    expect(JSON.stringify(entries)).not.toContain('secret.example');
+  });
+  it('distinguishes missing outbound routing from a source timeout without retrying', async () => {
+    mocks.exec.mockImplementation((_file, _args, _options, callback) => callback(new Error('failed'), '', 'ERROR: Unable to download webpage: [Errno 101] Network is unreachable'));
+    await expect(new YtDlpExtractor('/installed/yt-dlp', 'ipv6').inspect('youtube', 'TwumA6YhQp4')).rejects.toMatchObject({ code: 'NETWORK_UNREACHABLE' });
+    expect(mocks.exec).toHaveBeenCalledOnce();
   });
   it('cancels a pending retry without spawning another process and releases the concurrency slot', async () => {
     vi.useFakeTimers(); const controller = new AbortController();

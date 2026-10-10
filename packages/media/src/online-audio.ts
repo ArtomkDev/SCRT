@@ -10,6 +10,7 @@ import { MediaAudioHttpError, openAudioStream, validateMediaUrl } from './audio-
 import type { MediaSourceProvider } from './providers';
 
 type OnlineProviderId = 'youtube' | 'soundcloud';
+export type YouTubeIpFamily = 'ipv4' | 'ipv6';
 const names = { youtube: 'YouTube', soundcloud: 'SoundCloud' };
 const detailsSchema = z.object({
   id: z.string(), title: z.string(), uploader: z.string().nullish(), artist: z.string().nullish(),
@@ -24,7 +25,12 @@ export interface OnlineAudioExtractor {
   inspect(provider: OnlineProviderId, reference: string, signal?: AbortSignal): Promise<AudioDetails>;
   search(provider: OnlineProviderId, query: string, page?: number): Promise<AudioDetails[]>;
 }
-export class MediaSourceError extends Error {}
+export class MediaSourceError extends Error {
+  constructor(message: string, readonly code?: 'NETWORK_BLOCKED' | 'NETWORK_UNREACHABLE') { super(message); }
+}
+function networkBlockedMessage(provider: OnlineProviderId): string {
+  return `${names[provider]} відхиляє запити з мережі бота. Спробуйте інше джерело; адміністратору потрібно перевірити підключення бота.`;
+}
 
 export function youtubeReference(value: string): string {
   if (/^[A-Za-z0-9_-]{11}$/.test(value)) return value;
@@ -64,16 +70,17 @@ export function extractorExecutable(cwd = process.cwd()): string {
   return existsSync(local) ? local : join(cwd, 'apps', 'bot', '.media-tools', filename);
 }
 class ExtractionFailure extends MediaSourceError {
-  constructor(message: string, readonly retryable: boolean) { super(message); }
+  constructor(message: string, readonly retryable: boolean, code?: MediaSourceError['code']) { super(message, code); }
 }
 function extractorEnvironment() {
   return Object.fromEntries(Object.entries(process.env).filter(([name]) => /^(PATH|SYSTEMROOT|WINDIR|TEMP|TMP|HOME|USERPROFILE|LANG|LC_ALL)$/i.test(name)));
 }
 function extractionError(provider: OnlineProviderId, stderr: string): ExtractionFailure {
-  if (/confirm you[^\r\n]{0,30}not a bot/i.test(stderr)) return new ExtractionFailure(`${names[provider]} тимчасово відхилив запит із мережі бота. Спробуйте ще раз трохи пізніше.`, true);
+  if (/confirm you[^\r\n]{0,30}not a bot/i.test(stderr)) return new ExtractionFailure(networkBlockedMessage(provider), false, 'NETWORK_BLOCKED');
   // YouTube prefixes both throttling and deleted videos with "Video unavailable".
   // Classify the reason before that generic prefix or extractor advice/URLs.
   if (/this content isn['’]t available,? try again later|rate[- ]limited|too many requests|HTTP Error 429/i.test(stderr)) return new ExtractionFailure(`${names[provider]} тимчасово обмежив запити з мережі бота. Спробуйте ще раз пізніше.`, false);
+  if (/network is unreachable|no route to host|ENETUNREACH|EHOSTUNREACH/i.test(stderr)) return new ExtractionFailure(`З’єднання бота з ${names[provider]} недоступне. Адміністратору потрібно перевірити мережу бота.`, false, 'NETWORK_UNREACHABLE');
   if (/timed?\s*out|connection (?:reset|closed|aborted)|remote end closed|HTTP Error 5\d\d|temporarily unavailable|temporary failure|name or service not known|unable to resolve|failed to resolve/i.test(stderr)) return new ExtractionFailure(`${names[provider]} тимчасово не відповідає. Спробуйте ще раз пізніше.`, true);
   if (/requested format is not available/i.test(stderr)) return new ExtractionFailure('Для цього треку немає підтримуваного публічного аудіоформату.', false);
   if (/sign in|login required|authentication required/i.test(stderr)) return new ExtractionFailure(`${names[provider]} вимагає авторизації для цього треку. Підтримуються лише публічні аудіопотоки.`, false);
@@ -84,13 +91,14 @@ function extractionError(provider: OnlineProviderId, stderr: string): Extraction
 }
 export class YtDlpExtractor implements OnlineAudioExtractor {
   private active = 0;
-  constructor(private readonly executable = extractorExecutable()) {}
+  constructor(private readonly executable = extractorExecutable(), private readonly youtubeIpFamily: YouTubeIpFamily = 'ipv4') {}
+  private addressFamily(provider: OnlineProviderId): 4 | 6 { return provider === 'youtube' && this.youtubeIpFamily === 'ipv6' ? 6 : 4; }
   available() { return existsSync(this.executable); }
   logDiagnostics() {
     const probe = spawnSync(this.executable, ['--version'], { windowsHide: true, timeout: 3000, maxBuffer: 16000, encoding: 'utf8', env: extractorEnvironment() });
     log(probe.status === 0 ? 'info' : 'error', 'media', 'extractor.dependencies.checked', {
       installed: this.available(), executable: probe.status === 0, version: probe.stdout?.trim(), code: probe.status, signal: probe.signal,
-      platform: process.platform, arch: process.arch, nodeVersion: process.version,
+      platform: process.platform, arch: process.arch, nodeVersion: process.version, youtubeIpFamily: this.youtubeIpFamily,
     }, probe.error);
   }
   private async execute(provider: OnlineProviderId, input: string, signal?: AbortSignal, items?: string): Promise<unknown> {
@@ -99,7 +107,7 @@ export class YtDlpExtractor implements OnlineAudioExtractor {
       throw new MediaSourceError('Аудіоджерело не встановлено на сервері бота. Перезберіть і перезапустіть bot worker.');
     }
     // Only canonical provider URLs or our own search prefixes reach the executable; no shell or user flags.
-    const args = ['--ignore-config', '--no-playlist', '--no-cache-dir', '--no-plugin-dirs', '--force-ipv4',
+    const args = ['--ignore-config', '--no-playlist', '--no-cache-dir', '--no-plugin-dirs', this.addressFamily(provider) === 6 ? '--force-ipv6' : '--force-ipv4',
       '--js-runtimes', `node:${process.execPath}`, '--socket-timeout', '8', '--retries', '0', '--extractor-retries', '0',
       '--use-extractors', provider === 'youtube' ? 'youtube,youtube:search' : 'soundcloud,soundcloud:search',
       '--skip-download', '--print', '%(.{id,title,uploader,artist,duration,thumbnail,webpage_url,url,protocol,is_live,availability,age_limit,http_headers})j',
@@ -124,8 +132,8 @@ export class YtDlpExtractor implements OnlineAudioExtractor {
   }
   private run(provider: OnlineProviderId, args: string[], timeout: number, extractionId: string, attempt: number, signal?: AbortSignal, items?: string): Promise<unknown> {
     const startedAt = Date.now();
-    const diagnostic = { provider, extractionId, attempt, operation: items ? 'search' : 'inspect', timeoutMs: timeout };
-    log('info', 'media', 'extractor.started', { ...diagnostic, platform: process.platform, arch: process.arch, nodeVersion: process.version, family: 4 });
+    const diagnostic = { provider, extractionId, attempt, operation: items ? 'search' : 'inspect', timeoutMs: timeout, family: this.addressFamily(provider) };
+    log('info', 'media', 'extractor.started', { ...diagnostic, platform: process.platform, arch: process.arch, nodeVersion: process.version });
     return new Promise<unknown>((resolve, reject) => {
       execFile(this.executable, args, { windowsHide: true, timeout, maxBuffer: 2000000, signal,
         // Avoid forwarding bot credentials, sessions or database keys to provider runtimes.
@@ -136,7 +144,7 @@ export class YtDlpExtractor implements OnlineAudioExtractor {
             : error.code === 'ENOENT' || error.code === 'EACCES' ? new MediaSourceError('Не вдалося запустити аудіоджерело на сервері бота. Перевірте встановлення bot worker.')
               : error.killed || error.code === 'ETIMEDOUT' ? new ExtractionFailure(`${names[provider]} не відповів у відведений час. Спробуйте ще раз пізніше.`, true)
                 : extractionError(provider, stderr);
-          log(signal?.aborted ? 'info' : 'error', 'media', 'extractor.failed', { ...diagnostic, durationMs: Date.now() - startedAt, code: error.code, signal: error.signal, killed: error.killed, cancelled: signal?.aborted ?? false, reason: failure.message, stderr });
+          log(signal?.aborted ? 'info' : 'error', 'media', 'extractor.failed', { ...diagnostic, durationMs: Date.now() - startedAt, code: error.code, sourceErrorCode: failure.code, signal: error.signal, killed: error.killed, cancelled: signal?.aborted ?? false, reason: failure.message, stderr });
           reject(failure); return;
         }
         if (stderr.trim()) log('warn', 'media', 'extractor.warnings', { ...diagnostic, stderr });
@@ -169,18 +177,30 @@ export class OnlineAudioProvider implements MediaSourceProvider {
   readonly searchPageSize = 3;
   private readonly recent = new Map<string, { until: number; value: AudioDetails }>();
   private readonly pendingInspections = new Map<string, Promise<AudioDetails>>();
-  constructor(readonly id: OnlineProviderId, private readonly extractor?: OnlineAudioExtractor) {}
+  private networkBlockedUntil = 0;
+  constructor(readonly id: OnlineProviderId, private readonly extractor?: OnlineAudioExtractor, private readonly youtubeIpFamily: YouTubeIpFamily = 'ipv4') {}
   health(): MediaProviderHealth {
-    return { id: this.id, name: names[this.id], state: this.extractor?.available() ? 'available' : 'unconfigured',
+    return { id: this.id, name: names[this.id], state: this.extractor?.available() ? this.networkBlockedUntil > Date.now() ? 'degraded' : 'available' : 'unconfigured',
       capabilities: { search: true, metadata: true, playback: true, live: false, seek: true, playlists: false } };
   }
   private ready() {
     if (!this.extractor?.available()) throw new MediaSourceError(`${names[this.id]}: аудіоджерело не встановлено. Перезапустіть бота через pnpm dev.`);
+    if (this.networkBlockedUntil > Date.now()) throw new MediaSourceError(networkBlockedMessage(this.id), 'NETWORK_BLOCKED');
     return this.extractor;
+  }
+  private async sourceResult<T>(operation: Promise<T>): Promise<T> {
+    try { const value = await operation; this.networkBlockedUntil = 0; return value; }
+    catch (error) {
+      if (error instanceof MediaSourceError && error.code === 'NETWORK_BLOCKED') {
+        this.networkBlockedUntil = Date.now() + 60000;
+        log('warn', 'media', 'source.network.blocked', { provider: this.id, retryAfterMs: 60000 }, error);
+      }
+      throw error;
+    }
   }
   async search(query: string, page = 0): Promise<MediaTrack[]> {
     if (/^https?:\/\//i.test(query)) return page === 0 ? [await this.resolve(query)] : [];
-    return (await this.ready().search(this.id, query, page)).map((value) => { const track = publicTrack(this.id, value); this.remember(track.externalUrl, value); return track; });
+    return (await this.sourceResult(this.ready().search(this.id, query, page))).map((value) => { const track = publicTrack(this.id, value); this.remember(track.externalUrl, value); return track; });
   }
   private remember(key: string, value: AudioDetails) {
     if (!publicTrack(this.id, value).playable) return;
@@ -208,7 +228,7 @@ export class OnlineAudioProvider implements MediaSourceProvider {
     return this.extract(key, signal);
   }
   private async extract(key: string, signal?: AbortSignal) {
-    const value = await this.ready().inspect(this.id, key, signal); this.remember(key, value); return value;
+    const value = await this.sourceResult(this.ready().inspect(this.id, key, signal)); this.remember(key, value); return value;
   }
   async resolve(reference: string, signal?: AbortSignal) { return publicTrack(this.id, await this.inspect(reference, signal)); }
   async getPlayableResource(reference: string, signal: AbortSignal): Promise<IncomingMessage> {
@@ -236,7 +256,9 @@ export class OnlineAudioProvider implements MediaSourceProvider {
     const headers = Object.fromEntries(Object.entries(value.http_headers ?? {}).filter(([name, value]) =>
       ['user-agent', 'referer', 'origin', 'accept-language'].includes(name.toLowerCase()) && value.length <= 2048 && !/[\r\n]/.test(value)));
     for (let attempt = 0; ; attempt++) {
-      try { return await openAudioStream(url.href, signal, 0, undefined, headers); }
+      try { return await (this.id === 'youtube' && this.youtubeIpFamily === 'ipv6'
+        ? openAudioStream(url.href, signal, 0, undefined, headers, 6)
+        : openAudioStream(url.href, signal, 0, undefined, headers)); }
       catch (error) {
         const temporary = error instanceof MediaAudioHttpError && [408, 500, 502, 503, 504].includes(error.status)
           || error instanceof Error && 'code' in error && ['EAI_AGAIN', 'ECONNRESET', 'ETIMEDOUT'].includes(String(error.code));

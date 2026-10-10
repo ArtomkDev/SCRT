@@ -17,7 +17,7 @@ export class MediaModule {
   private stopping = false;
   private constructor(client: Client, private readonly repository: MediaRepository, guilds: GuildRepository, private readonly env: Configuration, engineFactory: (event: (event: EngineEvent) => void) => PlaybackEngine, health: { available: boolean; ffmpeg: boolean; opus: boolean; dave: boolean }) {
     if (!health.available) log('warn', 'media', 'engine.degraded', health);
-    const extractor = new YtDlpExtractor(); extractor.logDiagnostics();
+    const extractor = new YtDlpExtractor(undefined, env.MEDIA_YOUTUBE_IP_FAMILY); extractor.logDiagnostics();
     const sources = createMediaSources(env, extractor);
     for (const provider of sources.health()) log('info', 'media', 'source.configured', { provider: provider.id, state: provider.state, playback: provider.capabilities.playback });
     const sessions = new MediaSessionService(client, repository, guilds, sources, (_guildId, event) => engineFactory(event), health, (guildId) => !this.stopping && (this.leases.get(guildId)?.expiresAt ?? 0) > Date.now(), (guildId) => this.leases.get(guildId)?.unavailableReason ?? (this.leases.has(guildId) ? 'Підтвердження сесії прострочилося. Бот повторює підключення до Firebase; подробиці в логах.' : 'Медіа ще запускається для цього сервера. Дочекайтеся завершення відновлення.'));
