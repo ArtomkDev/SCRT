@@ -7,7 +7,7 @@ import { MediaModule } from './media.module';
 vi.mock('./playback-engine', () => ({
   playbackDependencies: () => ({ available: true, ffmpeg: true, opus: true, dave: true }),
   MediaPlaybackEngine: class {
-    async connect() {} async play() {} pause() {} resume() {} volume() {} stop() {} destroy() {}
+    async connect() {} async play() {} async seek() {} pause() {} resume() {} volume() {} stop() {} destroy() {}
   },
 }));
 

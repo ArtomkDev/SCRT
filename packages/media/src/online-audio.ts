@@ -1,11 +1,12 @@
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import type { IncomingMessage } from 'node:http';
 import { z } from 'zod';
 import type { MediaProviderHealth, MediaTrack } from '@scrt/shared';
 import { mediaTrackSchema } from '@scrt/validation';
-import { openAudioStream, validateMediaUrl } from './audio-http';
+import { MediaAudioHttpError, openAudioStream, validateMediaUrl } from './audio-http';
 import type { MediaSourceProvider } from './providers';
 
 type OnlineProviderId = 'youtube' | 'soundcloud';
@@ -54,7 +55,7 @@ function publicTrack(provider: OnlineProviderId, value: AudioDetails): MediaTrac
     title: value.title.slice(0, 300), artist: (value.artist || value.uploader || names[provider]).slice(0, 200),
     durationMs: value.duration ? Math.round(value.duration * 1000) : null, type: value.is_live ? 'live' : 'track',
     artworkUrl: value.thumbnail ? validateMediaUrl(value.thumbnail).href : null,
-    externalUrl, playable: !restricted && Boolean(value.url), seekable: false, explicit: null,
+    externalUrl, playable: !restricted && Boolean(value.url), seekable: !restricted && Boolean(value.url) && !value.is_live && Boolean(value.duration && value.duration > 0), explicit: null,
   });
 }
 export function extractorExecutable(cwd = process.cwd()): string {
@@ -62,10 +63,17 @@ export function extractorExecutable(cwd = process.cwd()): string {
   const local = join(cwd, '.media-tools', filename);
   return existsSync(local) ? local : join(cwd, 'apps', 'bot', '.media-tools', filename);
 }
-function extractionError(provider: OnlineProviderId, stderr: string): MediaSourceError {
-  if (/confirm you.re not a bot|sign in|login required|cookies/i.test(stderr)) return new MediaSourceError(`${names[provider]} вимагає авторизації для цього запиту. Публічний аудіопотік недоступний з мережі бота.`);
-  if (/private|unavailable|not available|not found|404|removed|restricted|geo/i.test(stderr)) return new MediaSourceError('Трек недоступний: видалений, приватний або має обмеження доступу.');
-  return new MediaSourceError('Не вдалося отримати аудіо з цього джерела. Спробуйте пізніше або інший трек.');
+class ExtractionFailure extends MediaSourceError {
+  constructor(message: string, readonly retryable: boolean) { super(message); }
+}
+function extractionError(provider: OnlineProviderId, stderr: string): ExtractionFailure {
+  if (/confirm you[^\r\n]{0,30}not a bot/i.test(stderr)) return new ExtractionFailure(`${names[provider]} тимчасово відхилив запит із мережі бота. Спробуйте ще раз трохи пізніше.`, true);
+  if (/requested format is not available/i.test(stderr)) return new ExtractionFailure('Для цього треку немає підтримуваного публічного аудіоформату.', false);
+  if (/private|not available|not found|404|removed|restricted|geo/i.test(stderr)) return new ExtractionFailure('Трек недоступний: видалений, приватний або має обмеження доступу.', false);
+  if (/sign in|login required|authentication required/i.test(stderr)) return new ExtractionFailure(`${names[provider]} вимагає авторизації для цього треку. Підтримуються лише публічні аудіопотоки.`, false);
+  if (/timed?\s*out|connection (?:reset|closed|aborted)|remote end closed|HTTP Error (?:429|5\d\d)|temporarily unavailable/i.test(stderr)) return new ExtractionFailure(`${names[provider]} тимчасово не відповідає. Спробуйте ще раз пізніше.`, true);
+  if (/unavailable/i.test(stderr)) return new ExtractionFailure('Трек недоступний: видалений, приватний або має обмеження доступу.', false);
+  return new ExtractionFailure('Не вдалося отримати аудіо з цього джерела. Спробуйте пізніше або інший трек.', false);
 }
 export class YtDlpExtractor implements OnlineAudioExtractor {
   private active = 0;
@@ -82,8 +90,22 @@ export class YtDlpExtractor implements OnlineAudioExtractor {
       ...(items ? ['--playlist-items', items] : []), '--', input];
     if (this.active >= 4) throw new MediaSourceError('Аудіоджерела зайняті. Спробуйте за кілька секунд.');
     this.active++;
+    const deadline = Date.now() + 20000;
+    try {
+      for (let attempt = 0; ; attempt++) {
+        try { return await this.run(provider, args, Math.max(1, deadline - Date.now()), signal, items); }
+        catch (error) {
+          // Repeat the same public request once. No credentials, client changes or unbounded retries.
+          if (!(error instanceof ExtractionFailure) || !error.retryable || attempt > 0 || signal?.aborted || deadline - Date.now() < 1500) throw error;
+          try { await delay(500, undefined, { signal }); }
+          catch { throw new MediaSourceError('Завантаження аудіо скасовано.'); }
+        }
+      }
+    } finally { this.active--; }
+  }
+  private run(provider: OnlineProviderId, args: string[], timeout: number, signal?: AbortSignal, items?: string): Promise<unknown> {
     return new Promise<unknown>((resolve, reject) => {
-      execFile(this.executable, args, { windowsHide: true, timeout: 20000, maxBuffer: 2000000, signal,
+      execFile(this.executable, args, { windowsHide: true, timeout, maxBuffer: 2000000, signal,
         // Avoid forwarding bot credentials, sessions or database keys to provider runtimes.
         env: Object.fromEntries(Object.entries(process.env).filter(([name]) => /^(PATH|SYSTEMROOT|WINDIR|TEMP|TMP|HOME|USERPROFILE|LANG|LC_ALL)$/i.test(name))),
       }, (error, stdout, stderr) => {
@@ -96,7 +118,7 @@ export class YtDlpExtractor implements OnlineAudioExtractor {
           resolve(items ? { entries } : entries[0]);
         } catch { reject(new MediaSourceError('Джерело повернуло некоректну інформацію про трек.')); }
       });
-    }).finally(() => { this.active--; });
+    });
   }
   async inspect(provider: OnlineProviderId, reference: string, signal?: AbortSignal) {
     return detailsSchema.parse(await this.execute(provider, canonical(provider, reference), signal));
@@ -112,10 +134,11 @@ export class YtDlpExtractor implements OnlineAudioExtractor {
 export class OnlineAudioProvider implements MediaSourceProvider {
   readonly searchPageSize = 3;
   private readonly recent = new Map<string, { until: number; value: AudioDetails }>();
+  private readonly pendingInspections = new Map<string, Promise<AudioDetails>>();
   constructor(readonly id: OnlineProviderId, private readonly extractor?: OnlineAudioExtractor) {}
   health(): MediaProviderHealth {
     return { id: this.id, name: names[this.id], state: this.extractor?.available() ? 'available' : 'unconfigured',
-      capabilities: { search: true, metadata: true, playback: true, live: false, seek: false, playlists: false } };
+      capabilities: { search: true, metadata: true, playback: true, live: false, seek: true, playlists: false } };
   }
   private ready() {
     if (!this.extractor?.available()) throw new MediaSourceError(`${names[this.id]}: аудіоджерело не встановлено. Перезапустіть бота через pnpm dev.`);
@@ -127,28 +150,56 @@ export class OnlineAudioProvider implements MediaSourceProvider {
   }
   private remember(key: string, value: AudioDetails) {
     if (!publicTrack(this.id, value).playable) return;
+    const now = Date.now(); let until = now + 300000;
+    if (value.url) {
+      const expiry = new URL(value.url).searchParams.get('expire');
+      if (expiry && /^\d+$/.test(expiry)) until = Math.min(until, Number(expiry) * 1000 - 60000);
+    }
+    if (until <= now) return;
     if (this.recent.size >= 128) this.recent.delete(this.recent.keys().next().value!);
-    this.recent.set(key, { until: Date.now() + 30000, value });
+    this.recent.set(key, { until, value });
   }
   private async inspect(reference: string, signal?: AbortSignal) {
     signal?.throwIfAborted();
     const key = canonical(this.id, reference); const cached = this.recent.get(key);
     if (cached && cached.until > Date.now()) return cached.value;
     this.recent.delete(key);
+    // Concurrent catalog requests for alternate share URLs must not multiply upstream extraction.
+    // Playback has its own cancellation signal and never shares a caller-owned process.
+    if (!signal) {
+      const pending = this.pendingInspections.get(key); if (pending) return pending;
+      const task = this.extract(key).finally(() => { this.pendingInspections.delete(key); });
+      this.pendingInspections.set(key, task); return task;
+    }
+    return this.extract(key, signal);
+  }
+  private async extract(key: string, signal?: AbortSignal) {
     const value = await this.ready().inspect(this.id, key, signal); this.remember(key, value); return value;
   }
   async resolve(reference: string, signal?: AbortSignal) { return publicTrack(this.id, await this.inspect(reference, signal)); }
   async getPlayableResource(reference: string, signal: AbortSignal): Promise<IncomingMessage> {
-    // Reuse a just-resolved source for 30 seconds; long-queued tracks get a fresh URL.
-    // Signed URLs stay worker-local and every opening still passes the safe HTTP transport.
+    // Keep valid signed URLs worker-local for at most five minutes. A rejected cached
+    // signature gets one fresh extraction; every opening still uses the safe transport.
+    const key = canonical(this.id, reference);
+    const cached = (this.recent.get(key)?.until ?? 0) > Date.now();
     const value = await this.inspect(reference, signal);
+    try { return await this.open(value, signal); }
+    catch (error) {
+      this.recent.delete(key);
+      if (!cached || !(error instanceof MediaAudioHttpError) || ![401, 403, 410].includes(error.status)) throw error;
+      signal.throwIfAborted();
+      const fresh = await this.extract(key, signal);
+      try { return await this.open(fresh, signal); }
+      catch (error) { this.recent.delete(key); throw error; }
+    }
+  }
+  private async open(value: AudioDetails, signal: AbortSignal): Promise<IncomingMessage> {
     if (!publicTrack(this.id, value).playable || !value.url) throw new MediaSourceError('Для цього треку немає доступного аудіопотоку.');
     const url = validateMediaUrl(value.url);
     const hosts = this.id === 'youtube' ? ['googlevideo.com'] : ['sndcdn.com', 'soundcloud.com'];
     if (!hosts.some((host) => url.hostname === host || url.hostname.endsWith(`.${host}`))) throw new MediaSourceError('Джерело повернуло недозволену адресу аудіо.');
     const headers = Object.fromEntries(Object.entries(value.http_headers ?? {}).filter(([name, value]) =>
       ['user-agent', 'referer', 'origin', 'accept-language'].includes(name.toLowerCase()) && value.length <= 2048 && !/[\r\n]/.test(value)));
-    try { return await openAudioStream(url.href, signal, 0, undefined, headers); }
-    catch (error) { this.recent.delete(canonical(this.id, reference)); throw error; }
+    return openAudioStream(url.href, signal, 0, undefined, headers);
   }
 }

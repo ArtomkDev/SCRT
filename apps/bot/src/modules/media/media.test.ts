@@ -8,7 +8,7 @@ import { mediaSettingsSchema, type MediaAction, type MediaCommand, type MediaSet
 import type { MediaHistoryItem, MediaSession, MediaTrack } from '@scrt/shared';
 import { MediaSourceError, MediaSourceRegistry, type MediaSourceProvider } from '@scrt/media';
 import { MediaSessionService } from './command-service';
-import type { EngineEvent } from './playback-engine';
+import type { EngineEvent, PlaybackEngine } from './playback-engine';
 import { mediaInternalAuthorized, startMediaInternalApi } from './internal-api';
 import { MediaCommandService } from './command-service';
 
@@ -33,7 +33,7 @@ function fixture() {
   const client = { isReady: () => true, user: { id: botId }, guilds: { cache: new Map([[guildId, guild]]) } } as unknown as Client;
   const provider: MediaSourceProvider = { id: 'direct', health: () => ({ id: 'direct', name: 'Direct', state: 'available', capabilities: { search: true, metadata: true, playback: true, live: true, seek: false, playlists: false } }),
     search: async () => [], resolve: vi.fn(async (id): Promise<MediaTrack> => ({ provider: 'direct', providerItemId: id, title: id, artist: 'Artist', type: 'track', durationMs: 60000, externalUrl: 'https://audio.example/track.mp3', artworkUrl: null, playable: true, seekable: false, explicit: null })), getPlayableResource: vi.fn(async () => new PassThrough() as unknown as IncomingMessage) };
-  const engine = { connect: vi.fn(async () => undefined), play: vi.fn(async () => undefined), pause: vi.fn(), resume: vi.fn(), volume: vi.fn(), stop: vi.fn(), destroy: vi.fn() };
+  const engine = { connect: vi.fn(async () => undefined), play: vi.fn<PlaybackEngine['play']>(async (...args) => { await args[5]?.(); }), seek: vi.fn<PlaybackEngine['seek']>(async () => undefined), pause: vi.fn(), resume: vi.fn(), volume: vi.fn(), stop: vi.fn(), destroy: vi.fn() };
   let event: (event: EngineEvent) => void = () => undefined;
   const mappings = { accessMappings: async () => ({ roles: [{ discordRoleId: guildId, appRole: 'VIEWER' as const }], members: [] }) };
   const createService = () => new MediaSessionService(client, store, mappings, new MediaSourceRegistry([provider]), (_id, next) => { event = next; return engine; }, { available: true, ffmpeg: true, opus: true, dave: true });
@@ -45,6 +45,131 @@ function fixture() {
 }
 afterEach(() => vi.useRealTimers());
 describe('Media session commands', () => {
+  it('keeps session, queue and history unchanged until the replacement decoder is ready', async () => {
+    const f = fixture(); await f.add('current'); await f.add('selected'); const before = structuredClone(f.store.session);
+    let ready!: () => void; const prepared = new Promise<void>((resolve) => { ready = resolve; });
+    let decoding!: () => void; const started = new Promise<void>((resolve) => { decoding = resolve; });
+    f.engine.play.mockImplementationOnce(async (...args) => { decoding(); await prepared; await args[5]?.(); });
+    f.engine.stop.mockClear();
+    const switching = f.service.execute(f.command({ type: 'PLAY_TRACK', provider: 'direct', providerItemId: 'selected' }, ownerId));
+    await started; expect(f.store.session).toEqual(before); expect(f.store.histories).toHaveLength(0); expect(f.engine.stop).not.toHaveBeenCalled();
+    ready(); const result = await switching;
+    expect(result.snapshot.session?.currentTrack?.title).toBe('selected'); expect(f.store.session?.state).toBe('playing');
+    expect(f.store.session?.queue).toHaveLength(0); expect(f.store.histories).toHaveLength(1);
+    expect(f.engine.stop).not.toHaveBeenCalled();
+  });
+  it.each([false, true])('does not advance to a different track after manual decoder rejection (active=%s)', async (active) => {
+    const f = fixture();
+    if (active) { await f.add('current'); await f.add('selected'); await f.add('different'); }
+    const before = structuredClone(f.store.session); const stream = new PassThrough() as unknown as IncomingMessage;
+    vi.mocked(f.provider.getPlayableResource).mockResolvedValueOnce(stream); f.engine.stop.mockClear(); f.engine.play.mockClear(); f.engine.destroy.mockClear();
+    f.engine.play.mockRejectedValueOnce(new Error('Decoder failed'));
+    await expect(f.service.execute(f.command({ type: 'PLAY_TRACK', provider: 'direct', providerItemId: 'selected' }, ownerId))).rejects.toMatchObject({ status: 422 });
+    expect(f.store.session).toEqual(before); expect(f.store.histories).toHaveLength(0); expect(f.engine.play).toHaveBeenCalledOnce();
+    expect(f.engine.stop).not.toHaveBeenCalled(); expect(f.engine.destroy).not.toHaveBeenCalled(); expect(stream.destroyed).toBe(true);
+    expect((await f.service.state(guildId, ownerId)).session).toEqual(before);
+  });
+  it('rechecks the actor before committing a decoded replacement', async () => {
+    const f = fixture(); await f.add('current'); await f.add('selected'); const before = structuredClone(f.store.session);
+    f.engine.stop.mockClear(); f.engine.play.mockImplementationOnce(async (...args) => { f.states.delete(ownerId); await args[5]?.(); });
+    await expect(f.service.execute(f.command({ type: 'PLAY_TRACK', provider: 'direct', providerItemId: 'selected' }, ownerId))).rejects.toMatchObject({ status: 403 });
+    expect(f.store.session).toEqual(before); expect(f.engine.stop).not.toHaveBeenCalled(); expect(f.store.histories).toHaveLength(0);
+  });
+  it('fails closed when the prepared switch cannot be persisted', async () => {
+    const f = fixture(); await f.add('current'); await f.add('selected'); const before = structuredClone(f.store.session);
+    vi.spyOn(f.store, 'checkpoint').mockRejectedValueOnce(new Error('Database unavailable')); f.engine.destroy.mockClear();
+    await expect(f.service.execute(f.command({ type: 'PLAY_TRACK', provider: 'direct', providerItemId: 'selected' }, ownerId))).rejects.toThrow('завершити перемикання');
+    expect(f.engine.destroy).toHaveBeenCalledOnce(); expect(f.store.session).toEqual(before);
+  });
+  it('recovers the persisted session after a failed Voice connection instead of reporting a source rejection', async () => {
+    const f = fixture(); await f.add('current'); await f.add('selected'); const before = structuredClone(f.store.session);
+    f.engine.destroy.mockClear(); f.engine.play.mockClear(); f.engine.connect.mockRejectedValueOnce(new Error('Voice unavailable'));
+    await expect(f.service.execute(f.command({ type: 'PLAY_TRACK', provider: 'direct', providerItemId: 'selected' }, ownerId))).rejects.toThrow('Voice unavailable');
+    expect(f.engine.destroy).toHaveBeenCalledOnce(); expect(f.engine.play).not.toHaveBeenCalled(); expect(f.store.session).toEqual(before);
+    const recovered = await f.service.state(guildId, ownerId);
+    expect(recovered.session).toMatchObject({ currentTrack: null, recoverable: true, state: 'idle' });
+    expect(recovered.session?.queue.map((track) => track.title)).toEqual(['current', 'selected']);
+  });
+  it('clears a stale provider warning after automatic advancement starts valid audio', async () => {
+    const f = fixture(); await f.add('current'); await f.add('blocked'); await f.add('valid');
+    vi.mocked(f.provider.getPlayableResource).mockRejectedValueOnce(new MediaSourceError('YouTube вимагає авторизації.'));
+    const result = await f.service.execute(f.command({ type: 'SKIP' }, ownerId));
+    expect(result.snapshot.session).toMatchObject({ state: 'playing', lastError: null, currentTrack: { title: 'valid' } });
+    expect(f.store.histories.find((entry) => entry.track.title === 'blocked')).toMatchObject({ result: 'failed', reason: 'YouTube вимагає авторизації.' });
+  });
+  it.each([false, true])('seeks without changing the queue/history and preserves paused=%s', async (paused) => {
+    const f = fixture(); const resolve = f.provider.resolve; f.provider.resolve = async (id, signal) => ({ ...await resolve(id, signal), seekable: true });
+    await f.add('current'); await f.add('next');
+    if (paused) await f.service.execute(f.command({ type: 'PAUSE' }, ownerId));
+    const before = structuredClone(f.store.session!); const stream = new PassThrough() as unknown as IncomingMessage;
+    vi.mocked(f.provider.getPlayableResource).mockResolvedValueOnce(stream);
+    const command = f.command({ type: 'SEEK', queueItemId: before.currentTrack!.queueItemId, positionMs: 30000 }, ownerId);
+    f.engine.seek.mockImplementationOnce(async (...args) => { await args[6](); });
+    await f.service.execute(command); await f.service.execute(command);
+    expect(f.engine.seek).toHaveBeenCalledExactlyOnceWith(stream, expect.any(String), 60, 1800, 30000, paused, expect.any(Function));
+    expect(f.store.session).toMatchObject({ sessionId: before.sessionId, state: paused ? 'paused' : 'playing', playbackOffsetMs: 30000, queueVersion: before.queueVersion + 1, queue: before.queue, played: before.played });
+    expect(f.store.session?.currentTrack?.requestedByUserId).toBe(userId); expect(f.store.histories).toHaveLength(0);
+    expect(f.store.session?.currentTrack?.queueItemId).not.toBe(before.currentTrack!.queueItemId);
+    expect(f.store.session?.pausedAt).toBe(paused ? f.store.session!.startedAt : null);
+    f.event({ type: 'ended', queueItemId: before.currentTrack!.queueItemId }); await f.service.state(guildId, ownerId);
+    expect(f.store.session?.currentTrack?.title).toBe('current');
+    await expect(f.service.execute(f.command({ type: 'SEEK', queueItemId: before.currentTrack!.queueItemId, positionMs: 10000 }, ownerId))).rejects.toMatchObject({ status: 409 });
+    await f.service.execute(f.command({ type: 'SKIP' }, ownerId));
+    expect(f.store.session).toMatchObject({ playbackOffsetMs: 0, currentTrack: { title: 'next' } }); stream.destroy();
+  });
+  it.each(['unsupported', 'past-end', 'source', 'decoder', 'voice'])('keeps the current session on a rejected seek (%s)', async (failure) => {
+    const f = fixture(); const resolve = f.provider.resolve; f.provider.resolve = async (id, signal) => ({ ...await resolve(id, signal), seekable: failure !== 'unsupported' });
+    await f.add('current'); const before = structuredClone(f.store.session!);
+    const stream = new PassThrough() as unknown as IncomingMessage; vi.mocked(f.provider.getPlayableResource).mockResolvedValueOnce(stream);
+    if (failure === 'source') f.provider.resolve = async () => { throw new MediaSourceError('Source unavailable'); };
+    if (failure === 'decoder') f.engine.seek.mockRejectedValueOnce(new Error('Decoder error'));
+    if (failure === 'voice') f.engine.seek.mockImplementationOnce(async (...args) => { f.states.delete(ownerId); await args[6](); });
+    f.engine.destroy.mockClear(); f.engine.stop.mockClear();
+    await expect(f.service.execute(f.command({ type: 'SEEK', queueItemId: before.currentTrack!.queueItemId, positionMs: failure === 'past-end' ? 60000 : 30000 }, ownerId))).rejects.toMatchObject({ status: failure === 'voice' ? 403 : 422 });
+    expect(f.engine.destroy).not.toHaveBeenCalled(); expect(f.engine.stop).not.toHaveBeenCalled();
+    expect((await f.service.state(guildId, userId)).session).toEqual(before);
+    if (failure === 'decoder' || failure === 'voice') expect(stream.destroyed).toBe(true); else stream.destroy();
+  });
+  it.each(['queued', 'searched'])('keeps audio and the session alive when a %s track cannot be resolved', async (origin) => {
+    const f = fixture(); await f.add('current'); await f.add('queued');
+    const before = structuredClone(f.store.session); f.engine.stop.mockClear(); f.engine.destroy.mockClear();
+    vi.mocked(f.provider.resolve).mockRejectedValueOnce(new MediaSourceError('Джерело тимчасово недоступне.'));
+    await expect(f.service.execute(f.command({ type: 'PLAY_TRACK', provider: 'direct', providerItemId: origin }, ownerId))).rejects.toMatchObject({ status: 422 });
+    expect(f.engine.stop).not.toHaveBeenCalled(); expect(f.engine.destroy).not.toHaveBeenCalled();
+    expect((await f.service.state(guildId, ownerId)).session).toEqual(before);
+    await f.service.execute(f.command({ type: 'PLAY_TRACK', provider: 'direct', providerItemId: 'queued' }, ownerId));
+    expect(f.store.session).toMatchObject({ sessionId: before!.sessionId, state: 'playing', currentTrack: { title: 'queued' } });
+  });
+  it('checks the replacement audio stream before stopping the current track', async () => {
+    const f = fixture(); await f.add('current'); await f.add('queued');
+    const before = structuredClone(f.store.session); f.engine.stop.mockClear(); f.engine.destroy.mockClear();
+    vi.mocked(f.provider.getPlayableResource).mockRejectedValueOnce(new Error('Audio connection timeout'));
+    await expect(f.service.execute(f.command({ type: 'PLAY_TRACK', provider: 'direct', providerItemId: 'queued' }, ownerId))).rejects.toMatchObject({ status: 422 });
+    expect(f.engine.stop).not.toHaveBeenCalled(); expect(f.engine.destroy).not.toHaveBeenCalled();
+    expect((await f.service.state(guildId, ownerId)).session).toEqual(before);
+    await f.service.execute(f.command({ type: 'PLAY_TRACK', provider: 'direct', providerItemId: 'queued' }, ownerId));
+    expect(f.store.session?.currentTrack?.title).toBe('queued');
+  });
+  it('uses refreshed metadata and keeps the replacement stream open beyond the preparation timeout', async () => {
+    const f = fixture(); await f.add('current'); await f.add('queued'); vi.useFakeTimers();
+    const resolve = f.provider.resolve; f.provider.resolve = async (id, signal) => ({ ...await resolve(id, signal), title: `fresh-${id}` });
+    const stream = new PassThrough() as unknown as IncomingMessage;
+    let signal: AbortSignal | undefined;
+    vi.mocked(f.provider.getPlayableResource).mockImplementationOnce(async (_id, value) => { signal = value; return stream; });
+    await f.service.execute(f.command({ type: 'PLAY_TRACK', provider: 'direct', providerItemId: 'queued' }, ownerId));
+    expect(f.store.session?.currentTrack?.title).toBe('fresh-queued');
+    expect(f.engine.play).toHaveBeenLastCalledWith(stream, expect.any(String), 60, 1800, expect.any(Number), expect.any(Function));
+    await vi.advanceTimersByTimeAsync(16000); expect(signal?.aborted).toBe(false); expect(stream.destroyed).toBe(false); stream.destroy();
+  });
+  it('releases a prepared source and keeps current playback when the actor leaves Voice during preparation', async () => {
+    const f = fixture(); await f.add('current'); await f.add('queued');
+    const before = structuredClone(f.store.session); const stream = new PassThrough() as unknown as IncomingMessage;
+    vi.mocked(f.provider.getPlayableResource).mockImplementationOnce(async () => { f.states.delete(ownerId); return stream; });
+    f.engine.stop.mockClear(); f.engine.destroy.mockClear();
+    await expect(f.service.execute(f.command({ type: 'PLAY_TRACK', provider: 'direct', providerItemId: 'queued' }, ownerId))).rejects.toMatchObject({ status: 403 });
+    expect(stream.destroyed).toBe(true); expect(f.engine.stop).not.toHaveBeenCalled(); expect(f.engine.destroy).not.toHaveBeenCalled();
+    expect((await f.service.state(guildId, userId)).session).toEqual(before);
+  });
   it('keeps completed/skipped tracks replayable, advances in order and preserves them across restart', async () => {
     const f = fixture(); await f.add('first'); await f.add('second'); await f.add('third');
     const first = f.store.session!.currentTrack!;
@@ -128,7 +253,7 @@ describe('Media session commands', () => {
     const restarted = f.createService(); await restarted.recover(f.guild);
     await restarted.execute(f.command({ type: 'PLAY_TRACK', provider: 'direct', providerItemId: 'new' }, ownerId));
     expect(f.store.session?.volume).toBe(23); expect(f.store.session?.sessionId).not.toBe(previousId);
-    expect(f.engine.play).toHaveBeenLastCalledWith(expect.anything(), expect.any(String), 23, expect.any(Number), expect.any(Number));
+    expect(f.engine.play).toHaveBeenLastCalledWith(expect.anything(), expect.any(String), 23, expect.any(Number), expect.any(Number), expect.any(Function));
   });
   it('clamps remembered volume to a newly lowered guild limit', async () => {
     const f = fixture(); await f.add('first');

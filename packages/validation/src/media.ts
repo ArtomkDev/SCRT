@@ -59,6 +59,7 @@ export const mediaSessionSchema = z.object({
   currentTrack: mediaQueueItemSchema.nullable(), queue: z.array(mediaQueueItemSchema).max(100),
   played: z.array(mediaQueueItemSchema).max(100).default([]),
   startedAt: z.number().nullable(), pausedAt: z.number().nullable(), accumulatedPauseMs: z.number().nonnegative(),
+  playbackOffsetMs: z.number().int().min(0).max(10800000).optional(),
   volume: z.number().min(0).max(100), repeatMode: z.enum(['off', 'track', 'queue']), queueMode: z.enum(['normal', 'fair']),
   shuffle: z.boolean(), lockedMode: z.enum(['unlocked', 'dj', 'admin']), createdByUserId: snowflake,
   queueVersion: z.number().int().nonnegative(), revision: z.number().int().nonnegative(),
@@ -69,6 +70,7 @@ const sourceReference = { provider: z.enum(['direct', 'radio', 'spotify', 'youtu
 export const mediaActionSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('ADD_TRACK'), ...sourceReference }).strict(),
   z.object({ type: z.literal('PLAY_TRACK'), ...sourceReference, following: z.array(z.object(sourceReference).strict()).max(99).optional() }).strict(),
+  z.object({ type: z.literal('SEEK'), queueItemId: z.uuid(), positionMs: z.number().int().min(0).max(10800000) }).strict(),
   ...(['PAUSE', 'RESUME', 'SKIP', 'VOTE_SKIP', 'STOP', 'RESTORE', 'MOVE_SESSION'] as const).map((type) => z.object({ type: z.literal(type) }).strict()),
   z.object({ type: z.literal('REMOVE_QUEUE_ITEM'), ...queueReference }).strict(),
   z.object({ type: z.literal('MOVE_QUEUE_ITEM'), ...queueReference, position: z.number().int().min(0).max(99) }).strict(),

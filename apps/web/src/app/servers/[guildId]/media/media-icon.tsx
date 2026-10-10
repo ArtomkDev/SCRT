@@ -11,6 +11,7 @@ const paths = {
   queue: 'M3 6h18M3 12h12M3 18h12m4-6 4 3-4 3Z',
   history: 'M3 11a9 9 0 1 1 2.5 7M3 4v7h7M12 7v5l3 2',
   trash: 'M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7',
+  external: 'M14 3h7v7m0-7L10 14M11 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-6',
 } as const;
 export function MediaIcon({ name, ...props }: SVGProps<SVGSVGElement> & { name: keyof typeof paths }) {
   return <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}><path d={paths[name]} fill={name === 'play' ? 'currentColor' : 'none'} /></svg>;

@@ -22,6 +22,109 @@ function ack(value: MediaSnapshot) { return Response.json({ replayed: false, sna
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe('Immediate player controls and ordered worker acknowledgments', () => {
+  it('keeps only the newest unstarted selection during rapid track clicks', async () => {
+    const initial = snapshot(), first = deferred(); let post = 0;
+    const second = initial.session!.queue[0]!, third = initial.session!.queue[1]!;
+    const latest = { ...third, providerItemId: 'https://audio.example/latest.mp3', title: 'latest' };
+    const fetch = vi.fn((_url: string, init?: RequestInit) => {
+      if (init?.method !== 'POST') return Promise.resolve(Response.json(initial));
+      if (++post === 1) return first.promise;
+      const result = structuredClone(initial); result.session!.currentTrack = latest; result.session!.queueVersion = 4;
+      return Promise.resolve(ack(result));
+    });
+    vi.stubGlobal('fetch', fetch); const { result } = renderHook(() => useMediaController(guildId, initial, null)); await act(async () => {});
+    act(() => { for (const track of [second, third, latest]) result.current.send({ type: 'PLAY_TRACK', provider: track.provider, providerItemId: track.providerItemId }, track); });
+    expect(result.current.pending).toHaveLength(2); expect(result.current.snapshot.session?.currentTrack?.title).toBe('current');
+    const changed = structuredClone(initial); changed.session!.currentTrack = second; changed.session!.queueVersion = 3;
+    await act(async () => first.resolve(ack(changed)));
+    expect(result.current.snapshot.session?.currentTrack?.title).toBe('latest');
+    const posts = fetch.mock.calls.filter(([, init]) => init?.method === 'POST').map(([, init]) => JSON.parse(String(init!.body)));
+    expect(posts.map((command) => command.action.providerItemId)).toEqual([second.providerItemId, latest.providerItemId]);
+    expect(posts.map((command) => command.expectedQueueVersion)).toEqual([2, 3]);
+  });
+  it('continues with a newer selection when preparing the first track is rejected', async () => {
+    const initial = snapshot(), first = deferred(); let post = 0;
+    const fetch = vi.fn((_url: string, init?: RequestInit) => {
+      if (init?.method !== 'POST') return Promise.resolve(Response.json(initial));
+      if (++post === 1) return first.promise;
+      const updated = structuredClone(initial); updated.session!.currentTrack = initial.session!.queue[1]!; updated.session!.queueVersion++;
+      return Promise.resolve(ack(updated));
+    });
+    vi.stubGlobal('fetch', fetch); const { result } = renderHook(() => useMediaController(guildId, initial, null)); await act(async () => {});
+    act(() => { for (const track of initial.session!.queue) result.current.send({ type: 'PLAY_TRACK', provider: track.provider, providerItemId: track.providerItemId }, track); });
+    await act(async () => first.resolve(Response.json({ error: 'Аудіо недоступне.' }, { status: 422 })));
+    expect(post).toBe(2); expect(result.current.pending).toHaveLength(0); expect(result.current.snapshot.session?.currentTrack?.title).toBe('third');
+    expect(result.current.message).toBe('');
+  });
+  it('cancels an unstarted alternate selection when the user chooses the in-flight track again', async () => {
+    const initial = snapshot(), command = deferred();
+    const fetch = vi.fn((_url: string, init?: RequestInit) => init?.method === 'POST' ? command.promise : Promise.resolve(Response.json(initial)));
+    vi.stubGlobal('fetch', fetch); const { result } = renderHook(() => useMediaController(guildId, initial, null)); await act(async () => {});
+    const second = initial.session!.queue[0]!, third = initial.session!.queue[1]!;
+    act(() => { for (const track of [second, third, second]) result.current.send({ type: 'PLAY_TRACK', provider: track.provider, providerItemId: track.providerItemId }, track); });
+    expect(result.current.pending).toHaveLength(1);
+    const updated = structuredClone(initial); updated.session!.currentTrack = second; updated.session!.queueVersion++;
+    await act(async () => command.resolve(ack(updated)));
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+    expect(result.current.snapshot.session?.currentTrack?.title).toBe('second');
+  });
+  it.each(['playing', 'paused'] as const)('previews seeking in %s state and rolls back a rejected position', async (state) => {
+    const initial = snapshot(), command = deferred(); initial.session!.state = state;
+    if (state === 'paused') initial.session!.pausedAt = Date.now();
+    const fetch = vi.fn((_url: string, init?: RequestInit) => init?.method === 'POST' ? command.promise : Promise.resolve(Response.json(initial)));
+    vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useMediaController(guildId, initial, null)); await act(async () => {});
+    act(() => result.current.send({ type: 'SEEK', queueItemId: ids[0]!, positionMs: 60000 }));
+    expect(result.current.snapshot.session).toMatchObject({ state, playbackOffsetMs: 60000, accumulatedPauseMs: 0 });
+    if (state === 'paused') expect(result.current.snapshot.session?.pausedAt).toBe(result.current.snapshot.session?.startedAt);
+    const post = fetch.mock.calls.find(([, init]) => init?.method === 'POST')!;
+    expect(JSON.parse(String(post[1]!.body))).toMatchObject({ sessionId: ids[0], expectedQueueVersion: 2, action: { type: 'SEEK', queueItemId: ids[0], positionMs: 60000 } });
+    await act(async () => command.resolve(Response.json({ error: 'Перемотування недоступне.' }, { status: 422 })));
+    expect(result.current.snapshot.session).toEqual(initial.session); expect(result.current.message).toBe('Перемотування недоступне.'); expect(result.current.pending).toHaveLength(0);
+  });
+  it('does not retry a stale seek on a newer track', async () => {
+    const initial = snapshot(), fresh = structuredClone(initial); fresh.session!.currentTrack = fresh.session!.queue[0]!; fresh.session!.queueVersion++;
+    let get = 0;
+    const fetch = vi.fn(async (_url: string, init?: RequestInit) => init?.method === 'POST' ? Response.json({ error: 'Черга змінилася.' }, { status: 409 }) : Response.json(++get === 1 ? initial : fresh));
+    vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useMediaController(guildId, initial, null)); await act(async () => {});
+    await act(async () => result.current.send({ type: 'SEEK', queueItemId: ids[0]!, positionMs: 60000 }));
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1); expect(result.current.snapshot.session?.currentTrack?.title).toBe('second');
+  });
+  it('reconciles a stale track selection once and preserves subsequent rapid selections in order', async () => {
+    const initial = snapshot(), first = deferred(); const fresh = structuredClone(initial); fresh.session!.queueVersion = 3;
+    let post = 0, get = 0;
+    const fetch = vi.fn((_url: string, init?: RequestInit) => {
+      if (init?.method !== 'POST') return Promise.resolve(Response.json(++get === 1 ? initial : fresh));
+      if (++post === 1) return first.promise;
+      const selected = JSON.parse(String(init.body)).action.providerItemId;
+      const updated = structuredClone(fresh); updated.session!.currentTrack = initial.session!.queue.find((item) => item.providerItemId === selected)!;
+      updated.session!.queueVersion = post + 2; return Promise.resolve(ack(updated));
+    });
+    vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useMediaController(guildId, initial, null)); await act(async () => {});
+    act(() => { for (const track of initial.session!.queue) result.current.send({ type: 'PLAY_TRACK', provider: track.provider, providerItemId: track.providerItemId }, track); });
+    await act(async () => first.resolve(Response.json({ error: 'Черга змінилася.' }, { status: 409 })));
+    expect(result.current.pending).toHaveLength(0); expect(result.current.message).toBe(''); expect(result.current.snapshot.session?.currentTrack?.title).toBe('third');
+    const posts = fetch.mock.calls.filter(([, init]) => init?.method === 'POST').map(([, init]) => JSON.parse(String(init!.body)));
+    expect(posts.map((command) => command.expectedQueueVersion)).toEqual([2, 3, 4]);
+    expect(posts[0].commandId).toBe(posts[1].commandId); expect(posts[2].commandId).not.toBe(posts[1].commandId);
+  });
+  it.each(['unchanged', 'new-session', 'second-conflict', 'timeout'])('does not repeat an unsafe or repeatedly rejected selection (%s)', async (failure) => {
+    const initial = snapshot(); const fresh = structuredClone(initial);
+    if (failure !== 'unchanged') fresh.session!.queueVersion++;
+    if (failure === 'new-session') fresh.session!.sessionId = ids[1]!;
+    let get = 0;
+    const fetch = vi.fn(async (_url: string, init?: RequestInit) => init?.method === 'POST'
+      ? Response.json({ error: 'Дію відхилено.' }, { status: failure === 'timeout' ? 503 : 409 })
+      : Response.json(++get === 1 ? initial : fresh));
+    vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useMediaController(guildId, initial, null)); await act(async () => {});
+    const track = initial.session!.queue[0]!;
+    await act(async () => result.current.send({ type: 'PLAY_TRACK', provider: track.provider, providerItemId: track.providerItemId }, track));
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(failure === 'second-conflict' ? 2 : 1);
+    expect(result.current.pending).toHaveLength(0); expect(result.current.message).toContain('Дію відхилено.');
+  });
   it('silently acknowledges ordinary controls and auto-dismisses add feedback without hiding errors', async () => {
     vi.useFakeTimers(); const initial = snapshot();
     const fetch = vi.fn(async (_url: string, init?: RequestInit) => init?.method === 'POST' ? ack(initial) : Response.json(initial));
@@ -110,4 +213,21 @@ describe('Immediate player controls and ordered worker acknowledgments', () => {
     await act(async () => poll.resolve(failure ? Response.json({ error: 'Old outage' }, { status: 503 }) : Response.json(initial)));
     expect(result.current.snapshot.session?.state).toBe('paused'); expect(result.current.unavailable).toBeNull();
   });
+});
+
+it('replaces an unsent selection while reconciling a rejected source', async () => {
+ const initial = snapshot(), first = deferred(), reconciliation = deferred(); let reads = 0;
+ const second = initial.session!.queue[0]!, third = initial.session!.queue[1]!, current = initial.session!.currentTrack!;
+ const actions: string[] = [];
+ vi.stubGlobal('fetch', vi.fn((_url: string, init?: RequestInit) => {
+   if (init?.method !== 'POST') return ++reads === 1 ? Promise.resolve(Response.json(initial)) : reconciliation.promise;
+   const action = JSON.parse(String(init.body)).action; actions.push(action.providerItemId);
+   return actions.length === 1 ? first.promise : Promise.resolve(ack(initial));
+ }));
+ const { result } = renderHook(() => useMediaController(guildId, initial, null)); await act(async () => {});
+ act(() => { for (const track of [second, third]) result.current.send({ type: 'PLAY_TRACK', provider: track.provider, providerItemId: track.providerItemId }, track); });
+ await act(async () => first.resolve(Response.json({ error: 'Unavailable' }, { status: 422 })));
+ act(() => result.current.send({ type: 'PLAY_TRACK', provider: current.provider, providerItemId: current.providerItemId }, current));
+ await act(async () => reconciliation.resolve(Response.json(initial)));
+ expect(actions).toEqual([second.providerItemId, current.providerItemId]); expect(result.current.pending).toHaveLength(0);
 });

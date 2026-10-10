@@ -28,7 +28,7 @@ export class MediaModule {
       log('info', 'media', 'engine.dependencies.checked', health);
       return new MediaModule(client, repository, guilds, env, (event) => new engine.MediaPlaybackEngine(event, env.MEDIA_FFMPEG_PATH), health);
     }
-    catch (error) { log('error', 'media', 'engine.load.failed', {}, error); return new MediaModule(client, repository, guilds, env, () => ({ connect: async () => { throw new Error('Media engine unavailable'); }, play: async () => { throw new Error('Media engine unavailable'); }, pause() {}, resume() {}, volume() {}, stop() {}, destroy() {} }), { available: false, ffmpeg: false, opus: false, dave: false }); }
+    catch (error) { log('error', 'media', 'engine.load.failed', {}, error); return new MediaModule(client, repository, guilds, env, () => ({ connect: async () => { throw new Error('Media engine unavailable'); }, play: async () => { throw new Error('Media engine unavailable'); }, seek: async () => { throw new Error('Media engine unavailable'); }, pause() {}, resume() {}, volume() {}, stop() {}, destroy() {} }), { available: false, ffmpeg: false, opus: false, dave: false }); }
   }
   async start() { if (!this.env.MEDIA_INTERNAL_SECRET) { log('warn', 'media', 'internal.unconfigured'); return; } try { this.server = await startMediaInternalApi(this.commands, { secret: this.env.MEDIA_INTERNAL_SECRET, host: this.env.MEDIA_INTERNAL_HOST, port: this.env.MEDIA_INTERNAL_PORT }); log('info', 'media', 'internal.started', { host: this.env.MEDIA_INTERNAL_HOST, port: this.env.MEDIA_INTERNAL_PORT }); } catch (error) { log('error', 'media', 'internal.start.failed', {}, error); } }
   async recover(guild: Guild) {

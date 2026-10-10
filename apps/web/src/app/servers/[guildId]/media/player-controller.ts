@@ -3,10 +3,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { mediaCommandResultSchema, mediaSnapshotSchema, type MediaAction, type MediaSnapshot } from '@scrt/validation';
 import type { MediaTrack } from '@scrt/shared';
 
-type PendingCommand = { id: string; action: MediaAction; track?: MediaTrack; at: number };
+type PendingCommand = { id: string; action: MediaAction; track?: MediaTrack; at: number; rebased?: boolean };
+class MediaResponseError extends Error { constructor(message: string, readonly status: number) { super(message); } }
 export async function mediaResponse(response: Response): Promise<unknown> {
   const value: unknown = await response.json();
-  if (!response.ok) throw new Error(typeof value === 'object' && value && 'error' in value ? String(value.error) : 'Медіа недоступне.');
+  if (!response.ok) throw new MediaResponseError(typeof value === 'object' && value && 'error' in value ? String(value.error) : 'Медіа недоступне.', response.status);
   return value;
 }
 function project(snapshot: MediaSnapshot, commands: PendingCommand[]): MediaSnapshot {
@@ -20,6 +21,11 @@ function project(snapshot: MediaSnapshot, commands: PendingCommand[]): MediaSnap
       case 'SET_REPEAT': session.repeatMode = action.repeatMode; break;
       case 'SET_SHUFFLE': session.shuffle = action.shuffle; break;
       case 'SET_LOCK': session.lockedMode = action.lockedMode; break;
+      case 'SEEK':
+        if (session.currentTrack?.queueItemId === action.queueItemId) {
+          session.playbackOffsetMs = action.positionMs; session.startedAt = at; session.pausedAt = session.state === 'paused' ? at : null; session.accumulatedPauseMs = 0;
+        }
+        break;
       case 'REMOVE_QUEUE_ITEM': session.queue = session.queue.filter((item) => item.queueItemId !== action.queueItemId); session.played = session.played.filter((item) => item.queueItemId !== action.queueItemId); break;
       case 'MOVE_QUEUE_ITEM': {
         const from = session.queue.findIndex((item) => item.queueItemId === action.queueItemId);
@@ -31,7 +37,7 @@ function project(snapshot: MediaSnapshot, commands: PendingCommand[]): MediaSnap
         if (current) session.played = [...session.played.filter((item) => item.provider !== current.provider || item.providerItemId !== current.providerItemId), current].slice(-100);
         session.currentTrack = action.type === 'SKIP' ? session.queue.shift() ?? null : null;
         session.played = session.played.filter((item) => item.provider !== session.currentTrack?.provider || item.providerItemId !== session.currentTrack?.providerItemId);
-        session.state = session.currentTrack ? 'buffering' : 'idle'; session.recoverable = action.type === 'STOP' && session.queue.length > 0; session.startedAt = null; session.pausedAt = null; break;
+        session.state = session.currentTrack ? 'buffering' : 'idle'; session.recoverable = action.type === 'STOP' && session.queue.length > 0; session.startedAt = null; session.pausedAt = null; session.playbackOffsetMs = 0; break;
       }
     }
   }
@@ -43,6 +49,7 @@ function project(snapshot: MediaSnapshot, commands: PendingCommand[]): MediaSnap
 export function useMediaController(guildId: string, initial: MediaSnapshot, initialError: string | null) {
   const endpoint = `/api/guilds/${guildId}/media`;
   const confirmed = useRef(initial); const jobs = useRef<PendingCommand[]>([]);
+  const active = useRef<PendingCommand | null>(null);
   const running = useRef(false); const epoch = useRef(0); const disposed = useRef(false);
   const [view, setView] = useState({ snapshot: initial, pending: [] as PendingCommand[] });
   const [unavailable, setUnavailable] = useState(initialError);
@@ -87,11 +94,12 @@ export function useMediaController(guildId: string, initial: MediaSnapshot, init
       while (jobs.current.length && !disposed.current) {
         const job = jobs.current[0]!; const session = confirmed.current.session;
         const action = 'expectedQueueVersion' in job.action ? { ...job.action, expectedQueueVersion: session?.queueVersion ?? 0 } : job.action;
+        active.current = job;
         try {
           const response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ commandId: job.id, sessionId: session?.sessionId ?? null, expectedQueueVersion: session?.queueVersion ?? null, action }) });
           const result = mediaCommandResultSchema.parse(await mediaResponse(response));
           if (result.snapshot.session && result.snapshot.session.guildId !== guildId) throw new Error('Некоректний стан сервера.');
-          confirmed.current = result.snapshot; jobs.current.shift();
+          confirmed.current = result.snapshot; jobs.current.shift(); active.current = null;
           if (!disposed.current) {
             setUnavailable(null);
             const recovery = action.type === 'ADD_TRACK' && Boolean(result.snapshot.session?.recoverable);
@@ -99,6 +107,31 @@ export function useMediaController(guildId: string, initial: MediaSnapshot, init
             publish();
           }
         } catch (error) {
+          active.current = null;
+          if (error instanceof MediaResponseError && error.status === 422 && action.type === 'PLAY_TRACK') {
+            // A preparation rejection has no audible effects. Keep the user's
+            // newer selection, reconcile, then run it against confirmed state.
+            jobs.current.shift(); epoch.current++;
+            if (!disposed.current) setMessage(error.message);
+            publish();
+            try {
+              confirmed.current = await readSnapshot();
+              if (!disposed.current) { setUnavailable(null); publish(); }
+              continue;
+            } catch { /* Unknown state still cancels later actions below. */ }
+          }
+          // A rejected selection has no effects. If an automatic advance changed
+          // only the queue version, reconcile and retry that selection once.
+          if (error instanceof MediaResponseError && error.status === 409 && action.type === 'PLAY_TRACK' && session && !job.rebased) {
+            try {
+              const fresh = await readSnapshot();
+              if (!disposed.current && fresh.session?.sessionId === session.sessionId && fresh.session.queueVersion !== session.queueVersion) {
+                confirmed.current = fresh; job.rebased = true;
+                if (fresh.session.currentTrack?.provider === action.provider && fresh.session.currentTrack.providerItemId === action.providerItemId) jobs.current = jobs.current.filter((pending) => pending.id !== job.id);
+                setUnavailable(null); publish(); continue;
+              }
+            } catch { /* Fall through to cancellation if the state is unknown. */ }
+          }
           // A timeout may already have applied: do not retry or execute later clicks
           // against an unknown state. Reconcile once and expose the failure.
           const cancelled = jobs.current.length > 1; jobs.current = []; epoch.current++;
@@ -115,14 +148,28 @@ export function useMediaController(guildId: string, initial: MediaSnapshot, init
           // can queue up, but only run against the newly confirmed state.
         }
       }
-    } finally { running.current = false; }
+    } finally { active.current = null; running.current = false; }
   }
   function send(action: MediaAction, track?: MediaTrack) {
     if (disposed.current) return;
     if (jobs.current.length >= 20) { setMessage('Забагато дій поспіль. Дочекайтеся синхронізації.'); return; }
-    if ((action.type === 'ADD_TRACK' || action.type === 'PLAY_TRACK') && jobs.current.some((job) => job.action.type === action.type && 'providerItemId' in job.action && job.action.provider === action.provider && job.action.providerItemId === action.providerItemId)) return;
     const last = jobs.current.at(-1);
-    if (action.type === 'SET_VOLUME' && last?.action.type === 'SET_VOLUME' && (!running.current || jobs.current.length > 1)) last.action = action;
+    if (action.type === 'ADD_TRACK' && jobs.current.some((job) => job.action.type === 'ADD_TRACK' && job.action.provider === action.provider && job.action.providerItemId === action.providerItemId)) return;
+    if (action.type === 'PLAY_TRACK') {
+      const first = jobs.current[0];
+      if (active.current === first && first?.action.type === 'PLAY_TRACK' && first.action.provider === action.provider && first.action.providerItemId === action.providerItemId) {
+        if (jobs.current.slice(1).some((job) => job.action.type === 'PLAY_TRACK')) {
+          jobs.current = jobs.current.filter((job, index) => index === 0 || job.action.type !== 'PLAY_TRACK');
+          epoch.current++; setMessage(''); publish();
+        }
+        return;
+      }
+      if (last?.action.type === 'PLAY_TRACK' && last.action.provider === action.provider && last.action.providerItemId === action.providerItemId) return;
+    }
+    if (action.type === 'PLAY_TRACK' && last?.action.type === 'PLAY_TRACK' && last !== active.current) {
+      jobs.current[jobs.current.length - 1] = { id: crypto.randomUUID(), action, track, at: Date.now() };
+    }
+    else if (action.type === 'SET_VOLUME' && last?.action.type === 'SET_VOLUME' && last !== active.current) last.action = action;
     else jobs.current.push({ id: crypto.randomUUID(), action, track, at: Date.now() });
     epoch.current++; setMessage(''); publish(); void drain();
   }

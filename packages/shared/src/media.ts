@@ -12,6 +12,7 @@ export type MediaSession = {
   sessionId: string; guildId: string; voiceChannelId: string; voiceChannelName: string;
   state: MediaState; currentTrack: MediaQueueItem | null; queue: MediaQueueItem[]; played: MediaQueueItem[];
   startedAt: number | null; pausedAt: number | null; accumulatedPauseMs: number;
+  playbackOffsetMs?: number;
   volume: number; repeatMode: 'off' | 'track' | 'queue'; queueMode: 'normal' | 'fair';
   shuffle: boolean; lockedMode: 'unlocked' | 'dj' | 'admin'; createdByUserId: string;
   queueVersion: number; revision: number; createdAt: number; updatedAt: number;
@@ -22,7 +23,7 @@ export type MediaProviderHealth = {
   id: MediaProviderId; name: string; state: 'available' | 'degraded' | 'unconfigured' | 'error';
   capabilities: { search: boolean; metadata: boolean; playback: boolean; live: boolean; seek: boolean; playlists: boolean };
 };
-export function mediaProgress(session: Pick<MediaSession, 'startedAt' | 'pausedAt' | 'accumulatedPauseMs'> & { currentTrack: Pick<MediaTrack, 'durationMs'> | null }, now: number): number {
+export function mediaProgress(session: Pick<MediaSession, 'startedAt' | 'pausedAt' | 'accumulatedPauseMs' | 'playbackOffsetMs'> & { currentTrack: Pick<MediaTrack, 'durationMs'> | null }, now: number): number {
   if (session.startedAt === null) return 0;
-  return Math.min(session.currentTrack?.durationMs ?? Infinity, Math.max(0, (session.pausedAt ?? now) - session.startedAt - session.accumulatedPauseMs));
+  return Math.min(session.currentTrack?.durationMs ?? Infinity, Math.max(0, (session.playbackOffsetMs ?? 0) + (session.pausedAt ?? now) - session.startedAt - session.accumulatedPauseMs));
 }

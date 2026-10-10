@@ -4,6 +4,15 @@ const settings: MediaPolicySettings = { enabled: true, controlMode: 'QUEUE', all
 const actor: MediaActor = { userId: 'user', voiceChannelId: 'room', permissions: new Set(['media.view', 'media.request']), roleIds: [] };
 const session = { voiceChannelId: 'room', lockedMode: 'unlocked' as const };
 describe('Media voice authorization', () => {
+  it('permits seeking under direct track control without bypassing votes, Voice or locks', () => {
+    const dj = { ...actor, roleIds: ['dj'] };
+    expect(mediaPolicy(settings, actor, session, 'SEEK')).not.toBeNull();
+    expect(mediaPolicy({ ...settings, skipMode: 'direct', sameVoiceUsersCan: { ...settings.sameVoiceUsersCan, skip: true } }, actor, session, 'SEEK')).toBeNull();
+    expect(mediaPolicy(settings, dj, session, 'SEEK')).toBeNull();
+    expect(mediaPolicy(settings, { ...dj, voiceChannelId: 'other' }, session, 'SEEK')).not.toBeNull();
+    expect(mediaPolicy(settings, dj, { ...session, lockedMode: 'admin' }, 'SEEK')).not.toBeNull();
+    expect(mediaPolicy(settings, { ...dj, permissions: new Set(['media.view']) }, session, 'SEEK')).not.toBeNull();
+  });
   it('allows starting a track but never lets play-now bypass voting, DJ/admin locks or Voice rules', () => {
     expect(mediaPolicy(settings, actor, null, 'PLAY_TRACK')).toBeNull();
     expect(mediaPolicy(settings, actor, session, 'PLAY_TRACK')).not.toBeNull();

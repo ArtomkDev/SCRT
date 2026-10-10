@@ -97,7 +97,7 @@
 .ui-dropdown-menu [role="menuitem"]:hover, .ui-dropdown-menu [role="menuitem"]:focus-visible { outline: 0; background: var(--surface-hover); color: var(--text-primary); }
 .ui-dropdown-menu .ui-menu-danger { color: #f8a8ac; }
 .ui-dropdown-menu .ui-menu-danger:hover { color: #ffd5d7; background: color-mix(in srgb, var(--danger) 12%, transparent); }
-.ui-dialog { width: min(560px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); padding: 0; overflow: hidden; border: 1px solid var(--border-strong); border-radius: var(--radius-lg); background: var(--surface-card); color: var(--text-primary); box-shadow: 0 16px 48px #0005; }
+.ui-dialog { position: fixed; inset: 0; margin: auto; width: min(560px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); padding: 0; overflow: hidden; border: 1px solid var(--border-strong); border-radius: var(--radius-lg); background: var(--surface-card); color: var(--text-primary); box-shadow: 0 16px 48px #0005; }
 .ui-dialog[open] { display: flex; flex-direction: column; }
 .ui-dialog::backdrop { background: #13151bcc; }
 .ui-dialog-header { display: flex; flex: none; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 20px; border-bottom: 1px solid var(--border-default); }

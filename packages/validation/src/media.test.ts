@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { mediaRequestSchema, mediaSettingsSchema, mediaActionSchema } from './media';
 describe('Media validation', () => {
+  it('accepts bounded seeks tied to a queue identity and rejects untrusted fields', () => {
+    const action = { type: 'SEEK', queueItemId: 'f5d12265-0d78-48f2-a1c6-ec72ef5c8eae', positionMs: 30000 };
+    expect(mediaActionSchema.safeParse(action).success).toBe(true);
+    expect(mediaActionSchema.safeParse({ ...action, positionMs: 0 }).success).toBe(true);
+    for (const positionMs of [-1, 1.5, NaN, Infinity, 10800001]) expect(mediaActionSchema.safeParse({ ...action, positionMs }).success).toBe(false);
+    expect(mediaActionSchema.safeParse({ ...action, queueItemId: 'unknown' }).success).toBe(false);
+    expect(mediaActionSchema.safeParse({ ...action, actorUserId: '12345678901234567' }).success).toBe(false);
+  });
   it('accepts only bounded canonical references for search continuation', () => {
     const action = { type: 'PLAY_TRACK', provider: 'youtube', providerItemId: 'hmzIgMhbefo', following: [{ provider: 'soundcloud', providerItemId: 'https://soundcloud.com/artist/song' }] };
     expect(mediaActionSchema.safeParse(action).success).toBe(true);

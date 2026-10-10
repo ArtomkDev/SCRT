@@ -1,4 +1,5 @@
 import { randomUUID, createHash } from 'node:crypto';
+import type { IncomingMessage } from 'node:http';
 import { ChannelType, PermissionFlagsBits, type Client, type Guild, type GuildMember, type VoiceState } from 'discord.js';
 import { PermissionService, mediaPolicy, type MediaActor } from '@scrt/permissions';
 import type { GuildRepository, MediaStore } from '@scrt/database';
@@ -9,6 +10,7 @@ import type { EngineEvent, PlaybackEngine } from './playback-engine';
 
 export class MediaError extends Error { constructor(message: string, readonly status = 409) { super(message); } }
 type Actor = MediaActor & { member: GuildMember; guild: Guild };
+type PreparedPlayback = { stream: IncomingMessage; claimed: boolean };
 type Runtime = { session: MediaSession | null; engine: PlaybackEngine; votes: Set<string>; emptyTimer: NodeJS.Timeout | null; emptyPaused: boolean; reconnectState: MediaSession['state'] | null };
 export class MediaSessionService {
   private readonly runtimes = new Map<string, Runtime>();
@@ -127,7 +129,7 @@ export class MediaSessionService {
       const runtime = await this.runtime(guild.id); const session = runtime.session; if (!session) return;
       const previous = session.revision; runtime.engine.destroy(); runtime.votes.clear();
       if (session.currentTrack) session.queue.unshift(session.currentTrack);
-      session.currentTrack = null; session.state = 'idle'; session.recoverable = session.queue.length > 0; session.startedAt = null; session.pausedAt = null; session.accumulatedPauseMs = 0;
+      session.currentTrack = null; session.state = 'idle'; session.recoverable = session.queue.length > 0; session.startedAt = null; session.pausedAt = null; session.accumulatedPauseMs = 0; session.playbackOffsetMs = 0;
       session.sessionId = randomUUID(); session.queueVersion++; session.lastError = session.recoverable ? 'Відтворення було перервано перезапуском SCRT.' : null;
       await this.save(runtime, previous, [], 'session.recovered', null);
     });
@@ -141,7 +143,8 @@ export class MediaSessionService {
   private snapshot(actor: Actor, runtime: Runtime, settings: MediaSettings) {
       actor.voiceChannelId = actor.guild.voiceStates.cache.get(actor.userId)?.channelId ?? null;
       const session = runtime.session; const listeners = this.listeners(actor.guild, session);
-      const controls = Object.fromEntries(['ADD_TRACK', 'PLAY_TRACK', 'PAUSE', 'RESUME', 'SKIP', 'VOTE_SKIP', 'STOP', 'RESTORE', 'MOVE_SESSION', 'SET_VOLUME', 'SET_REPEAT', 'SET_SHUFFLE', 'SET_LOCK'].map((type) => [type, mediaPolicy(settings, actor, type === 'ADD_TRACK' || type === 'PLAY_TRACK' ? this.activeSession(session) : session, type) === null]));
+      const controls = Object.fromEntries(['ADD_TRACK', 'PLAY_TRACK', 'SEEK', 'PAUSE', 'RESUME', 'SKIP', 'VOTE_SKIP', 'STOP', 'RESTORE', 'MOVE_SESSION', 'SET_VOLUME', 'SET_REPEAT', 'SET_SHUFFLE', 'SET_LOCK'].map((type) => [type, mediaPolicy(settings, actor, type === 'ADD_TRACK' || type === 'PLAY_TRACK' ? this.activeSession(session) : session, type) === null]));
+      controls.SEEK = Boolean(controls.SEEK && session?.currentTrack?.seekable && session.currentTrack.type === 'track' && session.currentTrack.durationMs && ['playing', 'paused'].includes(session.state));
       const queueControls = Object.fromEntries([...(session?.played ?? []), ...(session?.queue ?? [])].map((item) => [item.queueItemId, { remove: !mediaPolicy(settings, actor, session, 'REMOVE_QUEUE_ITEM', item.requestedByUserId), move: Boolean(session?.queue.some((entry) => entry.queueItemId === item.queueItemId)) && !mediaPolicy(settings, actor, session, 'MOVE_QUEUE_ITEM', item.requestedByUserId) }]));
       const displaySession = session ? { ...session, queue: scheduledQueue(session.queue, session.queueMode, session.lastRequesterId) } : null;
       return { session: displaySession, settings, controls, queueControls, actorVoice: { id: actor.voiceChannelId, name: actor.member.voice.channel?.name ?? null }, remoteControl: Boolean(session && actor.voiceChannelId !== session.voiceChannelId && actor.permissions.has('media.manage') && settings.allowRemoteAdminControl), listenerCount: listeners.length, votes: { count: countedVotes(runtime.votes, listeners), required: voteThreshold(listeners, settings.skipVoteRatio) }, providers: this.sources.health(), engine: this.engineHealth, serverTimestamp: Date.now(), canManage: actor.permissions.has('media.manage') };
@@ -179,7 +182,8 @@ export class MediaSessionService {
     if (priorReceipt) { if (priorReceipt.fingerprint !== fingerprint) throw new MediaError('Command ID already used'); return reply(true); }
     if ((session?.sessionId ?? null) !== command.sessionId) throw new MediaError('Сесія змінилася. Оновіть плеєр.');
     if ((session?.queueVersion ?? null) !== command.expectedQueueVersion) throw new MediaError('Черга або поточний трек змінилися. Оновіть плеєр.');
-    const item = 'queueItemId' in action ? [...(session?.queue ?? []), ...(action.type === 'REMOVE_QUEUE_ITEM' ? session?.played ?? [] : [])].find((entry) => entry.queueItemId === action.queueItemId) : undefined;
+    const candidates = action.type === 'SEEK' ? session?.currentTrack ? [session.currentTrack] : [] : [...(session?.queue ?? []), ...(action.type === 'REMOVE_QUEUE_ITEM' ? session?.played ?? [] : [])];
+    const item = 'queueItemId' in action ? candidates.find((entry) => entry.queueItemId === action.queueItemId) : undefined;
     this.requirePolicy(settings, actor, action.type === 'ADD_TRACK' || action.type === 'PLAY_TRACK' ? this.activeSession(session) : session, action.type, item?.requestedByUserId);
     if ('expectedQueueVersion' in action && action.expectedQueueVersion !== session?.queueVersion) throw new MediaError('Черга змінилася. Оновіть плеєр.');
     if ('queueItemId' in action && !item) throw new MediaError('Трек уже видалено.');
@@ -187,7 +191,9 @@ export class MediaSessionService {
     if (action.type === 'ADD_TRACK' || action.type === 'PLAY_TRACK') {
       const playNow = action.type === 'PLAY_TRACK';
       if (!this.engineHealth.available) throw new MediaError('Аудіодвигун недоступний. Перевірте FFmpeg, Opus і DAVE.', 503);
-      const track = await this.sources.get(action.provider).resolve(action.providerItemId);
+      let track: MediaTrack;
+      try { track = await this.sources.get(action.provider).resolve(action.providerItemId, AbortSignal.timeout(15000)); }
+      catch (error) { throw new MediaError(error instanceof MediaSourceError ? error.message : 'Не вдалося підготувати трек. Спробуйте ще раз або виберіть інший.', 422); }
       this.validateTrack(track, settings);
       // Resolution can take seconds: re-read actual Gateway location before any join/control.
       actor.voiceChannelId = actor.guild.voiceStates.cache.get(actor.userId)?.channelId ?? null; this.requirePolicy(settings, actor, this.activeSession(session), action.type);
@@ -209,32 +215,36 @@ export class MediaSessionService {
         const following = action.type === 'PLAY_TRACK' ? await this.prepareSearch(action.following ?? [], session, track, Math.min(settings.maxQueueItems - count - added, settings.maxTracksPerUser - ownCount - added), settings) : [];
         const targetId = this.activeSession(session)?.voiceChannelId ?? actor.voiceChannelId!;
         const channel = playNow || !this.activeSession(session) ? await this.eligibleVoice(actor, targetId, settings) : null;
-        actor.voiceChannelId = actor.guild.voiceStates.cache.get(actor.userId)?.channelId ?? null;
-        this.requirePolicy(settings, actor, this.activeSession(session), action.type);
-        if (channel && !this.activeSession(session) && actor.voiceChannelId !== targetId) throw new MediaError('Голосовий канал змінився. Оновіть плеєр і повторіть відтворення.', 403);
-        if (!session || !this.activeSession(session)) runtime.session = { sessionId: randomUUID(), guildId: command.guildId, voiceChannelId: channel!.id, voiceChannelName: channel!.name, state: 'idle', currentTrack: null, queue: [], played: session?.played ?? [], startedAt: null, pausedAt: null, accumulatedPauseMs: 0, volume: Math.min(session?.volume ?? settings.defaultVolume, settings.maxVolume), repeatMode: 'off', queueMode: settings.queueMode, shuffle: false, lockedMode: 'unlocked', createdByUserId: actor.userId, queueVersion: 0, revision: session?.revision ?? 0, createdAt: Date.now(), updatedAt: Date.now(), recoverable: false, lastError: null, lastRequesterId: null };
-        else if (channel) { session.voiceChannelId = channel.id; session.voiceChannelName = channel.name; }
-        const current = runtime.session!;
-        const selected = playNow && duplicate ? duplicate : { ...track, queueItemId: randomUUID(), requestedByUserId: actor.userId, requestedByName: actor.member.displayName.slice(0, 100), requestedAt: Date.now() };
-        if (playNow) {
-          if (current.currentTrack) {
-            this.finish(runtime, 'skipped', history, 'Вибрано інший трек.', false);
+        // Open the replacement source while the current track is still playing.
+        // A provider/HTTP failure must not tear down the active session.
+        const prepared = playNow ? await this.preparePlayback(track) : undefined;
+        try {
+          actor.voiceChannelId = actor.guild.voiceStates.cache.get(actor.userId)?.channelId ?? null;
+          this.requirePolicy(settings, actor, this.activeSession(session), action.type);
+          if (channel && !this.activeSession(session) && actor.voiceChannelId !== targetId) throw new MediaError('Голосовий канал змінився. Оновіть плеєр і повторіть відтворення.', 403);
+          if (!session || !this.activeSession(session)) runtime.session = { sessionId: randomUUID(), guildId: command.guildId, voiceChannelId: channel!.id, voiceChannelName: channel!.name, state: 'idle', currentTrack: null, queue: [], played: session?.played ?? [], startedAt: null, pausedAt: null, accumulatedPauseMs: 0, volume: Math.min(session?.volume ?? settings.defaultVolume, settings.maxVolume), repeatMode: 'off', queueMode: settings.queueMode, shuffle: false, lockedMode: 'unlocked', createdByUserId: actor.userId, queueVersion: 0, revision: session?.revision ?? 0, createdAt: Date.now(), updatedAt: Date.now(), recoverable: false, lastError: null, lastRequesterId: null };
+          else if (channel) { session.voiceChannelId = channel.id; session.voiceChannelName = channel.name; }
+          const current = runtime.session!;
+          const selected = playNow && duplicate ? { ...duplicate, ...track } : { ...track, queueItemId: randomUUID(), requestedByUserId: actor.userId, requestedByName: actor.member.displayName.slice(0, 100), requestedAt: Date.now() };
+          if (playNow && prepared) {
+            try { await this.switchSelected(runtime, actor, settings, selected, following, prepared, priorRevision, { commandId: command.commandId, fingerprint }); }
+            catch (error) { if (error instanceof MediaError) runtime.session = session; throw error; }
+            return reply();
           }
-          current.queue = current.queue.filter((entry) => entry.queueItemId !== selected.queueItemId);
-          current.queue.unshift(selected); current.recoverable = false; current.lastError = null;
-          this.appendSearch(current, actor, settings, following);
-        } else current.queue.push(selected);
-        current.queueVersion++;
-        // Persist intent before creating audible effects, so a crash cannot lose the queued track.
-        await this.save(runtime, priorRevision, history, playNow ? 'track.selected' : 'track.added', actor.userId, { commandId: command.commandId, fingerprint });
-        history.length = 0;
-        if (!current.currentTrack && !current.recoverable) { await this.advance(runtime, actor.guild, settings, history, playNow ? selected.queueItemId : undefined); await this.save(runtime, current.revision, history, 'playback.started', actor.userId); }
-        return reply();
+          current.queue.push(selected);
+          current.queueVersion++;
+          // Persist intent before creating audible effects, so a crash cannot lose the queued track.
+          await this.save(runtime, priorRevision, history, 'track.added', actor.userId, { commandId: command.commandId, fingerprint });
+          history.length = 0;
+          if (!current.currentTrack && !current.recoverable) { await this.advance(runtime, actor.guild, settings, history); await this.save(runtime, current.revision, history, 'playback.started', actor.userId); }
+          return reply();
+        } finally { if (prepared && !prepared.claimed) prepared.stream.destroy(); }
       }
     } else {
       if (!session) throw new MediaError('Немає активної сесії.');
       if (session.recoverable && !['RESTORE', 'STOP', 'REMOVE_QUEUE_ITEM', 'MOVE_QUEUE_ITEM', 'SET_VOLUME', 'SET_REPEAT', 'SET_SHUFFLE', 'SET_LOCK'].includes(action.type)) throw new MediaError('Спочатку відновіть перервану сесію.');
       switch (action.type) {
+        case 'SEEK': await this.seekCurrent(runtime, actor, settings, action.positionMs); break;
         case 'PAUSE': if (session.state !== 'playing') throw new MediaError('Відтворення вже призупинено.'); runtime.engine.pause(); session.pausedAt = Date.now(); session.state = 'paused'; runtime.emptyPaused = false; break;
         case 'RESUME': if (session.state !== 'paused') throw new MediaError('Немає призупиненого треку.'); runtime.engine.resume(); session.accumulatedPauseMs += Date.now() - (session.pausedAt ?? Date.now()); session.pausedAt = null; session.state = 'playing'; runtime.emptyPaused = false; break;
         case 'RESTORE': {
@@ -270,21 +280,94 @@ export class MediaSessionService {
         case 'SET_LOCK': if (action.lockedMode === 'admin' && !actor.permissions.has('media.manage')) throw new MediaError('Потрібен media.manage.', 403); session.lockedMode = action.lockedMode; runtime.votes.clear(); break;
       }
     }
-    const auditActions: Record<string, string> = { PAUSE: 'playback.paused', RESUME: 'playback.resumed', RESTORE: 'session.restored', SKIP: 'track.skipped', VOTE_SKIP: history.length ? 'track.skipped' : 'track.vote', STOP: 'session.stopped', MOVE_SESSION: 'session.moved', REMOVE_QUEUE_ITEM: 'track.removed', MOVE_QUEUE_ITEM: 'queue.reordered', SET_VOLUME: 'volume.changed', SET_REPEAT: 'repeat.changed', SET_SHUFFLE: 'shuffle.changed', SET_LOCK: 'session.locked', ADD_TRACK: 'queue.reordered' };
+    const auditActions: Record<string, string> = { SEEK: 'playback.seeked', PAUSE: 'playback.paused', RESUME: 'playback.resumed', RESTORE: 'session.restored', SKIP: 'track.skipped', VOTE_SKIP: history.length ? 'track.skipped' : 'track.vote', STOP: 'session.stopped', MOVE_SESSION: 'session.moved', REMOVE_QUEUE_ITEM: 'track.removed', MOVE_QUEUE_ITEM: 'queue.reordered', SET_VOLUME: 'volume.changed', SET_REPEAT: 'repeat.changed', SET_SHUFFLE: 'shuffle.changed', SET_LOCK: 'session.locked', ADD_TRACK: 'queue.reordered' };
     await this.save(runtime, priorRevision, history, auditActions[action.type]!, actor.userId, { commandId: command.commandId, fingerprint });
     return reply();
   }
-  private finish(runtime: Runtime, result: MediaHistoryItem['result'], history: MediaHistoryItem[], reason: string | null = null, repeat = true) {
-    const session = runtime.session!; runtime.engine.stop(); const track = session.currentTrack;
+  private finish(runtime: Runtime, result: MediaHistoryItem['result'], history: MediaHistoryItem[], reason: string | null = null, repeat = true, stopAudio = true) {
+    const session = runtime.session!; if (stopAudio) runtime.engine.stop(); const track = session.currentTrack;
     if (track) {
       history.push({ id: randomUUID(), track, playedAt: session.startedAt ?? Date.now(), endedAt: Date.now(), result, reason }); session.lastRequesterId = track.requestedByUserId;
       if (result !== 'failed') session.played = [...session.played.filter((item) => item.provider !== track.provider || item.providerItemId !== track.providerItemId), track].slice(-100);
     }
-    session.currentTrack = null; session.startedAt = null; session.pausedAt = null; session.accumulatedPauseMs = 0; runtime.votes.clear(); session.queueVersion++;
+    session.currentTrack = null; session.startedAt = null; session.pausedAt = null; session.accumulatedPauseMs = 0; session.playbackOffsetMs = 0; runtime.votes.clear(); session.queueVersion++;
     if (repeat && track && result === 'finished' && session.repeatMode === 'track') { session.queue.unshift({ ...track, queueItemId: randomUUID() }); session.lastRequesterId = null; }
     else if (repeat && track && result !== 'failed' && session.repeatMode === 'queue') session.queue.push({ ...track, queueItemId: randomUUID() });
   }
-  private async advance(runtime: Runtime, guild: Guild, settings: MediaSettings, history: MediaHistoryItem[], selectedId?: string) {
+  private async preparePlayback(track: MediaTrack): Promise<PreparedPlayback> {
+    const abort = new AbortController(); const timeout = setTimeout(() => abort.abort(), 15000);
+    try {
+      const stream = await this.sources.get(track.provider).getPlayableResource(track.providerItemId, abort.signal);
+      // The checkpoint can yield before the engine installs its pipeline handler.
+      // Keep stream errors handled during that gap; play checks errored/destroyed.
+      stream.on('error', () => undefined);
+      if (abort.signal.aborted || stream.destroyed || stream.errored) { stream.destroy(); throw new Error('Audio stream closed'); }
+      return { stream, claimed: false };
+    } catch (error) { throw new MediaError(error instanceof MediaSourceError ? error.message : 'Не вдалося завантажити аудіо. Спробуйте ще раз або виберіть інший трек.', 422); }
+    finally { clearTimeout(timeout); }
+  }
+  private async switchSelected(runtime: Runtime, actor: Actor, settings: MediaSettings, selected: MediaQueueItem, following: MediaTrack[], prepared: PreparedPlayback, priorRevision: number | null, receipt: { commandId: string; fingerprint: string }) {
+    const session = runtime.session!; let intentStarted = false;
+    const beforeCommit = async () => {
+      await this.eligibleVoice(actor, session.voiceChannelId, settings);
+      actor.voiceChannelId = actor.guild.voiceStates.cache.get(actor.userId)?.channelId ?? null;
+      this.requirePolicy(settings, actor, this.activeSession(session), 'PLAY_TRACK');
+      if (this.stopping || !this.ownsGuild(actor.guild.id) || !this.listeners(actor.guild, session).length) throw new MediaError('Медіасесія недоступна.', 503);
+      const history: MediaHistoryItem[] = [];
+      intentStarted = true;
+      // Decoder packets are ready. Persist the selected identity before the engine
+      // atomically replaces audio; preparation failure leaves the old track intact.
+      this.finish(runtime, 'skipped', history, 'Вибрано інший трек.', false, false);
+      session.queue = session.queue.filter((entry) => entry.queueItemId !== selected.queueItemId);
+      session.played = session.played.filter((entry) => entry.provider !== selected.provider || entry.providerItemId !== selected.providerItemId);
+      session.currentTrack = selected; session.state = 'buffering'; session.recoverable = false; session.lastError = null; session.queueVersion++;
+      this.appendSearch(session, actor, settings, following);
+      await this.save(runtime, priorRevision, history, 'track.selected', actor.userId, receipt);
+    };
+    // A failed Voice connection has an unknown audio outcome; let the outer
+    // boundary stop/recover it rather than claiming a reversible source rejection.
+    await runtime.engine.connect(actor.guild, session.voiceChannelId);
+    try {
+      await runtime.engine.play(prepared.stream, selected.queueItemId, session.volume, selected.type === 'live' ? null : settings.maxTrackDurationSeconds, 15000, beforeCommit);
+    } catch (error) {
+      // Once intent has changed, fail closed and recover persisted state rather
+      // than reporting a reversible rejection while different audio is active.
+      if (intentStarted) throw new Error('Не вдалося завершити перемикання аудіо.', { cause: error });
+      if (error instanceof MediaError) throw error;
+      throw new MediaError(`Не вдалося підготувати аудіо вибраного треку.${session.currentTrack ? ' Поточний трек збережено.' : ' Спробуйте ще раз або виберіть інший трек.'}`, 422);
+    }
+    prepared.claimed = true;
+    session.state = 'playing'; session.startedAt = Date.now(); session.pausedAt = null; session.accumulatedPauseMs = 0; session.playbackOffsetMs = 0;
+    await this.save(runtime, session.revision, [], 'playback.started', actor.userId);
+  }
+  private async seekCurrent(runtime: Runtime, actor: Actor, settings: MediaSettings, positionMs: number) {
+    const session = runtime.session!; const current = session.currentTrack!;
+    if (!['playing', 'paused'].includes(session.state) || !current.seekable || current.type !== 'track' || !current.durationMs || positionMs >= current.durationMs) throw new MediaError('Перемотування для цього треку або позиції недоступне.', 422);
+    let resolved: MediaTrack;
+    try { resolved = await this.sources.get(current.provider).resolve(current.providerItemId, AbortSignal.timeout(15000)); }
+    catch (error) { throw new MediaError(error instanceof MediaSourceError ? error.message : 'Не вдалося підготувати перемотування.', 422); }
+    this.validateTrack(resolved, settings);
+    if (!resolved.seekable || resolved.type !== 'track' || !resolved.durationMs || positionMs >= Math.min(resolved.durationMs, settings.maxTrackDurationSeconds * 1000)) throw new MediaError('Джерело не підтримує цю позицію треку.', 422);
+    const prepared = await this.preparePlayback(resolved);
+    try {
+      const beforeCommit = async () => {
+        await this.eligibleVoice(actor, session.voiceChannelId, settings);
+        actor.voiceChannelId = actor.guild.voiceStates.cache.get(actor.userId)?.channelId ?? null;
+        this.requirePolicy(settings, actor, session, 'SEEK');
+        if (this.stopping || !this.ownsGuild(actor.guild.id) || !this.listeners(actor.guild, session).length) throw new MediaError('Медіасесія недоступна.', 503);
+      };
+      await beforeCommit();
+      const paused = session.state === 'paused'; const queueItemId = randomUUID();
+      try { await runtime.engine.seek(prepared.stream, queueItemId, session.volume, settings.maxTrackDurationSeconds, positionMs, paused, beforeCommit); }
+      catch (error) { if (error instanceof MediaError) throw error; throw new MediaError('Не вдалося перемотати трек. Спробуйте іншу позицію.', 422); }
+      prepared.claimed = true;
+      // A fresh identity rejects late end/error events from the old position.
+      session.currentTrack = { ...current, ...resolved, queueItemId };
+      session.playbackOffsetMs = positionMs; session.startedAt = Date.now(); session.pausedAt = paused ? session.startedAt : null; session.accumulatedPauseMs = 0;
+      session.queueVersion++; session.lastError = null; runtime.votes.clear();
+    } finally { if (!prepared.claimed) prepared.stream.destroy(); }
+  }
+  private async advance(runtime: Runtime, guild: Guild, settings: MediaSettings, history: MediaHistoryItem[]) {
     const session = runtime.session!;
     if (session.queue.length) {
       try {
@@ -300,8 +383,7 @@ export class MediaSessionService {
     let attempts = 0;
     while (session.queue.length && attempts++ < 3 && Date.now() < deadline) {
       if (!this.listeners(guild, session).length) { this.interrupt(runtime, 'Voice порожній. Чергу збережено.'); return; }
-      const next = session.queue.find((item) => item.queueItemId === selectedId) ?? scheduledQueue(session.queue, session.queueMode, session.lastRequesterId)[0]!;
-      selectedId = undefined;
+      const next = scheduledQueue(session.queue, session.queueMode, session.lastRequesterId)[0]!;
       session.queue = session.queue.filter((item) => item.queueItemId !== next.queueItemId);
       session.played = session.played.filter((item) => item.provider !== next.provider || item.providerItemId !== next.providerItemId);
       session.currentTrack = next; session.queueVersion++; runtime.votes.clear();
@@ -324,16 +406,17 @@ export class MediaSessionService {
     let stream;
     try { stream = await this.sources.get(track.provider).getPlayableResource(track.providerItemId, abort.signal); }
     finally { clearTimeout(timeout); }
+    if (stream.destroyed || stream.errored) { stream.destroy(); throw new MediaError('Аудіопотік перервано.', 422); }
     if (this.stopping || !this.ownsGuild(guild.id) || !this.listeners(guild, session).length) { stream.destroy(); throw new MediaError('Media worker недоступний або у Voice немає слухачів.', 503); }
     await runtime.engine.play(stream, track.queueItemId, session.volume, track.type === 'live' ? null : settings.maxTrackDurationSeconds, remaining());
-    session.state = 'playing'; session.startedAt = Date.now(); session.pausedAt = null; session.accumulatedPauseMs = 0; session.recoverable = false;
+    session.state = 'playing'; session.startedAt = Date.now(); session.pausedAt = null; session.accumulatedPauseMs = 0; session.playbackOffsetMs = 0; session.recoverable = false; session.lastError = null;
   }
   private interrupt(runtime: Runtime, reason: string | null) {
     const session = runtime.session; if (!session) return;
     runtime.engine.destroy(); if (runtime.emptyTimer) clearTimeout(runtime.emptyTimer); runtime.emptyTimer = null; runtime.votes.clear();
     runtime.emptyPaused = false; runtime.reconnectState = null;
     if (session.currentTrack) session.queue.unshift(session.currentTrack);
-    session.currentTrack = null; session.state = 'idle'; session.recoverable = session.queue.length > 0; session.startedAt = null; session.pausedAt = null; session.accumulatedPauseMs = 0; session.queueVersion++; session.lastError = reason;
+    session.currentTrack = null; session.state = 'idle'; session.recoverable = session.queue.length > 0; session.startedAt = null; session.pausedAt = null; session.accumulatedPauseMs = 0; session.playbackOffsetMs = 0; session.queueVersion++; session.lastError = reason;
   }
   private async onEngineEvent(guildId: string, event: EngineEvent) {
     await this.exclusive(guildId, async () => {
@@ -366,7 +449,7 @@ export class MediaSessionService {
       for (const voter of runtime.votes) if (!listeners.includes(voter)) runtime.votes.delete(voter);
       if (listeners.length === 0 && session.currentTrack && !runtime.emptyTimer) {
         if (settings.emptyVoiceBehavior === 'pause_then_leave') { if (session.state === 'playing') { runtime.engine.pause(); session.state = 'paused'; session.pausedAt = Date.now(); runtime.emptyPaused = true; } }
-        else { runtime.engine.stop(); if (session.currentTrack) session.queue.unshift(session.currentTrack); session.currentTrack = null; session.state = 'idle'; session.recoverable = session.queue.length > 0; session.startedAt = null; session.pausedAt = null; session.accumulatedPauseMs = 0; session.queueVersion++; session.lastError = 'Voice порожній. Відтворення зупинено, чергу збережено.'; }
+        else { runtime.engine.stop(); if (session.currentTrack) session.queue.unshift(session.currentTrack); session.currentTrack = null; session.state = 'idle'; session.recoverable = session.queue.length > 0; session.startedAt = null; session.pausedAt = null; session.accumulatedPauseMs = 0; session.playbackOffsetMs = 0; session.queueVersion++; session.lastError = 'Voice порожній. Відтворення зупинено, чергу збережено.'; }
         runtime.emptyTimer = setTimeout(() => { void this.exclusive(session.guildId, async () => { runtime.emptyTimer = null; if (!this.listeners(newState.guild, runtime.session).length) { const prior = session.revision; this.interrupt(runtime, 'Голосовий канал порожній. Чергу збережено.'); await this.save(runtime, prior, [], 'session.empty', null); } }).catch((error: unknown) => this.failClosed(session.guildId, error)); }, settings.emptyVoiceGraceSeconds * 1000);
       } else if (listeners.length && runtime.emptyTimer) {
         clearTimeout(runtime.emptyTimer); runtime.emptyTimer = null;

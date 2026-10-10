@@ -21,7 +21,7 @@ export function mediaPolicy(settings: MediaPolicySettings, actor: MediaActor, se
   if (!sameVoice && !remote && !restoreInActorVoice && !(action === 'ADD_TRACK' && settings.allowRemoteRequests)) return 'Приєднайтеся до голосового каналу SCRT, щоб керувати плеєром.';
   if (session?.lockedMode === 'admin' && !manager) return 'Керування доступне лише адміністратору Медіа.';
   if (action === 'ADD_TRACK' || action === 'PLAY_TRACK' && !session) return actor.permissions.has('media.request') && (manager || dj || settings.sameVoiceUsersCan.addTracks) ? null : 'Додавання треків недоступне.';
-  if (action === 'PLAY_TRACK' && !actor.permissions.has('media.request')) return 'Відтворення треків потребує media.request.';
+  if ((action === 'PLAY_TRACK' || action === 'SEEK') && !actor.permissions.has('media.request')) return 'Керування треками потребує media.request.';
   if (!manager && !dj && (session?.lockedMode === 'dj' || settings.controlMode === 'DJ')) return 'Керування доступне лише DJ.';
   if (action === 'VOTE_SKIP') return sameVoice && settings.skipMode === 'vote' && actor.permissions.has('media.request') ? null : 'Голосування недоступне.';
   if (manager) return null;
@@ -30,7 +30,7 @@ export function mediaPolicy(settings: MediaPolicySettings, actor: MediaActor, se
   const own = ownerId === actor.userId;
   const flags = settings.sameVoiceUsersCan;
   const allowed = (action === 'PAUSE' || action === 'RESUME' || action === 'RESTORE') ? flags.pauseResume
-    : action === 'SKIP' || action === 'PLAY_TRACK' ? settings.skipMode === 'direct' && flags.skip
+    : action === 'SKIP' || action === 'PLAY_TRACK' || action === 'SEEK' ? settings.skipMode === 'direct' && flags.skip
     : action === 'REMOVE_QUEUE_ITEM' ? flags.removeAnyTracks || (own && flags.removeOwnTracks)
     : action === 'MOVE_QUEUE_ITEM' ? flags.reorderQueue || (own && flags.reorderOwnTracks)
     : action === 'SET_VOLUME' ? flags.changeVolume

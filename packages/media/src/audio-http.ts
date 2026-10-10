@@ -19,6 +19,9 @@ export function validateMediaUrl(value: string): URL {
   return url;
 }
 export type MediaDnsLookup = (host: string) => Promise<Array<{ address: string; family: number }>>;
+export class MediaAudioHttpError extends Error {
+  constructor(readonly status: number) { super('Джерело не повернуло доступний аудіопотік.'); }
+}
 export async function mediaDestination(value: string, resolve: MediaDnsLookup = (host) => lookup(host, { all: true, verbatim: true })): Promise<{ url: URL; address: string; family: number }> {
   const url = validateMediaUrl(value);
   const host = url.hostname.replace(/^\[|\]$/g, '');
@@ -50,7 +53,10 @@ export async function openAudioStream(value: string, signal?: AbortSignal, redir
     return openAudioStream(new URL(response.headers.location, url).href, signal, redirects + 1, resolve, headers);
   }
   const contentType = String(response.headers['content-type'] ?? '').split(';')[0]!.toLowerCase();
-  if (response.statusCode !== 200 || !(/^audio\/(mpeg|mp3|aac|aacp|ogg|opus|wav|wave|x-wav|flac|x-flac|mp4|webm)$/.test(contentType) || contentType === 'application/ogg')) {
+  if (response.statusCode !== 200) {
+    response.destroy(); throw new MediaAudioHttpError(response.statusCode ?? 0);
+  }
+  if (!(/^audio\/(mpeg|mp3|aac|aacp|ogg|opus|wav|wave|x-wav|flac|x-flac|mp4|webm)$/.test(contentType) || contentType === 'application/ogg')) {
     response.destroy(); throw new Error('Джерело не повернуло підтримуваний аудіопотік.');
   }
   return response;

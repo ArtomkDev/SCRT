@@ -40,12 +40,13 @@ export function usePlayerSearch(guildId: string, userId: string, providers: Medi
     catch { /* Quota or private-browser restrictions must not block playback. */ }
   }, [key, state, ready]);
 
-  async function search(more = false) {
+  async function search(more = false, queryOverride?: string) {
     if (request.current || !ready || more && state.nextPage === null) return;
-    const query = (more ? state.submittedQuery : state.query).trim();
+    const query = (more ? state.submittedQuery : queryOverride ?? state.query).trim();
     if (query.length < 2) return;
     const page = more ? state.nextPage! : 0;
     const controller = new AbortController(); request.current = controller;
+    if (queryOverride !== undefined && !more) setState((previous) => ({ ...previous, query }));
     setSearchPending(true); setMessage('');
     try {
       const params = new URLSearchParams({ q: query, page: String(page) });
