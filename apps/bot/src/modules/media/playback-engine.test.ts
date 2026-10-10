@@ -26,9 +26,9 @@ function fixture() {
   player.play.mockImplementation((resource) => { player.state = { status: 'playing', resource }; });
   player.stop.mockImplementation(() => { const previous = player.state; player.state = { status: 'idle', resource: null }; player.emit('idle', previous); });
   const processes: Array<ReturnType<typeof child>> = [];
-  function child() { return Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() }); }
+  function child() { const value = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), killed: false, kill: vi.fn() }); value.kill.mockImplementation(() => { value.killed = true; }); return value; }
   subprocess.spawn.mockImplementation(() => { const value = child(); processes.push(value); return value; });
-  voice.createAudioResource.mockImplementation((playStream) => ({ playStream, volume: { setVolume: vi.fn() } }));
+  voice.createAudioResource.mockImplementation((playStream) => ({ playStream, get ended() { return playStream.readableEnded || playStream.destroyed; }, volume: { setVolume: vi.fn() } }));
   const connections: Array<ReturnType<typeof connection>> = [];
   function connection(channelId: string) {
     return Object.assign(new EventEmitter(), { joinConfig: { channelId }, state: { status: 'ready' }, destroy: vi.fn(), subscribe: vi.fn() });
@@ -42,7 +42,61 @@ function fixture() {
 beforeEach(() => vi.resetAllMocks());
 
 function input() { return Object.assign(new PassThrough(), { setTimeout: vi.fn() }) as unknown as IncomingMessage; }
+async function decodedEof(resource: unknown) {
+  const stream = (resource as { playStream: PassThrough }).playStream;
+  const ended = new Promise<void>((resolve) => stream.once('end', resolve));
+  stream.resume(); stream.end(); await ended;
+}
 describe('Media track replacement lifecycle', () => {
+  it('forwards buffered source bytes intact when adding stream diagnostics', async () => {
+    const f = fixture(); const source = input(); const bytes = Buffer.alloc(16384, 37);
+    (source as unknown as PassThrough).end(bytes);
+    await f.engine.play(source, 'buffered', 60, 60);
+    const stdin = f.processes[0]!.stdin; const received: Buffer[] = [];
+    stdin.on('data', (chunk: Buffer) => received.push(chunk));
+    if (!stdin.writableFinished) await new Promise<void>((resolve) => stdin.once('finish', resolve));
+    expect(Buffer.concat(received)).toEqual(bytes);
+    f.engine.destroy();
+  });
+  it('disables the read timeout under pipeline backpressure and restores it when reading resumes', async () => {
+    const f = fixture(); const source = input(); await f.engine.play(source, 'current', 60, 60);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    source.pause(); expect(source.setTimeout).toHaveBeenLastCalledWith(0);
+    f.engine.resume(); expect(source.setTimeout).toHaveBeenLastCalledWith(0);
+    source.resume(); await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(source.setTimeout).toHaveBeenLastCalledWith(15000);
+    f.engine.destroy();
+  });
+  it('reports the actual played duration on EOF so truncated tracks cannot be treated as completed', async () => {
+    const f = fixture(); await f.engine.play(input(), 'short', 60, 60);
+    const resource = f.player.state.resource as { playbackDuration: number }; resource.playbackDuration = 2000;
+    await decodedEof(resource);
+    f.player.emit('idle', { resource });
+    expect(f.event).toHaveBeenCalledWith({ type: 'ended', queueItemId: 'short', playedMs: 2000 });
+    f.engine.destroy();
+  });
+  it('treats a destroyed stream after missed frames as interruption even when resource.ended is true', async () => {
+    const f = fixture(); await f.engine.play(input(), 'unknown-duration', 60, null);
+    const resource = f.player.state.resource as { playStream: PassThrough; ended: boolean };
+    expect(voice.createAudioPlayer.mock.calls[0]![0].behaviors.maxMissedFrames * 20).toBe(3000);
+    resource.playStream.destroy(); expect(resource.ended).toBe(true); expect(resource.playStream.readableEnded).toBe(false);
+    f.player.emit('idle', { status: 'playing', resource, missedFrames: 150 });
+    expect(f.event).toHaveBeenCalledExactlyOnceWith({ type: 'failed', queueItemId: 'unknown-duration', reason: expect.stringContaining('Трек збережено') });
+    f.engine.destroy();
+  });
+  it('does not call empty buffering completion a finished song', async () => {
+    const f = fixture(); await f.engine.play(input(), 'empty', 60, 60);
+    const resource = f.player.state.resource;
+    f.player.emit('idle', { status: 'buffering', resource });
+    expect(f.event).toHaveBeenCalledExactlyOnceWith({ type: 'failed', queueItemId: 'empty', reason: expect.stringContaining('Аудіопотік перервано') });
+    f.engine.destroy();
+  });
+  it('reports an unexpected decoder SIGKILL as a failure instead of a natural completion', async () => {
+    const f = fixture(); await f.engine.play(input(), 'killed', 60, 60);
+    f.processes[0]!.emit('close', null, 'SIGKILL');
+    expect(f.event).toHaveBeenCalledExactlyOnceWith({ type: 'failed', queueItemId: 'killed', reason: 'Не вдалося декодувати джерело.' });
+    f.engine.destroy();
+  });
   it('keeps old audio through decoder preparation and persistence, then installs only the selected resource', async () => {
     const f = fixture(); const oldInput = input(), nextInput = input();
     await f.engine.play(oldInput, 'old', 60, 60); const oldResource = f.player.state.resource;
@@ -55,6 +109,7 @@ describe('Media track replacement lifecycle', () => {
     checkpoint.resolve(); await switching;
     expect(oldInput.destroyed).toBe(true); expect(f.player.state.resource).not.toBe(oldResource); expect(f.player.play).toHaveBeenCalledTimes(2);
     f.player.emit('idle', { resource: oldResource }); f.processes[0]!.emit('close', 1); expect(f.event).not.toHaveBeenCalled();
+    await decodedEof(f.player.state.resource);
     f.player.emit('idle', { resource: f.player.state.resource }); expect(f.event).toHaveBeenCalledExactlyOnceWith({ type: 'ended', queueItemId: 'selected' });
     f.engine.destroy();
   });
@@ -78,6 +133,7 @@ describe('Media track replacement lifecycle', () => {
     f.processes[0]!.emit('close', 1); oldInput.emit('error', new Error('Old stream closed'));
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(f.event).not.toHaveBeenCalled(); expect(f.player.state.resource).toBe(currentResource);
+    await decodedEof(currentResource);
     f.player.emit('idle', { resource: currentResource });
     expect(f.event).toHaveBeenCalledExactlyOnceWith({ type: 'ended', queueItemId: 'new' }); f.engine.destroy();
   });
@@ -110,9 +166,10 @@ describe('Media seek preparation', () => {
     expect(args).toContain('pipe:0'); expect(args).toContain('pipe:1'); expect(args.join(' ')).not.toContain('http');
     expect(commit).toHaveBeenCalledOnce(); expect(oldInput.destroyed).toBe(true); expect(f.processes[0]!.kill).toHaveBeenCalledOnce();
     expect(f.player.state.resource).not.toBe(oldResource); expect(f.player.pause).toHaveBeenCalledTimes(paused ? 1 : 0);
-    expect(nextInput.setTimeout).toHaveBeenCalledTimes(paused ? 1 : 0);
+    expect(nextInput.setTimeout).toHaveBeenLastCalledWith(paused ? 0 : 15000);
     f.player.emit('error', { resource: oldResource }); f.processes[0]!.emit('close', 1);
     expect(f.event).not.toHaveBeenCalled();
+    await decodedEof(f.player.state.resource);
     f.player.emit('idle', { resource: f.player.state.resource });
     expect(f.event).toHaveBeenCalledExactlyOnceWith({ type: 'ended', queueItemId: 'seeked' }); f.engine.destroy();
   });

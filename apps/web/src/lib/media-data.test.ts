@@ -6,6 +6,7 @@ vi.mock('server-only', () => ({}));
 vi.mock('react', () => ({ cache: (fn: unknown) => fn }));
 vi.mock('./server', () => ({ env: mocks.env, media: () => ({ getSettings: mocks.settings, getSession: mocks.session }) }));
 import { initialMediaSnapshot, mediaConfigurationError, mediaInternal } from './media-data';
+import { runtimeLogSnapshot } from '@scrt/shared';
 
 beforeEach(() => {
   vi.resetAllMocks(); vi.unstubAllGlobals();
@@ -40,6 +41,16 @@ describe('Media control-plane configuration', () => {
     mocks.env.mockReturnValue({ MEDIA_INTERNAL_SECRET: 'test-secret'.repeat(4), MEDIA_BOT_URL: 'http://127.0.0.1:3100' });
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('ECONNREFUSED with private details')));
     await expect(mediaInternal({ operation: 'state', guildId: '12345678901234567', actorUserId: '22345678901234567' })).rejects.toThrow('запустіть або перезапустіть бота');
+  });
+  it('distinguishes a worker timeout and logs a request identity without its credentials', async () => {
+    const before = runtimeLogSnapshot(); const after = before.entries.at(-1)?.sequence ?? 0;
+    mocks.env.mockReturnValue({ MEDIA_INTERNAL_SECRET: 'never-log-this-secret'.repeat(2), MEDIA_BOT_URL: 'https://private-worker.example' });
+    const fetch = vi.fn().mockRejectedValue(new DOMException('Request timed out', 'TimeoutError')); vi.stubGlobal('fetch', fetch);
+    await expect(mediaInternal({ operation: 'search', guildId: '12345678901234567', actorUserId: '22345678901234567', query: 'https://youtu.be/TwumA6YhQp4', page: 0 })).rejects.toMatchObject({ status: 503, message: expect.stringContaining('відведений час') });
+    const entries = runtimeLogSnapshot({ runId: before.runId, after }).entries;
+    const requestId = fetch.mock.calls[0]![1].headers['X-SCRT-Request'];
+    expect(entries.find((entry) => entry.action === 'worker.request.failed')?.context).toMatchObject({ requestId, operation: 'search', timedOut: true, timeoutMs: 25000 });
+    const logs = JSON.stringify(entries); expect(logs).not.toContain('never-log-this-secret'); expect(logs).not.toContain('private-worker.example'); expect(logs).not.toContain('TwumA6YhQp4');
   });
 
   it('explains mismatched API secrets without including either secret in the message', async () => {

@@ -8,8 +8,8 @@ const optionalCredential = z.string().trim().max(512).optional().transform((valu
 const artwork = { STEAMGRIDDB_API_KEY: optionalCredential, IGDB_TWITCH_CLIENT_ID: optionalCredential, IGDB_TWITCH_CLIENT_SECRET: optionalCredential };
 const mediaSecret = z.string().max(512).optional().transform((v) => v || undefined).pipe(z.string().min(32).optional());
 const mediaShared = { MEDIA_INTERNAL_SECRET: mediaSecret };
-const mediaProviders = { SPOTIFY_CLIENT_ID: optionalCredential, SPOTIFY_CLIENT_SECRET: optionalCredential, YOUTUBE_API_KEY: optionalCredential,
-  MEDIA_RADIO_CATALOG_JSON: z.string().max(100000).optional(), MEDIA_FFMPEG_PATH: z.string().max(1024).optional() };
+const mediaProviders = { YOUTUBE_API_KEY: optionalCredential,
+  MEDIA_FFMPEG_PATH: z.string().max(1024).optional() };
 const appOrigin = z.url().refine((value) => {
   try {
     const url = new URL(value);

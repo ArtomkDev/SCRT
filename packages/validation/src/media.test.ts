@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { mediaRequestSchema, mediaSettingsSchema, mediaActionSchema } from './media';
 describe('Media validation', () => {
+  it('defaults legacy settings to five minutes and validates inactivity disconnect', () => {
+    expect(mediaSettingsSchema.parse({}).inactivityDisconnectSeconds).toBe(300);
+    for (const value of [0, 1, 300, 3600]) expect(mediaSettingsSchema.safeParse({ inactivityDisconnectSeconds: value }).success).toBe(true);
+    for (const value of [-1, 0.5, 3601, Infinity, '300']) expect(mediaSettingsSchema.safeParse({ inactivityDisconnectSeconds: value }).success).toBe(false);
+  });
   it('accepts bounded seeks tied to a queue identity and rejects untrusted fields', () => {
     const action = { type: 'SEEK', queueItemId: 'f5d12265-0d78-48f2-a1c6-ec72ef5c8eae', positionMs: 30000 };
     expect(mediaActionSchema.safeParse(action).success).toBe(true);

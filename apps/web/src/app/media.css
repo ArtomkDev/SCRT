@@ -1,6 +1,6 @@
 .media-page, .media-player { display: grid; gap: 20px; }
 @property --media-accent { syntax: '<color>'; inherits: true; initial-value: #afb7c4; }
-.media-player { max-width: 1680px; --accent: var(--media-accent); transition: --media-accent 1.6s cubic-bezier(.22, 1, .36, 1); }
+.media-player { max-width: 1680px; container: media-player / inline-size; --accent: var(--media-accent); transition: --media-accent 1.6s cubic-bezier(.22, 1, .36, 1); }
 .media-workspace { display: grid; gap: 20px; min-width: 0; }
 .media-player .ui-button-primary { background: var(--accent); border-color: var(--accent); color: #18202a; }
 .media-player .ui-button-primary:hover { background: color-mix(in srgb, var(--accent) 80%, white); border-color: color-mix(in srgb, var(--accent) 80%, white); }
@@ -239,6 +239,30 @@
   .media-history-hint { align-items: flex-start; line-height: 1.6; }.media-history-hint svg { flex-shrink: 0; margin-top: 2px; }
 }
 @media (hover: none) { .media-artwork-overlay { opacity: 1; background: #0005; }.media-cover-toggle { opacity: 1; background: #0002; } }
+/* React to the workspace width as the diagnostics dock opens, not only the viewport. */
+@container media-player (max-width: 1250px) {
+  .media-workspace { grid-template-columns: minmax(0, 1fr); }
+  .media-player-card { grid-template-columns: 170px minmax(0, 1fr); gap: 24px; padding: 24px; max-height: none; overflow: visible; }
+  .media-artwork-large { width: 170px; height: 170px; }
+}
+@container media-player (max-width: 900px) {
+  .media-columns { grid-template-columns: minmax(0, 1fr); }
+  .media-search, .media-queue { height: auto; }
+  .media-search-results, .media-queue-content { max-height: 480px; }
+}
+@container media-player (max-width: 580px) {
+  .media-player-card { grid-template-columns: minmax(0, 1fr); gap: 16px; padding: 16px; }
+  .media-cover-main { justify-self: start; }
+  .media-artwork-large { width: 92px; height: 92px; }
+  .media-current .media-progress, .media-current .media-transport, .media-current .media-player-footer, .media-current .media-recovery, .media-current .media-next-up { margin-left: 0; }
+  .media-current h2 { font-size: 19px; }
+  .media-search-form { flex-wrap: wrap; }
+  .media-search-input { flex-basis: 100%; }
+  .media-volume { width: 100%; }
+  .media-volume input[type=range] { flex: 1; min-width: 0; width: auto; }
+  .media-tabs a { padding-inline: 8px; }
+  .media-voice-notice, .media-recovery { flex-wrap: wrap; }
+}
 @media (prefers-reduced-motion: reduce) { .media-player, .media-cover-layer, .media-track-list li, .media-played-details > summary > svg:last-child { transition: none; }.media-sync.is-pending::before, .media-feedback.media-toast, .media-play-signal.is-active > span, .media-title-in { animation: none; }.media-artwork-overlay, .media-cover-toggle { transition: none; }.media-controls .media-control-play:hover { transform: none; } }
 @media (min-width: 651px) and (max-width: 1000px) { .media-history { --history-columns: minmax(0, 1fr) 85px 48px 105px 36px; }.media-history-columns, .media-history-row { gap: 12px; }.media-history-list { padding-inline: 12px; } }
 @media (prefers-reduced-motion: reduce) { .media-history-row { transition: none; }.media-history-row.is-pending .media-artwork-overlay { animation: none; } }

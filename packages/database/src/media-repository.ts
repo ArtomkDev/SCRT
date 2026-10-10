@@ -2,6 +2,7 @@ import { FieldPath, FieldValue, Timestamp, type Firestore } from 'firebase-admin
 import { guildIdSchema, snowflakeSchema, mediaHistoryItemSchema, mediaSettingsSchema, mediaSessionSchema, type MediaHistoryPage, type MediaSettings } from '@scrt/validation';
 import type { MediaHistoryItem, MediaSession } from '@scrt/shared';
 import { createHash } from 'node:crypto';
+import { isRetiredMediaTrack, migrateMediaSession } from './media-legacy';
 
 export interface MediaStore {
   getSettings(guildId: string): Promise<MediaSettings>;
@@ -26,7 +27,7 @@ export class MediaRepository implements MediaStore {
   }
   async getSession(guildId: string): Promise<MediaSession | null> {
     const doc = await this.root(guildId).collection('mediaState').doc('current').get();
-    return doc.exists ? mediaSessionSchema.parse(doc.data()) : null;
+    return doc.exists ? mediaSessionSchema.parse(migrateMediaSession(doc.data() ?? {})) : null;
   }
   async receipt(guildId: string, commandId: string): Promise<{ fingerprint: string } | null> {
     const doc = await this.root(guildId).collection('mediaCommands').doc(commandId).get();
@@ -55,9 +56,11 @@ export class MediaRepository implements MediaStore {
     else query = query.where('endedAt', '<', before);
     const count = Math.min(50, Math.max(1, limit));
     const snapshot = await query.limit(count).get();
-    const items = snapshot.docs.map((doc) => mediaHistoryItemSchema.parse({ ...doc.data(), id: doc.id }));
-    const last = items.at(-1);
-    return { items, next: items.length === count && last ? { endedAt: last.endedAt, id: last.id } : null };
+    const rows = snapshot.docs.map((doc) => ({ ...doc.data(), id: doc.id }));
+    const items = rows.filter((row) => !isRetiredMediaTrack('track' in row ? row.track : null)).map((row) => mediaHistoryItemSchema.parse(row));
+    const last = snapshot.docs.at(-1);
+    // Advance over retired rows too, including pages containing no supported items.
+    return { items, next: snapshot.docs.length === count && last ? { endedAt: mediaHistoryItemSchema.shape.endedAt.parse(last.get('endedAt')), id: last.id } : null };
   }
   async deleteHistoryItem(guildId: string, id: string, actorUserId: string): Promise<'deleted' | 'missing' | 'forbidden'> {
     const actor = snowflakeSchema.parse(actorUserId);

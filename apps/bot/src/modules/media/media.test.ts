@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ChannelType, type Client, type Guild, type VoiceState } from 'discord.js';
 import type { MediaStore } from '@scrt/database';
 import { mediaSettingsSchema, type MediaAction, type MediaCommand, type MediaSettings } from '@scrt/validation';
-import type { MediaHistoryItem, MediaSession, MediaTrack } from '@scrt/shared';
+import { runtimeLogSnapshot, type MediaHistoryItem, type MediaSession, type MediaTrack } from '@scrt/shared';
 import { MediaSourceError, MediaSourceRegistry, type MediaSourceProvider } from '@scrt/media';
 import { MediaSessionService } from './command-service';
 import type { EngineEvent, PlaybackEngine } from './playback-engine';
@@ -45,6 +45,83 @@ function fixture() {
 }
 afterEach(() => vi.useRealTimers());
 describe('Media session commands', () => {
+  it('leaves after the configured paused time without extending it on polls or unrelated commands', async () => {
+    vi.useFakeTimers(); const f = fixture(); f.store.settings.inactivityDisconnectSeconds = 10;
+    await f.add('first'); await f.add('second'); await f.service.execute(f.command({ type: 'PAUSE' }));
+    const destroyed = f.engine.destroy.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(6000); await f.service.state(guildId, userId);
+    await f.service.execute(f.command({ type: 'SET_VOLUME', volume: 50 }, ownerId));
+    await vi.advanceTimersByTimeAsync(3999); expect(f.engine.destroy).toHaveBeenCalledTimes(destroyed);
+    await vi.advanceTimersByTimeAsync(1); await f.service.state(guildId, userId);
+    expect(f.engine.destroy).toHaveBeenCalledTimes(destroyed + 1);
+    expect(f.store.session).toMatchObject({ state: 'idle', currentTrack: null, recoverable: true });
+    expect(f.store.session?.queue.map((track) => track.title)).toEqual(['first', 'second']);
+    expect(f.store.session?.lastError).toContain('відсутність відтворення');
+  });
+  it('waits before leaving an exhausted queue even while listeners remain', async () => {
+    vi.useFakeTimers(); const f = fixture(); f.store.settings.inactivityDisconnectSeconds = 10; await f.add('first');
+    const destroyed = f.engine.destroy.mock.calls.length;
+    f.event({ type: 'ended', queueItemId: f.store.session!.currentTrack!.queueItemId, playedMs: 60000 }); await f.service.state(guildId, userId);
+    expect(f.engine.destroy).toHaveBeenCalledTimes(destroyed);
+    await vi.advanceTimersByTimeAsync(10000); await f.service.state(guildId, userId);
+    expect(f.engine.destroy).toHaveBeenCalledTimes(destroyed + 1); expect(f.store.session?.recoverable).toBe(false);
+  });
+  it('does not report playback after reconnecting an idle voice connection', async () => {
+    vi.useFakeTimers(); const f = fixture(); f.store.settings.inactivityDisconnectSeconds = 10; await f.add('first');
+    f.event({ type: 'ended', queueItemId: f.store.session!.currentTrack!.queueItemId }); await f.service.state(guildId, userId);
+    f.event({ type: 'reconnecting' }); await f.service.state(guildId, userId);
+    f.event({ type: 'reconnected' }); await f.service.state(guildId, userId);
+    expect(f.store.session?.state).toBe('idle'); const destroyed = f.engine.destroy.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(10000); expect(f.engine.destroy).toHaveBeenCalledTimes(destroyed + 1);
+  });
+  it.each(['RESUME', 'PLAY_TRACK'] as const)('cancels the idle deadline when %s starts music', async (type) => {
+    vi.useFakeTimers(); const f = fixture(); f.store.settings.inactivityDisconnectSeconds = 10; await f.add('first');
+    await f.service.execute(f.command({ type: 'PAUSE' })); await vi.advanceTimersByTimeAsync(9000);
+    await f.service.execute(f.command(type === 'RESUME' ? { type } : { type, provider: 'direct', providerItemId: 'next' }, ownerId));
+    const destroyed = f.engine.destroy.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(20000); expect(f.engine.destroy).toHaveBeenCalledTimes(destroyed); expect(f.store.session?.state).toBe('playing');
+    await f.service.shutdown();
+  });
+  it('supports disabling and shortening an existing idle timeout through authorized settings', async () => {
+    vi.useFakeTimers(); const f = fixture(); f.store.settings.inactivityDisconnectSeconds = 10; await f.add('first'); await f.service.execute(f.command({ type: 'PAUSE' }));
+    await f.service.settings(guildId, ownerId, { ...f.store.settings, inactivityDisconnectSeconds: 0 });
+    const destroyed = f.engine.destroy.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(20000); expect(f.engine.destroy).toHaveBeenCalledTimes(destroyed);
+    await expect(f.service.settings(guildId, userId, { ...f.store.settings, inactivityDisconnectSeconds: 1 })).rejects.toThrow('media.manage');
+    await f.service.settings(guildId, ownerId, { ...f.store.settings, inactivityDisconnectSeconds: 5 });
+    await vi.advanceTimersByTimeAsync(1); await f.service.state(guildId, userId);
+    expect(f.engine.destroy).toHaveBeenCalledTimes(destroyed + 1);
+  });
+  it.each(['shutdown', 'lease-loss', 'recovery'] as const)('cleans up inactivity callbacks on %s', async (action) => {
+    vi.useFakeTimers(); const f = fixture(); f.store.settings.inactivityDisconnectSeconds = 10; await f.add('first'); await f.service.execute(f.command({ type: 'PAUSE' }));
+    if (action === 'shutdown') await f.service.shutdown();
+    else if (action === 'lease-loss') f.service.suspendAudio(guildId);
+    else await f.service.recover(f.guild);
+    const destroyed = f.engine.destroy.mock.calls.length, writes = f.store.writes;
+    await vi.advanceTimersByTimeAsync(20000); expect(f.engine.destroy).toHaveBeenCalledTimes(destroyed); expect(f.store.writes).toBe(writes);
+  });
+  it('stops on premature EOF but advances normally after complete playback', async () => {
+    const f = fixture(); await f.add('first'); await f.add('second');
+    f.event({ type: 'ended', queueItemId: f.store.session!.currentTrack!.queueItemId, playedMs: 2000 });
+    await f.service.state(guildId, userId);
+    expect(f.store.session).toMatchObject({ state: 'idle', currentTrack: null, recoverable: true });
+    expect(f.store.session?.lastError).toContain('передчасно');
+    expect(f.store.session?.queue.map((entry) => entry.title)).toEqual(['first', 'second']);
+    const complete = fixture(); await complete.add('first'); await complete.add('second');
+    complete.event({ type: 'ended', queueItemId: complete.store.session!.currentTrack!.queueItemId, playedMs: 60000 });
+    await complete.service.state(guildId, userId);
+    expect(complete.store.session?.currentTrack?.title).toBe('second');
+  });
+  it('preserves an unknown-duration selected track after starvation without starting or finishing another song', async () => {
+    const f = fixture(); const original = f.provider.resolve;
+    f.provider.resolve = async (...args) => ({ ...await original(...args), durationMs: null });
+    await f.add('selected'); await f.add('next'); f.engine.play.mockClear();
+    f.event({ type: 'failed', queueItemId: f.store.session!.currentTrack!.queueItemId, reason: 'Аудіокадри не надходять. Трек збережено.' });
+    await f.service.state(guildId, userId);
+    expect(f.store.session).toMatchObject({ state: 'idle', currentTrack: null, recoverable: true, lastError: expect.stringContaining('Трек збережено') });
+    expect(f.store.session?.queue.map((entry) => entry.title)).toEqual(['selected', 'next']);
+    expect(f.store.histories).toHaveLength(0); expect(f.engine.play).not.toHaveBeenCalled();
+  });
   it('keeps session, queue and history unchanged until the replacement decoder is ready', async () => {
     const f = fixture(); await f.add('current'); await f.add('selected'); const before = structuredClone(f.store.session);
     let ready!: () => void; const prepared = new Promise<void>((resolve) => { ready = resolve; });
@@ -358,10 +435,14 @@ describe('Media session commands', () => {
     await expect(f.service.execute(f.command({ type: 'REMOVE_QUEUE_ITEM', queueItemId: item.queueItemId, expectedQueueVersion: f.store.session!.queueVersion }))).rejects.toThrow('дозволу');
     f.store.settings.maxQueueItems = 3; await expect(f.add('full')).rejects.toThrow('ліміту'); f.store.settings.maxQueueItems = 100; f.store.settings.maxTracksPerUser = 2; await expect(f.add('per-user')).rejects.toThrow('ліміту');
   });
-  it('advances after engine errors and clears votes with each track', async () => {
+  it('preserves the interrupted track and queue instead of skipping after engine errors', async () => {
     const f = fixture(); await f.add('first'); await f.add('second'); const id = f.store.session!.currentTrack!.queueItemId;
-    f.event({ type: 'failed', queueItemId: id, reason: 'stream failed' }); await f.service.state(guildId, userId); expect(f.store.session?.currentTrack?.title).toBe('second'); expect(f.store.histories[0]?.result).toBe('failed');
-    f.event({ type: 'ended', queueItemId: f.store.session!.currentTrack!.queueItemId }); await f.service.state(guildId, userId); expect(f.store.session?.state).toBe('idle'); expect(f.store.histories[1]?.result).toBe('finished');
+    f.event({ type: 'failed', queueItemId: id, reason: 'stream failed' }); await f.service.state(guildId, userId);
+    expect(f.store.session).toMatchObject({ currentTrack: null, state: 'idle', recoverable: true, lastError: 'stream failed' });
+    expect(f.store.session?.queue.map((track) => track.title)).toEqual(['first', 'second']);
+    const calls = f.engine.play.mock.calls.length;
+    f.event({ type: 'ended', queueItemId: id }); await f.service.state(guildId, userId);
+    expect(f.engine.play).toHaveBeenCalledTimes(calls);
   });
   it('applies own-reorder limits when a duplicate is configured to move forward', async () => {
     const f = fixture(); await f.add('first'); await f.add('other', otherId); await f.add('own');
@@ -499,13 +580,50 @@ describe('Media session commands', () => {
   it('honors repeat-track ahead of fair rotation, never repeats failures', async () => {
     const f = fixture(); f.store.settings.queueMode = 'fair'; await f.add('first'); await f.add('second', otherId); await f.service.execute(f.command({ type: 'SET_REPEAT', repeatMode: 'track' }, ownerId));
     f.event({ type: 'ended', queueItemId: f.store.session!.currentTrack!.queueItemId }); await f.service.state(guildId, userId); expect(f.store.session?.currentTrack?.title).toBe('first');
-    f.event({ type: 'failed', queueItemId: f.store.session!.currentTrack!.queueItemId }); await f.service.state(guildId, userId); expect(f.store.session?.currentTrack?.title).toBe('second');
+    f.event({ type: 'failed', queueItemId: f.store.session!.currentTrack!.queueItemId }); await f.service.state(guildId, userId); expect(f.store.session?.currentTrack).toBeNull(); expect(f.store.session?.recoverable).toBe(true);
   });
   it('allows a new session in another Voice after the old queue ends', async () => {
     const f = fixture(); await f.add('first'); f.event({ type: 'ended', queueItemId: f.store.session!.currentTrack!.queueItemId }); await f.service.state(guildId, userId); await f.voice(userId, otherRoom); await f.add('new'); expect(f.store.session?.voiceChannelId).toBe(otherRoom);
   });
 });
 describe('authenticated internal endpoint', () => {
+  it('correlates authenticated web/worker requests and replaces an invalid trace header without logging it', async () => {
+    const f = fixture(); const secret = 'c'.repeat(32); const expectedId = randomUUID();
+    const server = await startMediaInternalApi(new MediaCommandService(f.service), { secret, host: '127.0.0.1', port: 0 });
+    try {
+      const address = server.address(); if (!address || typeof address === 'string') throw new Error('No port');
+      for (const correlation of [expectedId, 'token=never-log-this']) {
+        const before = runtimeLogSnapshot(); const after = before.entries.at(-1)?.sequence ?? 0;
+        const response = await fetch(`http://127.0.0.1:${address.port}/internal/media`, {
+          method: 'POST', headers: { Authorization: `Bearer ${secret}`, 'X-SCRT-Request': correlation },
+          body: JSON.stringify({ operation: 'search', guildId, actorUserId: ownerId, query: 'songs', page: 0 }),
+        });
+        expect(response.status).toBe(200); await response.json();
+        const entries = runtimeLogSnapshot({ runId: before.runId, after }).entries;
+        const started = entries.find((entry) => entry.action === 'internal.request.started');
+        const completed = entries.find((entry) => entry.action === 'internal.request.completed');
+        expect(started?.context.requestId).toMatch(/^[0-9a-f-]{36}$/);
+        expect(completed?.context).toMatchObject({ requestId: started?.context.requestId, guildId, operation: 'search', status: 200 });
+        if (correlation === expectedId) expect(started?.context.requestId).toBe(expectedId);
+        expect(JSON.stringify(entries)).not.toContain('never-log-this'); expect(JSON.stringify(entries)).not.toContain(secret);
+      }
+      expect(f.store.writes).toBe(0);
+    } finally { server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); }
+  });
+  it('requires both service authentication and the specific admin identity for runtime logs', async () => {
+    const f = fixture(); const secret = 'l'.repeat(32);
+    const server = await startMediaInternalApi(new MediaCommandService(f.service), { secret, host: '127.0.0.1', port: 0 });
+    try {
+      const address = server.address(); if (!address || typeof address === 'string') throw new Error('No port');
+      const url = `http://127.0.0.1:${address.port}/internal/logs`;
+      expect((await fetch(url, { headers: { 'X-SCRT-Actor': '1409339485904306200' } })).status).toBe(401);
+      expect((await fetch(url, { headers: { Authorization: `Bearer ${secret}`, 'X-SCRT-Actor': ownerId } })).status).toBe(403);
+      const response = await fetch(url, { headers: { Authorization: `Bearer ${secret}`, 'X-SCRT-Actor': '1409339485904306200' } });
+      expect(response.status).toBe(200); expect(response.headers.get('Cache-Control')).toBe('no-store');
+      expect(await response.json()).toMatchObject({ runId: expect.any(String), entries: expect.any(Array) });
+      expect(f.store.writes).toBe(0);
+    } finally { server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); }
+  });
   it('reports a source access refusal without changing the queue or misreporting a worker failure', async () => {
     const f = fixture(); const message = 'YouTube вимагає авторизації для цього запиту.';
     vi.spyOn(f.provider, 'resolve').mockRejectedValue(new MediaSourceError(message));

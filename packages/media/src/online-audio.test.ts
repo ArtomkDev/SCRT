@@ -1,13 +1,14 @@
 import { PassThrough } from 'node:stream';
 import type { IncomingMessage } from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-const mocks = vi.hoisted(() => ({ open: vi.fn(), exec: vi.fn(), exists: vi.fn(() => true) }));
-vi.mock('node:child_process', () => ({ execFile: mocks.exec }));
+const mocks = vi.hoisted(() => ({ open: vi.fn(), exec: vi.fn(), probe: vi.fn(), exists: vi.fn(() => true) }));
+vi.mock('node:child_process', () => ({ execFile: mocks.exec, spawnSync: mocks.probe }));
 vi.mock('node:fs', () => ({ existsSync: mocks.exists }));
 vi.mock('./audio-http', async (original) => ({ ...await original<typeof import('./audio-http')>(), openAudioStream: mocks.open }));
 import { createMediaSources, DirectAudioProvider, MediaSourceRegistry } from './providers';
 import { MediaSourceError, OnlineAudioProvider, YtDlpExtractor, soundcloudReference, youtubeReference, type OnlineAudioExtractor } from './online-audio';
 import { MediaAudioHttpError } from './audio-http';
+import { runtimeLogSnapshot } from '@scrt/shared';
 
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.clearAllMocks(); vi.unstubAllEnvs(); mocks.exists.mockReturnValue(true); });
 function details(provider: 'youtube' | 'soundcloud' = 'youtube'): Awaited<ReturnType<OnlineAudioExtractor['inspect']>> {
@@ -149,6 +150,18 @@ describe('online audio providers', () => {
   });
 });
 describe('extractor process boundary', () => {
+  it('records installed versus executable health and probes versions without forwarding bot credentials', () => {
+    const before = runtimeLogSnapshot(); const after = before.entries.at(-1)?.sequence ?? 0;
+    vi.stubEnv('DISCORD_BOT_TOKEN', 'never-forward'); vi.stubEnv('NODE_OPTIONS', '--require unwanted');
+    mocks.probe.mockReturnValueOnce({ status: 0, stdout: '2026.09.27.232945\n', signal: null })
+      .mockReturnValueOnce({ status: null, stdout: '', signal: null, error: Object.assign(new Error('permission denied'), { code: 'EACCES' }) });
+    const adapter = new YtDlpExtractor('/installed/yt-dlp'); adapter.logDiagnostics(); adapter.logDiagnostics();
+    const options = mocks.probe.mock.calls[0]![2];
+    expect(options.env).not.toHaveProperty('DISCORD_BOT_TOKEN'); expect(options.env).not.toHaveProperty('NODE_OPTIONS');
+    const entries = runtimeLogSnapshot({ runId: before.runId, after }).entries.filter((entry) => entry.action === 'extractor.dependencies.checked');
+    expect(entries[0]?.context).toMatchObject({ installed: true, executable: true, version: '2026.09.27.232945' });
+    expect(entries[1]?.context).toMatchObject({ installed: true, executable: false });
+  });
   it.each(['youtube', 'soundcloud'] as const)('extracts only the next three %s results and bounds the page before spawning', async (provider) => {
     mocks.exec.mockImplementation((_file, _args, _options, callback) => callback(null, `${JSON.stringify(details(provider))}\n${JSON.stringify(details(provider))}\n`, ''));
     const adapter = new YtDlpExtractor('/installed/yt-dlp'); await adapter.search(provider, 'Artist Track', 1);
@@ -167,6 +180,7 @@ describe('extractor process boundary', () => {
     const [file, args, options] = mocks.exec.mock.calls[0]!;
     expect(file).toBe('/installed/yt-dlp'); expect(args.at(-1)).toBe('https://www.youtube.com/watch?v=TwumA6YhQp4');
     expect(args.at(-2)).toBe('--'); expect(args).toContain('--ignore-config'); expect(args).toContain('--no-plugin-dirs');
+    expect(args).toContain('--force-ipv4'); expect(args).not.toContain('--no-warnings');
     expect(options.shell).toBeUndefined(); expect(options.signal).toBe(signal); expect(options.timeout).toBeGreaterThan(19000); expect(options.timeout).toBeLessThanOrEqual(20000);
     expect(options.env).not.toHaveProperty('DISCORD_BOT_TOKEN'); expect(options.env).not.toHaveProperty('NODE_OPTIONS');
   });
@@ -180,6 +194,29 @@ describe('extractor process boundary', () => {
   it('translates authorization failures without exposing stderr or signed URLs', async () => {
     mocks.exec.mockImplementation((_file, _args, _options, callback) => callback(new Error('failed'), '', 'ERROR: Sign in to watch this video https://secret.example/token'));
     await expect(new YtDlpExtractor('/installed/yt-dlp').inspect('youtube', 'TwumA6YhQp4')).rejects.toThrow('YouTube вимагає авторизації');
+    expect(mocks.exec).toHaveBeenCalledOnce();
+  });
+  it('retains useful extractor diagnostics while redacting signed URLs and credentials from runtime logs', async () => {
+    const before = runtimeLogSnapshot(); const after = before.entries.at(-1)?.sequence ?? 0;
+    mocks.exec.mockImplementation((_file, _args, _options, callback) => callback(Object.assign(new Error('failed'), { code: 1, signal: null, killed: false }), '', 'ERROR: HTTP Error 403: Forbidden https://cdn.example/audio?signature=never-show token=never-show'));
+    await expect(new YtDlpExtractor('/installed/yt-dlp').inspect('youtube', 'TwumA6YhQp4')).rejects.toThrow('відхилив доступ');
+    const entries = runtimeLogSnapshot({ runId: before.runId, after }).entries;
+    expect(entries.find((entry) => entry.action === 'extractor.failed')?.context).toMatchObject({ provider: 'youtube', operation: 'inspect', code: 1, killed: false, cancelled: false });
+    expect(JSON.stringify(entries)).toContain('HTTP Error 403'); expect(JSON.stringify(entries)).not.toContain('never-show');
+    expect(JSON.stringify(entries)).not.toContain('cdn.example');
+  });
+  it.each(['ENOENT', 'EACCES'])('distinguishes extractor startup %s from provider refusal', async (code) => {
+    mocks.exec.mockImplementation((_file, _args, _options, callback) => callback(Object.assign(new Error('cannot spawn'), { code }), '', ''));
+    await expect(new YtDlpExtractor('/installed/yt-dlp').inspect('youtube', 'TwumA6YhQp4')).rejects.toThrow('запустити аудіоджерело');
+    expect(mocks.exec).toHaveBeenCalledOnce();
+  });
+  it('classifies a killed extraction at its deadline as a timeout without spawning another process', async () => {
+    vi.useFakeTimers();
+    mocks.exec.mockImplementation((_file, _args, options, callback) => {
+      vi.setSystemTime(Date.now() + options.timeout);
+      callback(Object.assign(new Error('timed out'), { killed: true, signal: 'SIGTERM' }), '', '');
+    });
+    await expect(new YtDlpExtractor('/installed/yt-dlp').inspect('youtube', 'TwumA6YhQp4')).rejects.toThrow('відведений час');
     expect(mocks.exec).toHaveBeenCalledOnce();
   });
   it.each([

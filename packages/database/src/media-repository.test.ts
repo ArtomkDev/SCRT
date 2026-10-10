@@ -10,6 +10,29 @@ function historyItem(actor = '42345678901234567', endedAt = Date.now() - 1000): 
   return { id: randomUUID(), track: { provider: 'youtube', providerItemId: 'abcdefghijk', title: 'Track', artist: 'Artist', type: 'track', durationMs: 60000, artworkUrl: null, externalUrl: 'https://youtube.com/watch?v=abcdefghijk', playable: true, seekable: false, explicit: null, queueItemId: randomUUID(), requestedByUserId: actor, requestedByName: 'Listener', requestedAt: endedAt - 2000 }, playedAt: endedAt - 1000, endedAt, result: 'finished', reason: null };
 }
 describe('Media Firestore transaction boundary', () => {
+  it('filters retired providers when reading old sessions while preserving supported tracks and guild isolation', async () => {
+    const fixture = activityTestStore(); const repo = new MediaRepository(fixture.db); const track = historyItem().track;
+    const retired = { ...track, provider: 'spotify' };
+    const legacy = { ...session(), state: 'playing', currentTrack: retired, queue: [retired, track], played: [{ ...retired, provider: 'radio' }, track], startedAt: Date.now() };
+    fixture.records.set(`guilds/${guildId}/mediaState/current`, legacy);
+    const restored = await repo.getSession(guildId);
+    expect(restored).toMatchObject({ state: 'idle', currentTrack: null, queue: [track], played: [track], recoverable: true, startedAt: null });
+    expect(restored?.lastError).toContain('більше не підтримується');
+    expect(fixture.records.get(`guilds/${guildId}/mediaState/current`)).toEqual(legacy);
+    expect(await repo.getSession(otherGuild)).toBeNull();
+    fixture.records.set(`guilds/${guildId}/mediaState/current`, { ...session(), queue: [{ ...track, provider: 'forged' }] });
+    await expect(repo.getSession(guildId)).rejects.toThrow();
+  });
+  it('continues history pagination across a page containing only retired sources', async () => {
+    const fixture = activityTestStore(); const repo = new MediaRepository(fixture.db); const endedAt = Date.now() - 1000;
+    const retired = Array.from({ length: 25 }, (_, index) => { const item = historyItem(undefined, endedAt - index); return { ...item, track: { ...item.track, provider: index % 2 ? 'radio' : 'spotify' } }; });
+    for (const item of retired) fixture.records.set(`guilds/${guildId}/mediaHistory/${item.id}`, item);
+    const supported = historyItem(undefined, endedAt - 30);
+    fixture.records.set(`guilds/${guildId}/mediaHistory/${supported.id}`, supported);
+    const first = await repo.history(guildId);
+    expect(first.items).toEqual([]); expect(first.next).toEqual({ id: retired[24]!.id, endedAt: retired[24]!.endedAt });
+    expect(await repo.history(guildId, first.next!.endedAt, 25, first.next!.id)).toEqual({ items: [supported], next: null });
+  });
   it('deletes only the actor history in the requested guild, even when another actor is an owner', async () => {
     const fixture = activityTestStore(); const repo = new MediaRepository(fixture.db); const own = historyItem(); const other = historyItem('52345678901234567');
     const path = (guild: string, id: string) => `guilds/${guild}/mediaHistory/${id}`;

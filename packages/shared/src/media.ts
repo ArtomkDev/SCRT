@@ -1,4 +1,4 @@
-export type MediaProviderId = 'direct' | 'radio' | 'spotify' | 'youtube' | 'soundcloud';
+export type MediaProviderId = 'direct' | 'youtube' | 'soundcloud';
 export type MediaTrack = {
   provider: MediaProviderId; providerItemId: string; type: 'track' | 'live';
   title: string; artist: string; durationMs: number | null; artworkUrl: string | null;

@@ -16,6 +16,13 @@ function snapshot(configured = false) {
     providers: [{ id: 'youtube', name: 'YouTube', state: configured ? 'available' : 'unconfigured', capabilities: { search: true, metadata: true, playback: false, live: false, seek: false, playlists: false } }],
   });
 }
+function recoverySnapshot(voiceId: string | null) {
+  const initial = snapshot(true);
+  initial.canManage = false; initial.controls.RESTORE = false;
+  initial.actorVoice = { id: voiceId, name: voiceId ? 'Other room' : null };
+  initial.session = { sessionId: 'e1f2d646-c71b-447e-8f8b-1d537d3b17c0', guildId, voiceChannelId: '32345678901234567', voiceChannelName: 'Original room', state: 'idle', currentTrack: null, queue: [], played: [], startedAt: null, pausedAt: null, accumulatedPauseMs: 0, volume: 60, repeatMode: 'off', queueMode: 'normal', shuffle: false, lockedMode: 'unlocked', createdByUserId: guildId, queueVersion: 2, revision: 2, createdAt: 1, updatedAt: 2, recoverable: true, lastError: 'Відтворення було перервано перезапуском SCRT.', lastRequesterId: null };
+  return initial;
+}
 beforeEach(() => {
   vi.stubGlobal('React', React); sessionStorage.clear();
   HTMLDialogElement.prototype.showModal = function () { this.open = true; };
@@ -106,6 +113,31 @@ describe('Media catalog search feedback', () => {
     render(<MediaPlayerClient guildId={guildId} userId="42345678901234567" initial={value} initialError={null} />);
     expect(screen.queryByRole('slider', { name: 'Перемотати трек' })).toBeNull(); expect(screen.getByRole('progressbar')).toBeTruthy();
   });
+  it.each([null, '42345678901234567'])('lets an actor outside the saved Voice request recovery and displays the live worker denial (%s)', async (voiceId) => {
+    const initial = recoverySnapshot(voiceId);
+    const reason = 'Приєднайтеся до початкового голосового каналу або попросіть адміністратора відновити чергу у вашому Voice.';
+    const fetch = vi.fn(async (_url: string, init?: RequestInit) => init?.method === 'POST' ? Response.json({ error: reason }, { status: 403 }) : Response.json(initial));
+    vi.stubGlobal('fetch', fetch);
+    render(<MediaPlayerClient guildId={guildId} userId="52345678901234567" initial={initial} initialError={null} />);
+    const restore = screen.getByRole('button', { name: 'Відновити' });
+    expect(restore.hasAttribute('disabled')).toBe(false); fireEvent.click(restore);
+    expect(await screen.findByText(reason)).toBeTruthy();
+    expect(screen.getByText(reason).closest('[aria-live]')?.getAttribute('aria-live')).toBe('polite');
+    const posts = fetch.mock.calls.filter(([, init]) => init?.method === 'POST');
+    expect(posts).toHaveLength(1); expect(JSON.parse(String(posts[0]![1]?.body)).action).toEqual({ type: 'RESTORE' });
+    expect(screen.getByRole('button', { name: 'Відновити' }).hasAttribute('disabled')).toBe(false);
+  });
+  it('allows recovery after joining Voice even when the displayed permission snapshot is stale', async () => {
+    const initial = recoverySnapshot(null);
+    const restored = mediaSnapshotSchema.parse({ ...initial, actorVoice: { id: initial.session!.voiceChannelId, name: 'Original room' }, session: { ...initial.session, recoverable: false, lastError: null }, controls: { ...initial.controls, RESTORE: true } });
+    const fetch = vi.fn(async (_url: string, init?: RequestInit) => Response.json(init?.method === 'POST' ? { replayed: false, snapshot: restored } : initial));
+    vi.stubGlobal('fetch', fetch);
+    render(<MediaPlayerClient guildId={guildId} userId="52345678901234567" initial={initial} initialError={null} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Відновити' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Відновити' })).toBeNull());
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
   it('offers explicit recovery in the manager current Voice after the original channel was deleted', async () => {
     const initial = snapshot(true);
     initial.controls = { RESTORE: true, ADD_TRACK: false, MOVE_SESSION: true };
@@ -146,7 +178,7 @@ describe('Media catalog search feedback', () => {
     await search({ results: [], unavailable: ['YouTube'] });
     expect(await screen.findByText(/Не налаштовано пошук: YouTube/)).toBeTruthy();
     expect(screen.queryByText(/Нічого не знайдено/)).toBeNull();
-    expect(screen.getByText(/Spotify надає лише інформацію/)).toBeTruthy();
+    expect(screen.getByText(/Встав посилання YouTube/)).toBeTruthy();
   });
   it('distinguishes a configured catalog outage from missing configuration', async () => {
     await search({ results: [], unavailable: ['YouTube'] }, true);

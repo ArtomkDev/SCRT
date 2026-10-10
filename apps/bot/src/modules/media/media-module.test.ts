@@ -37,7 +37,7 @@ describe('Media worker lease recovery', () => {
   it('waits for the old worker lease and automatically becomes available after expiry', async () => {
     const f = await fixture(); f.repo.lease.mockResolvedValueOnce(false).mockResolvedValueOnce(false);
     await f.module.recover(f.guild);
-    await expect(f.actor()).rejects.toThrow('недоступний');
+    await expect(f.actor()).rejects.toThrow('Сесією керує інший процес бота');
     expect(f.recover).not.toHaveBeenCalled(); expect(f.guild.members.fetch).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(30000);
     await expect(f.actor()).rejects.toThrow('недоступний');
@@ -49,13 +49,13 @@ describe('Media worker lease recovery', () => {
     const f = await fixture(); await f.module.recover(f.guild);
     f.repo.lease.mockRejectedValueOnce(new Error('Firestore temporarily unavailable'));
     await vi.advanceTimersByTimeAsync(30000);
-    expect(f.suspend).toHaveBeenCalledWith(guildId); await expect(f.actor()).rejects.toThrow('недоступний');
+    expect(f.suspend).toHaveBeenCalledWith(guildId); await expect(f.actor()).rejects.toThrow('Не вдалося підтвердити або відновити медіасесію');
     await vi.advanceTimersByTimeAsync(30000);
     await expect(f.actor()).resolves.toMatchObject({ userId }); expect(f.recover).toHaveBeenCalledTimes(2);
   });
   it('recovers after an initial session recovery failure while refusing commands until ready', async () => {
     const f = await fixture(); f.recover.mockRejectedValueOnce(new Error('State read failed'));
-    await f.module.recover(f.guild); await expect(f.actor()).rejects.toThrow('недоступний');
+    await f.module.recover(f.guild); await expect(f.actor()).rejects.toThrow('Не вдалося підтвердити або відновити медіасесію');
     await vi.advanceTimersByTimeAsync(30000);
     await expect(f.actor()).resolves.toMatchObject({ userId }); expect(f.recover).toHaveBeenCalledTimes(2);
   });
@@ -88,7 +88,7 @@ describe('Media worker lease recovery', () => {
   it('refuses commands after the last confirmed lease expires even before the timer runs', async () => {
     const f = await fixture(); await f.module.recover(f.guild);
     vi.setSystemTime(Date.now() + 60001);
-    await expect(f.actor()).rejects.toThrow('недоступний');
+    await expect(f.actor()).rejects.toThrow('Підтвердження сесії прострочилося');
   });
   it('keeps an occupied guild unavailable while another guild remains usable', async () => {
     const f = await fixture(); const otherId = '32345678901234567';

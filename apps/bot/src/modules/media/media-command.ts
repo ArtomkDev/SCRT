@@ -21,7 +21,7 @@ export async function executeMediaSlash(interaction: ChatInputCommandInteraction
     let action: MediaAction;
     if (sub === 'play') {
       const search = await commands.sessions.search(interaction.guildId, interaction.user.id, interaction.options.getString('query', true)); const track = search.results.find((item) => item.playable);
-      if (!track) throw new MediaError(search.errors?.[0] ?? (search.unavailable.length ? `Доступного аудіо не знайдено. Недоступні джерела: ${search.unavailable.join(', ')}.` : 'Доступного аудіо не знайдено. Спробуйте інший запит або посилання; Spotify підтримує лише інформацію.'));
+      if (!track) throw new MediaError(search.errors?.[0] ?? (search.unavailable.length ? `Доступного аудіо не знайдено. Недоступні джерела: ${search.unavailable.join(', ')}.` : 'Доступного аудіо не знайдено. Спробуйте інший запит або посилання YouTube, SoundCloud чи аудіофайлу.'));
       action = { type: 'ADD_TRACK', provider: track.provider, providerItemId: track.providerItemId };
     } else if (sub === 'skip') action = { type: state.controls.SKIP ? 'SKIP' : 'VOTE_SKIP' };
     else if (sub === 'resume') action = { type: state.session?.recoverable ? 'RESTORE' : 'RESUME' };

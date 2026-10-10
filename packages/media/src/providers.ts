@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { IncomingMessage } from 'node:http';
-import type { MediaProviderHealth, MediaProviderId, MediaTrack } from '@scrt/shared';
+import { log, type MediaProviderHealth, type MediaProviderId, type MediaTrack } from '@scrt/shared';
 import { mediaTrackSchema } from '@scrt/validation';
 import { openAudioStream, validateMediaUrl } from './audio-http';
 import { MediaSourceError, OnlineAudioProvider, type OnlineAudioExtractor } from './online-audio';
@@ -23,28 +23,12 @@ export class DirectAudioProvider implements MediaSourceProvider {
   async resolve(reference: string, signal?: AbortSignal): Promise<MediaTrack> {
     const url = validateMediaUrl(reference);
     // Query-bearing URLs may contain expiring secrets: never persist these as a track reference.
-    if (url.search) throw new Error('Для приватних або тимчасових URL використайте каталог оператора.');
+    if (url.search) throw new Error('Потрібне пряме посилання на аудіофайл без приватних або тимчасових параметрів.');
     if (['spotify.com', 'youtube.com', 'youtu.be', 'soundcloud.com'].some((host) => url.hostname === host || url.hostname.endsWith(`.${host}`))) throw new Error('Каталог не є прямим аудіоджерелом.');
     const stream = await openAudioStream(url.href, signal); const live = Boolean(stream.headers['icy-name'] || stream.headers['icy-metaint']); stream.destroy();
     return { provider: this.id, providerItemId: url.href, title: decodeURIComponent(url.pathname.split('/').at(-1) || url.hostname).slice(0, 300), artist: url.hostname, type: live ? 'live' : 'track', durationMs: null, artworkUrl: null, externalUrl: url.href, playable: true, seekable: false, explicit: null };
   }
   async getPlayableResource(reference: string, signal: AbortSignal) { const url = validateMediaUrl(reference); if (url.search) throw new Error('Private direct URL'); return openAudioStream(reference, signal); }
-}
-const radioEntry = z.object({ id: z.string().regex(/^[a-z0-9_-]{1,64}$/), title: z.string().min(1).max(300), artist: z.string().max(200).default('Радіо'), url: z.url().max(2048), externalUrl: z.url().max(2048), artworkUrl: z.url().nullable().default(null) });
-export class RadioProvider implements MediaSourceProvider {
-  readonly id = 'radio' as const;
-  readonly searchPageSize = 15;
-  private readonly entries: z.infer<typeof radioEntry>[];
-  private readonly invalid: boolean;
-  constructor(catalog?: string) {
-    const parsed = (() => { try { return z.array(radioEntry).max(100).safeParse(JSON.parse(catalog || '[]')); } catch { return null; } })();
-    this.entries = parsed?.success ? parsed.data : []; this.invalid = !parsed?.success;
-  }
-  health(): MediaProviderHealth { return { id: this.id, name: 'Radio', state: this.invalid ? 'error' : this.entries.length ? 'available' : 'unconfigured', capabilities: capabilities(true, true) }; }
-  async search(query: string, page = 0) { return this.entries.filter((entry) => `${entry.title} ${entry.artist}`.toLowerCase().includes(query.toLowerCase()) || entry.externalUrl === query).slice(page * 15, (page + 1) * 15).map((entry) => this.track(entry)); }
-  private track(entry: z.infer<typeof radioEntry>): MediaTrack { return mediaTrackSchema.parse({ provider: this.id, providerItemId: entry.id, title: entry.title, artist: entry.artist, type: 'live', durationMs: null, externalUrl: entry.externalUrl, artworkUrl: entry.artworkUrl, playable: true, seekable: false, explicit: null }); }
-  async resolve(reference: string) { const entry = this.entries.find((item) => item.id === reference); if (!entry) throw new Error('Радіостанцію не знайдено.'); return this.track(entry); }
-  async getPlayableResource(reference: string, signal: AbortSignal) { const entry = this.entries.find((item) => item.id === reference); if (!entry) throw new Error('Радіостанцію не знайдено.'); return openAudioStream(entry.url, signal); }
 }
 class ProviderHttpError extends Error { constructor(readonly retryMs: number) { super('Джерело тимчасово недоступне.'); } }
 async function providerJson(url: string, init: RequestInit = {}): Promise<unknown> {
@@ -55,33 +39,6 @@ async function providerJson(url: string, init: RequestInit = {}): Promise<unknow
   try { while (true) { const { done, value } = await reader.read(); if (done) break; size += value.length; if (size > 2000000) throw new Error('Provider response too large'); chunks.push(value); } }
   finally { await reader.cancel(); }
   return JSON.parse(Buffer.concat(chunks).toString('utf8'));
-}
-const spotifyTrack = z.object({ id: z.string(), name: z.string(), duration_ms: z.number().nullable().optional(), explicit: z.boolean().optional(), artists: z.array(z.object({ name: z.string() })), album: z.object({ images: z.array(z.object({ url: z.url() })) }), external_urls: z.object({ spotify: z.url() }) });
-export class SpotifyProvider implements MediaSourceProvider {
-  readonly id = 'spotify' as const;
-  readonly searchPageSize = 10;
-  private token: { value: string; expiresAt: number } | null = null;
-  constructor(private readonly clientId?: string, private readonly clientSecret?: string) {}
-  health(): MediaProviderHealth { return { id: this.id, name: 'Spotify', state: this.clientId && this.clientSecret ? 'available' : 'unconfigured', capabilities: capabilities(false) }; }
-  private async headers() {
-    if (!this.clientId || !this.clientSecret) throw new Error('Spotify не налаштовано.');
-    if (!this.token || this.token.expiresAt < Date.now()) {
-      const value = z.object({ access_token: z.string(), expires_in: z.number() }).parse(await providerJson('https://accounts.spotify.com/api/token', { method: 'POST', headers: { Authorization: `Basic ${Buffer.from(`${this.clientId}:${this.clientSecret}`).toString('base64')}`, 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'grant_type=client_credentials' }));
-      this.token = { value: value.access_token, expiresAt: Date.now() + (value.expires_in - 60) * 1000 };
-    }
-    return { Authorization: `Bearer ${this.token.value}` };
-  }
-  private track(raw: unknown): MediaTrack {
-    const item = spotifyTrack.parse(raw);
-    return mediaTrackSchema.parse({ provider: this.id, providerItemId: item.id, title: item.name, artist: item.artists.map((a) => a.name).join(', '), type: 'track', durationMs: item.duration_ms || null, artworkUrl: item.album.images.at(-1)?.url ?? null, externalUrl: item.external_urls.spotify, playable: false, seekable: false, explicit: item.explicit ?? null });
-  }
-  async search(query: string, page = 0) {
-    const match = query.match(/^https:\/\/open\.spotify\.com\/(?:intl-[a-z]+\/)?track\/([A-Za-z0-9]{22})(?:\?|$)/); if (match) return page === 0 ? [await this.resolve(match[1]!)] : [];
-    const result = z.object({ tracks: z.object({ items: z.array(z.unknown()) }) }).parse(await providerJson(`https://api.spotify.com/v1/search?${new URLSearchParams({ q: query, type: 'track', market: 'UA', limit: '10', offset: String(page * 10) })}`, { headers: await this.headers() }));
-    return result.tracks.items.map((item) => this.track(item));
-  }
-  async resolve(reference: string) { if (!/^[a-zA-Z0-9]{22}$/.test(reference)) throw new Error('Invalid Spotify ID'); return this.track(await providerJson(`https://api.spotify.com/v1/tracks/${reference}`, { headers: await this.headers() })); }
-  async getPlayableResource(): Promise<IncomingMessage> { throw new Error('Spotify підтримує лише пошук та інформацію.'); }
 }
 const youtubeVideo = z.object({ id: z.string(), snippet: z.object({ title: z.string(), channelTitle: z.string(), liveBroadcastContent: z.string().optional(), thumbnails: z.record(z.string(), z.object({ url: z.url() })) }), contentDetails: z.object({ duration: z.string() }) });
 function youtubeDuration(value: string): number | null { const m = value.match(/^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/); return m ? ((Number(m[1] || 0) * 3600 + Number(m[2] || 0) * 60 + Number(m[3] || 0)) * 1000 || null) : null; }
@@ -140,15 +97,30 @@ export class MediaSourceRegistry {
   }
   private async runSearch(query: string, page: number): Promise<MediaSearchResult> {
     let target: MediaProviderId | null = null;
-    if (/^https?:\/\//i.test(query)) { const host = new URL(query).hostname; if (host === 'open.spotify.com') target = 'spotify'; else if (host === 'youtu.be' || host === 'youtube.com' || host.endsWith('.youtube.com')) target = 'youtube'; else if (host === 'soundcloud.com' || host.endsWith('.soundcloud.com')) target = 'soundcloud'; else target = 'direct'; }
+    if (/^https?:\/\//i.test(query)) { const host = new URL(query).hostname; if (host === 'youtu.be' || host === 'youtube.com' || host.endsWith('.youtube.com')) target = 'youtube'; else if (host === 'soundcloud.com' || host.endsWith('.soundcloud.com')) target = 'soundcloud'; else target = 'direct'; }
     const targetProvider = this.providers.find((provider) => provider.id === target);
-    if (targetProvider?.health().state === 'unconfigured') return { results: [], unavailable: [targetProvider.health().name], nextPage: null };
+    if (targetProvider?.health().state === 'unconfigured') {
+      log('warn', 'media', 'source.search.unconfigured', { provider: targetProvider.id, inputType: 'url' });
+      return { results: [], unavailable: [targetProvider.health().name], nextPage: null };
+    }
     if (target && page > 0) return { results: [], unavailable: [], nextPage: null };
     const providers = this.providers.filter((p) => p.health().state !== 'unconfigured' && (!target || p.id === target));
     const values = await Promise.allSettled(providers.map(async (provider) => {
       if ((this.failures.get(provider.id) ?? 0) > Date.now()) throw new Error('Source cooling down');
-      try { const results = page > 0 && !provider.searchPageSize ? [] : await provider.search(query, page); this.failures.delete(provider.id); return results.map((result) => mediaTrackSchema.parse(result)); }
-      catch (error) { if ((provider.id === 'spotify' || provider.id === 'youtube' || provider.id === 'soundcloud') && !(error instanceof MediaSourceError)) this.failures.set(provider.id, Date.now() + (error instanceof ProviderHttpError ? error.retryMs : 30000)); throw error; }
+      const startedAt = Date.now(); const diagnostic = { provider: provider.id, page, inputType: target ? 'url' : 'text' };
+      log('info', 'media', 'source.search.started', diagnostic);
+      try {
+        const results = page > 0 && !provider.searchPageSize ? [] : await provider.search(query, page);
+        const tracks = results.map((result) => mediaTrackSchema.parse(result));
+        this.failures.delete(provider.id);
+        log('info', 'media', 'source.search.completed', { ...diagnostic, durationMs: Date.now() - startedAt, results: tracks.length });
+        return tracks;
+      }
+      catch (error) {
+        log('error', 'media', 'source.search.failed', { ...diagnostic, durationMs: Date.now() - startedAt }, error);
+        if ((provider.id === 'youtube' || provider.id === 'soundcloud') && !(error instanceof MediaSourceError)) this.failures.set(provider.id, Date.now() + (error instanceof ProviderHttpError ? error.retryMs : 30000));
+        throw error;
+      }
     }));
     const results = values.flatMap((v) => v.status === 'fulfilled' ? v.value : []).sort((a, b) => Number(b.playable) - Number(a.playable) || Number(b.title.toLowerCase() === query.toLowerCase()) - Number(a.title.toLowerCase() === query.toLowerCase()));
     const errors = values.flatMap((value) => value.status === 'rejected' && value.reason instanceof MediaSourceError ? [value.reason.message] : []);
@@ -156,6 +128,6 @@ export class MediaSourceRegistry {
     return { results: results.slice(0, 40), nextPage: more ? page + 1 : null, unavailable: providers.filter((_, i) => values[i]?.status === 'rejected').map((p) => p.health().name), ...(errors.length ? { errors } : {}) };
   }
 }
-export function createMediaSources(env: { MEDIA_RADIO_CATALOG_JSON?: string; SPOTIFY_CLIENT_ID?: string; SPOTIFY_CLIENT_SECRET?: string; YOUTUBE_API_KEY?: string }, extractor?: OnlineAudioExtractor) {
-  return new MediaSourceRegistry([new DirectAudioProvider(), new RadioProvider(env.MEDIA_RADIO_CATALOG_JSON), new SpotifyProvider(env.SPOTIFY_CLIENT_ID, env.SPOTIFY_CLIENT_SECRET), extractor?.available() ? new OnlineAudioProvider('youtube', extractor) : new YouTubeProvider(env.YOUTUBE_API_KEY), new OnlineAudioProvider('soundcloud', extractor)]);
+export function createMediaSources(env: { YOUTUBE_API_KEY?: string }, extractor?: OnlineAudioExtractor) {
+  return new MediaSourceRegistry([new DirectAudioProvider(), extractor?.available() ? new OnlineAudioProvider('youtube', extractor) : new YouTubeProvider(env.YOUTUBE_API_KEY), new OnlineAudioProvider('soundcloud', extractor)]);
 }

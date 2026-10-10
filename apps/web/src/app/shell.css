@@ -108,6 +108,15 @@
   .profile-loading { max-width: 120px; }
   .environment-badge { font-size: 8px; }
 }
+@container dashboard-main (max-width: 960px) {
+  .guild-workspace { display: block; }
+  .guild-sidebar { position: static; width: 100%; height: auto; padding: 8px 12px; overflow: visible; }
+  .guild-sidebar .guild-context, .guild-sidebar .sidebar-label, .guild-sidebar .live-status { display: none; }
+  .guild-sidebar .nav-list { flex-direction: row; gap: 4px; overflow-x: auto; scrollbar-width: thin; }
+  .guild-sidebar .nav-link { flex: none; white-space: nowrap; }
+  .guild-content { border-left: 0; }
+  .guild-content::before { display: none; }
+}
 @media (prefers-reduced-motion: reduce) {
   .inline-action, .guild-rail-item::before, .guild-rail-item .guild-icon, .guild-add-overlay { transition: none; }
 }

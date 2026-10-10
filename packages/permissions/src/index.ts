@@ -1,4 +1,5 @@
 export * from './media';
+export function isRuntimeLogAdmin(userId: string | null | undefined): boolean { return userId === '1409339485904306200'; }
 export const permissions = ['dashboard.access', 'members.view', 'members.manage', 'activity.view', 'activity.manage', 'voice.view', 'voice.manage', 'media.view', 'media.request', 'media.control', 'media.manage', 'moderation.view', 'moderation.manage', 'automation.view', 'automation.manage', 'logs.view', 'settings.view', 'settings.manage'] as const;
 export type AppPermission = typeof permissions[number];
 export type AppRole = 'SUPER_ADMIN' | 'ADMIN' | 'VIEWER';

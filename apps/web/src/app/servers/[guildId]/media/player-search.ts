@@ -7,7 +7,7 @@ import { mediaResponse } from './player-controller';
 const searchStateSchema = z.object({
   version: z.literal(1), savedAt: z.number(), query: z.string().max(250), submittedQuery: z.string().max(250),
   results: z.array(mediaTrackSchema).max(200), searched: z.boolean(),
-  source: z.enum(['all', 'playable', 'direct', 'radio', 'youtube', 'soundcloud', 'spotify']),
+  source: z.enum(['all', 'playable', 'direct', 'youtube', 'soundcloud']),
   mobileTab: z.enum(['search', 'queue']), nextPage: z.number().int().min(1).max(9).nullable(),
 });
 type SearchState = z.infer<typeof searchStateSchema>;

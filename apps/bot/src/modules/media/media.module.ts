@@ -9,7 +9,7 @@ import type { EngineEvent, PlaybackEngine } from './playback-engine';
 import { startMediaInternalApi } from './internal-api';
 
 type Configuration = Parameters<typeof createMediaSources>[0] & { MEDIA_FFMPEG_PATH?: string; MEDIA_INTERNAL_SECRET?: string; MEDIA_INTERNAL_HOST: string; MEDIA_INTERNAL_PORT: number };
-type GuildLease = { guild: Guild; workerId: string; expiresAt: number; timer: NodeJS.Timeout; pending: Promise<void> | null };
+type GuildLease = { guild: Guild; workerId: string; expiresAt: number; timer: NodeJS.Timeout; pending: Promise<void> | null; unavailableReason: string | null };
 export class MediaModule {
   readonly commands: MediaCommandService;
   private server: Server | null = null;
@@ -17,7 +17,10 @@ export class MediaModule {
   private stopping = false;
   private constructor(client: Client, private readonly repository: MediaRepository, guilds: GuildRepository, private readonly env: Configuration, engineFactory: (event: (event: EngineEvent) => void) => PlaybackEngine, health: { available: boolean; ffmpeg: boolean; opus: boolean; dave: boolean }) {
     if (!health.available) log('warn', 'media', 'engine.degraded', health);
-    const sessions = new MediaSessionService(client, repository, guilds, createMediaSources(env, new YtDlpExtractor()), (_guildId, event) => engineFactory(event), health, (guildId) => !this.stopping && (this.leases.get(guildId)?.expiresAt ?? 0) > Date.now());
+    const extractor = new YtDlpExtractor(); extractor.logDiagnostics();
+    const sources = createMediaSources(env, extractor);
+    for (const provider of sources.health()) log('info', 'media', 'source.configured', { provider: provider.id, state: provider.state, playback: provider.capabilities.playback });
+    const sessions = new MediaSessionService(client, repository, guilds, sources, (_guildId, event) => engineFactory(event), health, (guildId) => !this.stopping && (this.leases.get(guildId)?.expiresAt ?? 0) > Date.now(), (guildId) => this.leases.get(guildId)?.unavailableReason ?? (this.leases.has(guildId) ? 'Підтвердження сесії прострочилося. Бот повторює підключення до Firebase; подробиці в логах.' : 'Медіа ще запускається для цього сервера. Дочекайтеся завершення відновлення.'));
     this.commands = new MediaCommandService(sessions);
   }
   static async create(client: Client, repository: MediaRepository, guilds: GuildRepository, env: Configuration) {
@@ -36,7 +39,7 @@ export class MediaModule {
     const existing = this.leases.get(guild.id);
     if (existing) { existing.guild = guild; return existing.pending; }
     const timer = setInterval(() => { void this.refreshLease(lease); }, 30000);
-    const lease: GuildLease = { guild, workerId: randomUUID(), expiresAt: 0, timer, pending: null };
+    const lease: GuildLease = { guild, workerId: randomUUID(), expiresAt: 0, timer, pending: null, unavailableReason: 'Бот відновлює медіасесію цього сервера. Дочекайтеся завершення.' };
     timer.unref(); this.leases.set(guild.id, lease);
     await this.refreshLease(lease);
   }
@@ -95,19 +98,21 @@ export class MediaModule {
     const previouslyOwned = lease.expiresAt > Date.now();
     const requestedAt = Date.now();
     try {
-      if (!lease.guild.available) { await this.suspendLease(lease); return; }
+      if (!lease.guild.available) { lease.unavailableReason = 'Discord-сервер тимчасово недоступний.'; await this.suspendLease(lease); return; }
       const acquired = await this.acquireLease(lease);
       if (!this.activeLease(lease)) return;
-      if (!acquired) { await this.suspendLease(lease); log('warn', 'media', 'lease.occupied', { guildId }); return; }
+      if (!acquired) { lease.unavailableReason = 'Сесією керує інший процес бота. Очікуємо звільнення; перевірте, чи не запущено дві копії бота.'; await this.suspendLease(lease); log('warn', 'media', 'lease.occupied', { guildId }); return; }
       let expiresAt = requestedAt + 60000;
       if (!previouslyOwned) {
+        lease.unavailableReason = 'Бот відновлює медіасесію цього сервера. Дочекайтеся завершення.';
         expiresAt = await this.recoverWithLease(lease, expiresAt);
         if (!this.activeLease(lease)) return;
         log('info', 'media', 'recovery.complete', { guildId, durationMs: Date.now() - requestedAt });
         void this.repository.pruneHistory(guildId).catch((error: unknown) => log('warn', 'media', 'history.cleanup.failed', { guildId }, error));
       }
       lease.expiresAt = expiresAt;
-    } catch (error) { await this.suspendLease(lease); log('error', 'media', 'lease.failed', { guildId }, error); }
+      lease.unavailableReason = null;
+    } catch (error) { lease.unavailableReason = 'Не вдалося підтвердити або відновити медіасесію. Бот повторить спробу; причина помилки доступна в логах.'; await this.suspendLease(lease); log('error', 'media', 'lease.failed', { guildId }, error); }
   }
   async stopGuild(guildId: string) {
     const lease = this.leases.get(guildId);

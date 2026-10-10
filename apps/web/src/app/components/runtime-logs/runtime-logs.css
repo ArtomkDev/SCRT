@@ -1,0 +1,50 @@
+.runtime-logs-workspace { --runtime-panel-width: clamp(340px, 30vw, 520px); display: flex; align-items: stretch; min-height: calc(100dvh - var(--topbar-height)); }
+.runtime-logs-main { flex: 1; min-width: 0; container: dashboard-main / inline-size; }
+/* Mirror the shell's sticky left corner without clipping its navigation or content. */
+.runtime-logs-main::before { content: ''; position: sticky; top: var(--topbar-height); z-index: 30; display: block; width: var(--radius-sheet); height: var(--radius-sheet); margin-left: auto; margin-right: -1px; margin-bottom: calc(-1 * var(--radius-sheet)); background: radial-gradient(circle at bottom left, transparent calc(var(--radius-sheet) - 1px), var(--shell-border) calc(var(--radius-sheet) - 1px), var(--shell-border) var(--radius-sheet), var(--header) var(--radius-sheet)); transform: scale(0); transform-origin: top right; transition: transform 240ms cubic-bezier(.22, 1, .36, 1); pointer-events: none; }
+.runtime-logs-workspace[data-logs-open="true"] .runtime-logs-main::before { transform: scale(1); }
+.runtime-logs-dock { flex: 0 0 auto; width: 0; min-width: 0; overflow: clip; background: var(--header); color: var(--text); transition: width 240ms cubic-bezier(.22, 1, .36, 1); }
+.runtime-logs-workspace[data-logs-open="true"] .runtime-logs-dock { width: var(--runtime-panel-width); }
+.runtime-logs-panel { position: sticky; top: var(--topbar-height); display: flex; flex-direction: column; width: var(--runtime-panel-width); height: calc(100dvh - var(--topbar-height)); border-left: 1px solid var(--shell-border); opacity: 0; transform: translateX(16px); transition: opacity 160ms ease, transform 240ms ease; }
+.runtime-logs-workspace[data-logs-open="true"] .runtime-logs-panel { opacity: 1; transform: translateX(0); }
+.runtime-logs-toggle[aria-expanded="true"] { background: var(--surface-hover); color: var(--text); }
+.runtime-logs-panel-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 18px 16px; border-bottom: 1px solid var(--shell-border); }
+.runtime-logs-panel-header h2 { margin: 4px 0 0; font-size: 16px; font-weight: 650; }
+.runtime-logs-panel-header .sidebar-label { padding: 0; }
+.runtime-logs-close { display: grid; place-items: center; flex: none; width: 28px; height: 28px; border: 0; border-radius: var(--radius-small); background: transparent; color: var(--muted); font-size: 22px; line-height: 1; cursor: pointer; }
+.runtime-logs-close:hover { background: var(--surface); color: var(--text); }
+.runtime-logs-panel-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 16px; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+.runtime-logs-panel :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+@media (max-width: 800px) { .runtime-logs-workspace { --runtime-panel-width: 45vw; } .runtime-logs-panel-body { padding: 10px; } }
+@media (prefers-reduced-motion: reduce) { .runtime-logs-dock, .runtime-logs-panel, .runtime-logs-main::before { transition: none; } }
+.runtime-log-toolbar { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: end; gap: 10px; margin: 0 0 14px; }
+.runtime-log-toolbar label { display: grid; min-width: 0; gap: 6px; font-size: 11px; color: var(--muted); }
+.runtime-log-toolbar label:first-child { grid-column: 1 / -1; }
+.runtime-log-toolbar input, .runtime-log-toolbar select, .runtime-log-toolbar button { width: 100%; min-width: 0; border: 1px solid var(--border); border-radius: var(--radius-small); background: var(--input); color: var(--text); padding: 8px 10px; min-height: 36px; font-size: 11px; }
+.runtime-log-toolbar button { cursor: pointer; }
+.runtime-log-toolbar button:hover { background: var(--surface-hover); }
+.runtime-log-toolbar button:disabled { opacity: .5; cursor: default; }
+.runtime-log-toolbar :focus-visible, .runtime-log-entry summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.runtime-log-status { margin: 0 0 14px; font-size: 11px; line-height: 1.7; }
+.runtime-log-sessions { margin: 14px 0; border: 1px solid var(--border); border-radius: var(--radius-small); font-size: 11px; }
+.runtime-log-sessions > summary { padding: 10px; color: var(--muted); cursor: pointer; }
+.runtime-log-sessions > div { display: grid; gap: 6px; padding: 12px; border-top: 1px solid var(--border); background: var(--surface); }
+.runtime-log-sessions code { overflow-wrap: anywhere; color: var(--muted); }
+.runtime-log-warning { padding: 12px; background: color-mix(in srgb, #da373c 8%, var(--surface)); border: 1px solid color-mix(in srgb, #da373c 40%, var(--border)); border-radius: var(--radius-small); font-size: 12px; line-height: 1.6; }
+.runtime-log-buffer { margin: 14px 0; font-size: 10px; line-height: 1.7; }
+.runtime-log-list { margin-top: 14px; border: 1px solid var(--border); border-radius: var(--radius-small); overflow: hidden; background: var(--input); }
+.runtime-log-list > p { padding: 16px; }
+.runtime-log-entry { border-bottom: 1px solid var(--border); font-family: ui-monospace, Consolas, monospace; font-size: 11px; border-left: 2px solid transparent; }
+.runtime-log-entry:last-child { border-bottom: 0; }
+.runtime-log-entry[data-level="error"] { border-left-color: #f18080; }
+.runtime-log-entry[data-level="warn"] { border-left-color: #e2b16f; }
+.runtime-log-entry summary { display: grid; grid-template-columns: auto auto 1fr; gap: 6px 12px; padding: 12px; cursor: pointer; overflow-wrap: anywhere; }
+.runtime-log-entry summary > time { color: var(--muted); font-variant-numeric: tabular-nums; }
+.runtime-log-entry summary > span:last-child { grid-column: 1 / -1; line-height: 1.7; }
+.runtime-log-entry summary:hover { background: var(--surface-hover); }
+.runtime-log-entry[open] { background: var(--surface); }
+.runtime-log-level { text-transform: uppercase; }
+.runtime-log-entry[data-level="error"] .runtime-log-level { color: #f18080; }
+.runtime-log-entry[data-level="warn"] .runtime-log-level { color: #e2b16f; }
+.runtime-log-entry pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; padding: 8px 16px 20px; color: var(--muted); }
+@media (max-width: 650px) { .runtime-log-toolbar { grid-template-columns: minmax(0, 1fr); } .runtime-logs-panel-header { padding: 12px 10px; } .runtime-logs-panel-header h2 { font-size: 13px; } .runtime-log-entry summary { gap: 6px; padding: 8px; } }

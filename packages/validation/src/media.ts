@@ -20,6 +20,7 @@ export const mediaSettingsSchema = z.object({
   queueMode: z.enum(['normal', 'fair']).default('normal'), allowLiveStreams: z.boolean().default(false),
   emptyVoiceBehavior: z.enum(['pause_then_leave', 'stop_then_leave']).default('pause_then_leave'),
   emptyVoiceGraceSeconds: z.number().int().min(5).max(3600).default(120), resumeOnRejoin: z.boolean().default(false),
+  inactivityDisconnectSeconds: z.number().int().min(0).max(3600).default(300),
   djRoleIds: z.array(snowflake).max(30).default([]), allowedVoiceChannelIds: z.array(snowflake).max(100).default([]),
   blockedVoiceChannelIds: z.array(snowflake).max(100).default([]), allowedCategoryIds: z.array(snowflake).max(100).default([]),
   historyRetentionDays: z.number().int().min(1).max(90).default(30), explicitPolicy: z.enum(['allow', 'warn', 'block']).default('warn'),
@@ -27,7 +28,7 @@ export const mediaSettingsSchema = z.object({
 }).refine((v) => v.defaultVolume <= v.maxVolume, 'Default volume exceeds maximum');
 export type MediaSettings = z.infer<typeof mediaSettingsSchema>;
 export const mediaTrackSchema = z.object({
-  provider: z.enum(['direct', 'radio', 'spotify', 'youtube', 'soundcloud']), providerItemId: z.string().min(1).max(2048),
+  provider: z.enum(['direct', 'youtube', 'soundcloud']), providerItemId: z.string().min(1).max(2048),
   type: z.enum(['track', 'live']), title: z.string().min(1).max(300), artist: z.string().max(200),
   durationMs: z.number().int().positive().nullable(), artworkUrl: httpUrl.nullable(), externalUrl: httpUrl,
   playable: z.boolean(), seekable: z.boolean(), explicit: z.boolean().nullable(),
@@ -66,7 +67,7 @@ export const mediaSessionSchema = z.object({
   createdAt: z.number(), updatedAt: z.number(), recoverable: z.boolean(), lastError: z.string().max(400).nullable(), lastRequesterId: snowflake.nullable(),
 });
 const queueReference = { queueItemId: z.uuid(), expectedQueueVersion: z.number().int().nonnegative() };
-const sourceReference = { provider: z.enum(['direct', 'radio', 'spotify', 'youtube', 'soundcloud']), providerItemId: z.string().min(1).max(2048) };
+const sourceReference = { provider: z.enum(['direct', 'youtube', 'soundcloud']), providerItemId: z.string().min(1).max(2048) };
 export const mediaActionSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('ADD_TRACK'), ...sourceReference }).strict(),
   z.object({ type: z.literal('PLAY_TRACK'), ...sourceReference, following: z.array(z.object(sourceReference).strict()).max(99).optional() }).strict(),
@@ -95,7 +96,7 @@ export const mediaSnapshotSchema = z.object({
   controls: z.record(z.string(), z.boolean()), queueControls: z.record(z.string(), z.object({ remove: z.boolean(), move: z.boolean() })),
   actorVoice: z.object({ id: snowflake.nullable(), name: z.string().nullable() }), remoteControl: z.boolean(), listenerCount: z.number().int().nonnegative(),
   votes: z.object({ count: z.number().int().nonnegative(), required: z.number().int().positive() }),
-  providers: z.array(z.object({ id: z.enum(['direct', 'radio', 'spotify', 'youtube', 'soundcloud']), name: z.string(), state: z.enum(['available', 'degraded', 'unconfigured', 'error']), capabilities: z.object({ search: z.boolean(), metadata: z.boolean(), playback: z.boolean(), live: z.boolean(), seek: z.boolean(), playlists: z.boolean() }) })),
+  providers: z.array(z.object({ id: z.enum(['direct', 'youtube', 'soundcloud']), name: z.string(), state: z.enum(['available', 'degraded', 'unconfigured', 'error']), capabilities: z.object({ search: z.boolean(), metadata: z.boolean(), playback: z.boolean(), live: z.boolean(), seek: z.boolean(), playlists: z.boolean() }) })),
   engine: z.object({ available: z.boolean(), ffmpeg: z.boolean(), opus: z.boolean(), dave: z.boolean() }), serverTimestamp: z.number(), canManage: z.boolean(),
 });
 export type MediaSnapshot = z.infer<typeof mediaSnapshotSchema>;

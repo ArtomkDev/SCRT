@@ -11,24 +11,24 @@ import type { EngineEvent, PlaybackEngine } from './playback-engine';
 export class MediaError extends Error { constructor(message: string, readonly status = 409) { super(message); } }
 type Actor = MediaActor & { member: GuildMember; guild: Guild };
 type PreparedPlayback = { stream: IncomingMessage; claimed: boolean };
-type Runtime = { session: MediaSession | null; engine: PlaybackEngine; votes: Set<string>; emptyTimer: NodeJS.Timeout | null; emptyPaused: boolean; reconnectState: MediaSession['state'] | null };
+type Runtime = { session: MediaSession | null; engine: PlaybackEngine; votes: Set<string>; emptyTimer: NodeJS.Timeout | null; emptyPaused: boolean; reconnectState: MediaSession['state'] | null; connected: boolean; idleSince: number | null; idleTimer: NodeJS.Timeout | null; idleDeadline: number | null; inactivityDisconnectSeconds: number };
 export class MediaSessionService {
   private readonly runtimes = new Map<string, Runtime>();
   private readonly pending = new Map<string, Promise<unknown>>();
   private stopping = false;
   constructor(private readonly client: Client, private readonly store: MediaStore, private readonly guilds: Pick<GuildRepository, 'accessMappings'>, readonly sources: MediaSourceRegistry,
-    private readonly engineFactory: (guildId: string, event: (event: EngineEvent) => void) => PlaybackEngine, readonly engineHealth: { available: boolean; ffmpeg: boolean; opus: boolean; dave: boolean }, private readonly ownsGuild: (guildId: string) => boolean = () => true) {}
+    private readonly engineFactory: (guildId: string, event: (event: EngineEvent) => void) => PlaybackEngine, readonly engineHealth: { available: boolean; ffmpeg: boolean; opus: boolean; dave: boolean }, private readonly ownsGuild: (guildId: string) => boolean = () => true, private readonly unavailableReason: (guildId: string) => string = () => 'Бот ще не підтвердив право керувати сесією. Повторіть спробу після відновлення.') {}
   async exclusive<T>(guildId: string, operation: () => Promise<T>): Promise<T> {
     const previous = this.pending.get(guildId) ?? Promise.resolve();
-    const next = previous.catch(() => undefined).then(operation); this.pending.set(guildId, next);
+    const next = previous.catch(() => undefined).then(async () => { try { return await operation(); } finally { this.syncInactivityTimer(guildId); } }); this.pending.set(guildId, next);
     try { return await next; } finally { if (this.pending.get(guildId) === next) this.pending.delete(guildId); }
   }
   private async runtime(guildId: string, recoverActive = true, canRecover: () => boolean = () => true): Promise<Runtime> {
     let runtime = this.runtimes.get(guildId);
     if (!runtime) {
-      const session = await this.store.getSession(guildId);
+      const [session, settings] = await Promise.all([this.store.getSession(guildId), this.store.getSettings(guildId)]);
       if (!canRecover()) throw new MediaError('Медіасесія недоступна під час відновлення.', 503);
-      runtime = { session, engine: this.engineFactory(guildId, (event) => { void this.onEngineEvent(guildId, event).catch((error: unknown) => this.failClosed(guildId, error)); }), votes: new Set(), emptyTimer: null, emptyPaused: false, reconnectState: null };
+      runtime = { session, engine: this.engineFactory(guildId, (event) => { void this.onEngineEvent(guildId, event).catch((error: unknown) => this.failClosed(guildId, error)); }), votes: new Set(), emptyTimer: null, emptyPaused: false, reconnectState: null, connected: false, idleSince: null, idleTimer: null, idleDeadline: null, inactivityDisconnectSeconds: settings.inactivityDisconnectSeconds };
       if (recoverActive && runtime.session && (runtime.session.currentTrack || !['idle', 'error'].includes(runtime.session.state))) {
         const previous = runtime.session.revision;
         this.interrupt(runtime, 'Відтворення було перервано перезапуском SCRT.');
@@ -39,10 +39,42 @@ export class MediaSessionService {
     }
     return runtime;
   }
+  private clearInactivityTimer(runtime: Runtime) {
+    if (runtime.idleTimer) clearTimeout(runtime.idleTimer);
+    runtime.idleTimer = null; runtime.idleDeadline = null;
+  }
+  private disconnect(runtime: Runtime) {
+    runtime.connected = false; runtime.idleSince = null; this.clearInactivityTimer(runtime); runtime.engine.destroy();
+  }
+  private syncInactivityTimer(guildId: string) {
+    const runtime = this.runtimes.get(guildId); if (!runtime) return;
+    const session = runtime.session;
+    if (this.stopping || !this.ownsGuild(guildId) || !runtime.connected || !session || !['idle', 'paused'].includes(session.state)) {
+      runtime.idleSince = null; this.clearInactivityTimer(runtime); return;
+    }
+    runtime.idleSince ??= Date.now();
+    if (!runtime.inactivityDisconnectSeconds) { this.clearInactivityTimer(runtime); return; }
+    const deadline = runtime.idleSince + runtime.inactivityDisconnectSeconds * 1000;
+    if (runtime.idleTimer && runtime.idleDeadline === deadline) return;
+    this.clearInactivityTimer(runtime); runtime.idleDeadline = deadline;
+    const timer = setTimeout(() => {
+      void this.exclusive(guildId, async () => {
+        // Queued callbacks must not disconnect a replacement session or resumed track.
+        if (this.runtimes.get(guildId) !== runtime || runtime.idleTimer !== timer || this.stopping || !this.ownsGuild(guildId)) return;
+        runtime.idleTimer = null; runtime.idleDeadline = null;
+        if (!runtime.connected || !runtime.session || !['idle', 'paused'].includes(runtime.session.state) || !runtime.inactivityDisconnectSeconds || runtime.idleSince === null || Date.now() < runtime.idleSince + runtime.inactivityDisconnectSeconds * 1000) return;
+        const prior = runtime.session.revision;
+        log('info', 'media', 'session.inactivity.disconnect', { guildId, idleMs: Date.now() - runtime.idleSince, timeoutSeconds: runtime.inactivityDisconnectSeconds });
+        this.interrupt(runtime, 'SCRT відключився через відсутність відтворення. Чергу збережено.');
+        await this.save(runtime, prior, [], 'session.inactivity', null);
+      }).catch((error: unknown) => this.failClosed(guildId, error));
+    }, Math.max(1, deadline - Date.now()));
+    timer.unref(); runtime.idleTimer = timer;
+  }
   async actor(guildId: string, userId: string): Promise<Actor> {
-    if (this.stopping) throw new MediaError('Media worker недоступний.', 503);
+    if (this.stopping) throw new MediaError('Media worker недоступний: бот завершує роботу. Дочекайтеся перезапуску.', 503);
     if (!this.client.isReady()) throw new MediaError('SCRT ще не підключився до Discord. Дочекайтеся запуску бота й повторіть спробу.', 503);
-    if (!this.ownsGuild(guildId)) throw new MediaError('Media worker недоступний.', 503);
+    if (!this.ownsGuild(guildId)) throw new MediaError(`Media worker недоступний: ${this.unavailableReason(guildId)}`, 503);
     const guild = this.client.guilds.cache.get(guildId); if (!guild?.available) throw new MediaError('Сервер недоступний.', 403);
     const [member, mappings] = await Promise.all([
       guild.members.fetch({ user: userId, force: true }).catch(() => null), this.guilds.accessMappings(guildId),
@@ -133,16 +165,17 @@ export class MediaSessionService {
     if (!runtime.session) return;
     runtime.session.revision = (priorRevision ?? -1) + 1; runtime.session.updatedAt = Date.now();
     await this.store.checkpoint(runtime.session, priorRevision, history, { action, actorId }, receipt);
+    log('info', 'media', action, { guildId: runtime.session.guildId, sessionId: runtime.session.sessionId, revision: runtime.session.revision, actorId, commandId: receipt?.commandId, state: runtime.session.state, queueItemId: runtime.session.currentTrack?.queueItemId, title: runtime.session.currentTrack?.title, queueLength: runtime.session.queue.length, lastError: runtime.session.lastError });
   }
   async recover(guild: Guild, canRecover: () => boolean = () => true) {
     return this.exclusive(guild.id, async () => {
       if (!canRecover()) throw new MediaError('Медіасесія недоступна під час відновлення.', 503);
       const cached = this.runtimes.get(guild.id);
-      cached?.engine.destroy();
+      if (cached) this.disconnect(cached);
       if (cached?.emptyTimer) clearTimeout(cached.emptyTimer);
       this.runtimes.delete(guild.id);
       const runtime = await this.runtime(guild.id, false, canRecover); const session = runtime.session; if (!session) return;
-      const previous = session.revision; runtime.engine.destroy(); runtime.votes.clear();
+      const previous = session.revision; this.disconnect(runtime); runtime.votes.clear();
       if (session.currentTrack) session.queue.unshift(session.currentTrack);
       session.currentTrack = null; session.state = 'idle'; session.recoverable = session.queue.length > 0; session.startedAt = null; session.pausedAt = null; session.accumulatedPauseMs = 0; session.playbackOffsetMs = 0;
       session.sessionId = randomUUID(); session.queueVersion++; session.lastError = session.recoverable ? 'Відтворення було перервано перезапуском SCRT.' : null;
@@ -165,7 +198,19 @@ export class MediaSessionService {
       const displaySession = session ? { ...session, queue: scheduledQueue(session.queue, session.queueMode, session.lastRequesterId) } : null;
       return { session: displaySession, settings, controls, queueControls, actorVoice: { id: actor.voiceChannelId, name: actor.member.voice.channel?.name ?? null }, remoteControl: Boolean(session && actor.voiceChannelId !== session.voiceChannelId && actor.permissions.has('media.manage') && settings.allowRemoteAdminControl), listenerCount: listeners.length, votes: { count: countedVotes(runtime.votes, listeners), required: voteThreshold(listeners, settings.skipVoteRatio) }, providers: this.sources.health(), engine: this.engineHealth, serverTimestamp: Date.now(), canManage: actor.permissions.has('media.manage') };
   }
-  async search(guildId: string, userId: string, query: string, page = 0) { await this.actor(guildId, userId); return this.sources.search(query, page); }
+  async search(guildId: string, userId: string, query: string, page = 0) {
+    await this.actor(guildId, userId);
+    const startedAt = Date.now();
+    const diagnostic = { guildId, actorId: userId, page, inputType: /^https?:\/\//i.test(query.trim()) ? 'url' : 'text' };
+    log('info', 'media', 'search.started', diagnostic);
+    try {
+      const result = await this.sources.search(query, page);
+      log(result.unavailable.length ? 'warn' : 'info', 'media', 'search.completed', { ...diagnostic, durationMs: Date.now() - startedAt, results: result.results.length, unavailable: result.unavailable.join(', '), reasons: result.errors?.join('; ') });
+      return result;
+    } catch (error) {
+      log('error', 'media', 'search.failed', { ...diagnostic, durationMs: Date.now() - startedAt }, error); throw error;
+    }
+  }
   async settings(guildId: string, userId: string, input: MediaSettings) {
     return this.exclusive(guildId, async () => {
       const actor = await this.actor(guildId, userId); if (!actor.permissions.has('media.manage')) throw new MediaError('Потрібен дозвіл media.manage.', 403);
@@ -178,6 +223,7 @@ export class MediaSessionService {
         catch (error) { if (!(error instanceof MediaError)) throw error; interruption = error.message; }
       }
       await this.store.saveSettings(guildId, settings, actor.userId);
+      runtime.inactivityDisconnectSeconds = settings.inactivityDisconnectSeconds;
       runtime.votes.clear();
       if (runtime.session) { const prior = runtime.session.revision; if (interruption) this.interrupt(runtime, interruption); if (runtime.session.volume > settings.maxVolume) { runtime.session.volume = settings.maxVolume; runtime.engine.volume(settings.maxVolume); } runtime.session.queueMode = settings.queueMode; runtime.session.queueVersion++; await this.save(runtime, prior, [], settings.enabled ? 'media.enabled' : 'media.disabled', userId); }
       return settings;
@@ -185,12 +231,11 @@ export class MediaSessionService {
   }
   async execute(input: MediaCommand) {
     const command = mediaCommandSchema.parse(input);
+    log('info', 'media', 'command.received', { guildId: command.guildId, actorId: command.actorUserId, commandId: command.commandId, commandType: command.action.type });
     return this.exclusive(command.guildId, async () => {
       try { return await this.executeLocked(command); }
       catch (error) {
-        if (error instanceof MediaError && error.status === 422) {
-          log('warn', 'media', 'command.source.rejected', { guildId: command.guildId, commandType: command.action.type, provider: 'provider' in command.action ? command.action.provider : undefined, status: error.status, reason: error.message });
-        }
+        log('warn', 'media', error instanceof MediaError && error.status === 422 ? 'command.source.rejected' : 'command.rejected', { guildId: command.guildId, commandId: command.commandId, commandType: command.action.type, provider: 'provider' in command.action ? command.action.provider : undefined, status: error instanceof MediaError ? error.status : undefined }, error);
         if (!(error instanceof MediaError)) await this.failClosed(command.guildId, error);
         throw error;
       }
@@ -274,7 +319,7 @@ export class MediaSessionService {
           const targetId = actor.voiceChannelId!;
           const channel = await this.eligibleVoice(actor, targetId, settings);
           if (actor.guild.voiceStates.cache.get(actor.userId)?.channelId !== targetId) throw new MediaError('Голосовий канал змінився. Оновіть плеєр і повторіть відновлення.', 403);
-          runtime.engine.destroy(); session.voiceChannelId = channel.id; session.voiceChannelName = channel.name;
+          this.disconnect(runtime); session.voiceChannelId = channel.id; session.voiceChannelName = channel.name;
           session.recoverable = false; session.lastError = null;
           await this.advance(runtime, actor.guild, settings, history); break;
         }
@@ -354,9 +399,11 @@ export class MediaSessionService {
     // A failed Voice connection has an unknown audio outcome; let the outer
     // boundary stop/recover it rather than claiming a reversible source rejection.
     await runtime.engine.connect(actor.guild, session.voiceChannelId);
+    runtime.connected = true;
     try {
       await runtime.engine.play(prepared.stream, selected.queueItemId, session.volume, selected.type === 'live' ? null : settings.maxTrackDurationSeconds, 15000, beforeCommit);
     } catch (error) {
+      log('error', 'media', 'track.selection.failed', { guildId: session.guildId, queueItemId: selected.queueItemId, title: selected.title, intentStarted }, error);
       // Once intent has changed, fail closed and recover persisted state rather
       // than reporting a reversible rejection while different audio is active.
       if (intentStarted) throw new Error('Не вдалося завершити перемикання аудіо.', { cause: error });
@@ -415,9 +462,14 @@ export class MediaSessionService {
       session.played = session.played.filter((item) => item.provider !== next.provider || item.providerItemId !== next.providerItemId);
       session.currentTrack = next; session.queueVersion++; runtime.votes.clear();
       try { await this.play(runtime, guild, settings, deadline); return; }
-      catch (error) { if (this.stopping || !this.ownsGuild(guild.id) || !this.listeners(guild, session).length) { this.interrupt(runtime, 'Media worker недоступний або Voice порожній. Чергу збережено.'); return; } session.lastError = error instanceof MediaError || error instanceof MediaSourceError ? error.message : 'Не вдалося відтворити трек. Перехід до наступного.'; this.finish(runtime, 'failed', history, session.lastError); }
+      catch (error) {
+        log('error', 'media', 'playback.start.failed', { guildId: guild.id, queueItemId: next.queueItemId, title: next.title, provider: next.provider, attempt: attempts }, error);
+        if (this.stopping || !this.ownsGuild(guild.id) || !this.listeners(guild, session).length) { this.interrupt(runtime, 'Media worker недоступний або Voice порожній. Чергу збережено.'); return; }
+        session.lastError = error instanceof MediaError || error instanceof MediaSourceError ? error.message : 'Не вдалося відтворити трек. Перехід до наступного.';
+        this.finish(runtime, 'failed', history, session.lastError);
+      }
     }
-    runtime.engine.destroy(); session.state = 'idle'; session.recoverable = session.queue.length > 0;
+    runtime.engine.stop(); session.state = 'idle'; session.recoverable = session.queue.length > 0;
   }
   private async play(runtime: Runtime, guild: Guild, settings: MediaSettings, deadline = Date.now() + 45000) {
     if (this.stopping || !this.ownsGuild(guild.id)) throw new MediaError('Media worker недоступний.', 503);
@@ -427,6 +479,7 @@ export class MediaSessionService {
     const resolved = await this.sources.get(session.currentTrack!.provider).resolve(session.currentTrack!.providerItemId);
     this.validateTrack(resolved, settings); session.currentTrack = { ...session.currentTrack!, ...resolved };
     session.state = 'connecting'; await runtime.engine.connect(guild, session.voiceChannelId, remaining());
+    runtime.connected = true;
     session.state = 'buffering'; const abort = new AbortController();
     const track = session.currentTrack!;
     const timeout = setTimeout(() => abort.abort(), remaining());
@@ -440,23 +493,33 @@ export class MediaSessionService {
   }
   private interrupt(runtime: Runtime, reason: string | null) {
     const session = runtime.session; if (!session) return;
-    runtime.engine.destroy(); if (runtime.emptyTimer) clearTimeout(runtime.emptyTimer); runtime.emptyTimer = null; runtime.votes.clear();
+    this.disconnect(runtime); if (runtime.emptyTimer) clearTimeout(runtime.emptyTimer); runtime.emptyTimer = null; runtime.votes.clear();
     runtime.emptyPaused = false; runtime.reconnectState = null;
     if (session.currentTrack) session.queue.unshift(session.currentTrack);
     session.currentTrack = null; session.state = 'idle'; session.recoverable = session.queue.length > 0; session.startedAt = null; session.pausedAt = null; session.accumulatedPauseMs = 0; session.playbackOffsetMs = 0; session.queueVersion++; session.lastError = reason;
   }
   private async onEngineEvent(guildId: string, event: EngineEvent) {
+    log(event.type === 'failed' ? 'error' : 'info', 'media', `engine.${event.type}.received`, { guildId, ...event });
     await this.exclusive(guildId, async () => {
       const runtime = this.runtimes.get(guildId); const session = runtime?.session; const guild = this.client.guilds.cache.get(guildId); if (!runtime || !session || !guild || this.stopping) return;
       const previous = session.revision; const settings = await this.store.getSettings(guildId); const history: MediaHistoryItem[] = [];
       if ('queueItemId' in event) {
-        if (session.currentTrack?.queueItemId !== event.queueItemId) return;
-        this.finish(runtime, event.type === 'ended' ? 'finished' : 'failed', history, event.reason ?? null);
-        if (event.type === 'failed') session.lastError = event.reason ?? 'Помилка відтворення.';
+        if (session.currentTrack?.queueItemId !== event.queueItemId) { log('info', 'media', 'engine.event.stale', { guildId, queueItemId: event.queueItemId, currentQueueItemId: session.currentTrack?.queueItemId }); return; }
+        const track = session.currentTrack;
+        const expectedMs = Math.min(track.durationMs ?? settings.maxTrackDurationSeconds * 1000, settings.maxTrackDurationSeconds * 1000) - (session.playbackOffsetMs ?? 0);
+        const premature = event.type === 'ended' && (track.type === 'live' || (track.durationMs !== null && event.playedMs !== undefined && event.playedMs + 5000 < expectedMs));
+        if (event.type === 'failed' || premature) {
+          const reason = event.reason ?? 'Аудіопотік завершився передчасно. Трек збережено для повторного запуску.';
+          log('error', 'media', 'playback.interrupted', { guildId, queueItemId: track.queueItemId, title: track.title, playedMs: event.playedMs, expectedMs, reason });
+          this.interrupt(runtime, reason);
+          await this.save(runtime, previous, [], 'playback.interrupted', null);
+          return;
+        }
+        this.finish(runtime, 'finished', history, event.reason ?? null);
         await this.advance(runtime, guild, settings, history);
       } else if (event.type === 'disconnected') this.interrupt(runtime, 'Голосове з’єднання перервано. Відновіть сесію.');
       else if (event.type === 'reconnecting') { runtime.reconnectState = session.state; session.state = 'reconnecting'; if (!session.pausedAt) session.pausedAt = Date.now(); }
-      else { session.state = runtime.reconnectState === 'paused' ? 'paused' : 'playing'; if (session.state === 'playing') { session.accumulatedPauseMs += Date.now() - (session.pausedAt ?? Date.now()); session.pausedAt = null; } }
+      else { session.state = !session.currentTrack ? 'idle' : runtime.reconnectState === 'paused' ? 'paused' : 'playing'; if (session.state === 'playing') { session.accumulatedPauseMs += Date.now() - (session.pausedAt ?? Date.now()); session.pausedAt = null; } }
       await this.save(runtime, previous, history, `engine.${event.type}`, null);
     });
   }
@@ -466,7 +529,7 @@ export class MediaSessionService {
       const runtime = this.runtimes.get(newState.guild.id); const session = runtime?.session; if (!runtime || !session || this.stopping) return;
       const previous = session.revision; const settings = await this.store.getSettings(session.guildId);
       const before = JSON.stringify(session);
-      if (newState.id === this.client.user?.id && oldState.channelId === session.voiceChannelId && newState.channelId !== oldState.channelId && !['idle', 'connecting', 'stopping'].includes(session.state)) {
+      if (newState.id === this.client.user?.id && oldState.channelId === session.voiceChannelId && newState.channelId !== oldState.channelId && runtime.connected && !['connecting', 'stopping'].includes(session.state)) {
         if (!newState.channelId) this.interrupt(runtime, 'SCRT від’єднано від Voice.');
         else { try { const channel = await this.eligibleVoice({ guild: newState.guild }, newState.channelId, settings); session.voiceChannelId = channel.id; session.voiceChannelName = channel.name; } catch { this.interrupt(runtime, 'SCRT переміщено до недозволеного каналу.'); } }
         await this.save(runtime, previous, [], 'session.voice_changed', null); return;
@@ -490,12 +553,12 @@ export class MediaSessionService {
   }
   async interruptGuild(guildId: string, reason: string) { return this.exclusive(guildId, async () => { const runtime = this.runtimes.get(guildId); if (!runtime?.session) return; const previous = runtime.session.revision; this.interrupt(runtime, reason); await this.save(runtime, previous, [], 'session.interrupted', null); }); }
   async channelDeleted(guildId: string, channelId: string) { if (this.runtimes.get(guildId)?.session?.voiceChannelId === channelId) await this.interruptGuild(guildId, 'Голосовий канал видалено. Чергу збережено.'); }
-  suspendAudio(guildId: string) { this.runtimes.get(guildId)?.engine.destroy(); }
+  suspendAudio(guildId: string) { const runtime = this.runtimes.get(guildId); if (runtime) this.disconnect(runtime); }
   async forgetGuild(guildId: string) { await this.interruptGuild(guildId, 'SCRT вилучено з сервера.'); this.runtimes.delete(guildId); }
-  private async failClosed(guildId: string, error: unknown) { const runtime = this.runtimes.get(guildId); runtime?.engine.destroy(); if (runtime) { if (runtime.emptyTimer) clearTimeout(runtime.emptyTimer); this.runtimes.delete(guildId); } log('error', 'media', 'operation.failed', { guildId }, error); }
+  private async failClosed(guildId: string, error: unknown) { const runtime = this.runtimes.get(guildId); if (runtime) { this.disconnect(runtime); if (runtime.emptyTimer) clearTimeout(runtime.emptyTimer); this.runtimes.delete(guildId); } log('error', 'media', 'operation.failed', { guildId }, error); }
   async shutdown() {
     this.stopping = true;
-    for (const runtime of this.runtimes.values()) runtime.engine.destroy();
+    for (const runtime of this.runtimes.values()) this.disconnect(runtime);
     await Promise.allSettled([...this.runtimes.keys()].map((guildId) => this.interruptGuild(guildId, 'Відтворення було перервано перезапуском SCRT.')));
   }
 }
