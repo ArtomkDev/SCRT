@@ -103,7 +103,7 @@ export function useMediaController(guildId: string, initial: MediaSnapshot, init
           if (!disposed.current) {
             setUnavailable(null);
             const recovery = action.type === 'ADD_TRACK' && Boolean(result.snapshot.session?.recoverable);
-            setFeedback({ message: action.type === 'ADD_TRACK' ? recovery ? 'Трек додано до збереженої черги. Натисніть «Відновити», щоб запустити сесію.' : 'Трек додано до черги.' : action.type === 'VOTE_SKIP' ? 'Голос враховано.' : '', transient: !recovery });
+            setFeedback({ message: result.warning ?? (action.type === 'ADD_TRACK' ? recovery ? 'Трек додано до збереженої черги. Натисніть «Відновити», щоб запустити сесію.' : 'Трек додано до черги.' : action.type === 'VOTE_SKIP' ? 'Голос враховано.' : ''), transient: !recovery && !result.warning });
             publish();
           }
         } catch (error) {

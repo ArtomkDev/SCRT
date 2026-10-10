@@ -19,6 +19,7 @@ export function validateMediaUrl(value: string): URL {
   return url;
 }
 export type MediaDnsLookup = (host: string) => Promise<Array<{ address: string; family: number }>>;
+function audioTimeout(message: string): Error & { code: string } { return Object.assign(new Error(message), { code: 'ETIMEDOUT' }); }
 export class MediaAudioHttpError extends Error {
   constructor(readonly status: number) { super('Джерело не повернуло доступний аудіопотік.'); }
 }
@@ -26,7 +27,7 @@ export async function mediaDestination(value: string, resolve: MediaDnsLookup = 
   const url = validateMediaUrl(value);
   const host = url.hostname.replace(/^\[|\]$/g, '');
   const addresses = isIP(host) ? [{ address: host, family: isIP(host) }] : await Promise.race([
-    resolve(host), new Promise<never>((_, reject) => { const timer = setTimeout(() => reject(new Error('DNS timeout')), 5000); timer.unref(); }),
+    resolve(host), new Promise<never>((_, reject) => { const timer = setTimeout(() => reject(audioTimeout('DNS timeout')), 5000); timer.unref(); }),
   ]);
   if (!addresses.length || addresses.some((entry) => !isPublicMediaAddress(entry.address))) throw new Error('DNS адреса аудіо недозволена.');
   return { url, ...addresses[0]! };
@@ -41,10 +42,10 @@ export async function openAudioStream(value: string, signal?: AbortSignal, redir
       lookup: (_host, _options, callback) => callback(null, address, family),
     };
     const req = (url.protocol === 'https:' ? httpsRequest : httpRequest)(url, options, accept);
-    const deadline = setTimeout(() => req.destroy(new Error('Audio connection timeout')), 8000);
+    const deadline = setTimeout(() => req.destroy(audioTimeout('Audio connection timeout')), 8000);
     req.once('response', () => clearTimeout(deadline));
     req.once('error', (error) => { clearTimeout(deadline); reject(error); });
-    req.setTimeout(15000, () => req.destroy(new Error('Audio read timeout')));
+    req.setTimeout(15000, () => req.destroy(audioTimeout('Audio read timeout')));
     req.end();
   });
   if ([301, 302, 303, 307, 308].includes(response.statusCode ?? 0)) {

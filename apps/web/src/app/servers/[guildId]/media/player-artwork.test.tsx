@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import * as React from 'react';
+import { renderToString } from 'react-dom/server';
 import { act, cleanup, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { artworkAccent, MediaCover, neutralAccent } from './player-artwork';
@@ -17,6 +18,13 @@ afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstub
 const load = async (url: string) => { await act(async () => { images.find((image) => image.src === url)!.onload!(); }); await act(() => vi.advanceTimersByTimeAsync(32)); };
 
 describe('artwork palette and uninterrupted crossfade', () => {
+  it('renders the same initial markup with cold and warm browser artwork caches', async () => {
+    const url = 'https://art.example/hydration.jpg'; const accent = vi.fn();
+    const cold = renderToString(<MediaCover url={url} onAccent={accent} />);
+    const view = render(<MediaCover url={url} onAccent={accent} />); await load(url); view.unmount();
+    expect(accent).toHaveBeenCalledWith(expect.stringMatching(/^hsl\(/));
+    expect(renderToString(<MediaCover url={url} onAccent={accent} />)).toBe(cold);
+  });
   it('loads the equivalent YouTube JPEG to read its palette when WebP forbids canvas access', async () => {
     const accent = vi.fn(); const view = render(<MediaCover url="https://i.ytimg.com/vi_webp/3pvSGwHgvhU/maxresdefault.webp" onAccent={accent} />);
     expect(images[0]!.src).toBe('https://i.ytimg.com/vi/3pvSGwHgvhU/maxresdefault.jpg');

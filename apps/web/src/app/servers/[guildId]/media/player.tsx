@@ -10,7 +10,7 @@ import { ModuleDisabledState, ModuleStatus } from '@/app/components/module-statu
 import { MediaIcon } from './media-icon';
 import { useMediaController } from './player-controller';
 import { usePlayerSearch } from './player-search';
-import { cachedArtworkAccent, MediaCover } from './player-artwork';
+import { neutralAccent, MediaCover } from './player-artwork';
 import { MediaArtwork, mediaTime, providerNames } from './media-track';
 import { PlayerProgress } from './player-progress';
 import { PlayerNextTrack } from './player-next-track';
@@ -22,9 +22,9 @@ export function MediaPlayerClient({ guildId, userId, initial, initialError }: { 
   const { snapshot, unavailable, message, transient, setMessage, send, pending } = useMediaController(guildId, initial, initialError);
   const { session, settings, controls } = snapshot;
   const { query, setQuery, results, searchPending, searched, source, setSource, mobileTab, setMobileTab, nextPage, search } = usePlayerSearch(guildId, userId, snapshot.providers, setMessage);
-  const [clock, setClock] = useState(Date.now());
-  const [accent, setAccent] = useState(() => cachedArtworkAccent(initial.session?.currentTrack?.artworkUrl ?? null));
-  const offset = useRef(initial.serverTimestamp - Date.now());
+  const [clock, setClock] = useState(initial.serverTimestamp);
+  const [accent, setAccent] = useState(neutralAccent);
+  const offset = useRef(0);
   const [confirm, setConfirm] = useState<'STOP' | 'MOVE_SESSION' | null>(null);
   const [dragging, setDragging] = useState<string | null>(null);
   const [volume, setVolume] = useState(initial.session?.volume ?? initial.settings.defaultVolume);
@@ -32,7 +32,7 @@ export function MediaPlayerClient({ guildId, userId, initial, initialError }: { 
   const searchForm = useRef<HTMLFormElement>(null);
   useEffect(() => { setQueueFilter(''); }, [guildId, userId]);
   useEffect(() => { setVolume(session?.volume ?? settings.defaultVolume); }, [session?.volume, settings.defaultVolume]);
-  useEffect(() => { offset.current = snapshot.serverTimestamp - Date.now(); }, [snapshot.serverTimestamp]);
+  useEffect(() => { const now = Date.now(); offset.current = snapshot.serverTimestamp - now; setClock(now); }, [snapshot.serverTimestamp]);
   useEffect(() => { const timer = setInterval(() => setClock(Date.now()), 1000); return () => clearInterval(timer); }, []);
   const loadingTrack = pending.filter((job) => job.action.type === 'PLAY_TRACK').at(-1)?.track ?? null;
   const track = session?.currentTrack ?? null;

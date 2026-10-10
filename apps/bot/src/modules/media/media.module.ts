@@ -62,6 +62,34 @@ export class MediaModule {
     this.commands.sessions.suspendAudio(lease.guild.id);
     await this.commands.sessions.interruptGuild(lease.guild.id, 'Media worker втратив право на сесію.').catch((error: unknown) => log('error', 'media', 'lease.interrupt.failed', { guildId: lease.guild.id }, error));
   }
+  private async recoverWithLease(lease: GuildLease, acquiredUntil: number): Promise<number> {
+    let expiresAt = acquiredUntil;
+    let failure: Error | null = null;
+    let renewal: Promise<void> | null = null;
+    const canRecover = () => this.activeLease(lease) && lease.guild.available && !failure && expiresAt > Date.now();
+    // Recovery may await cold Firestore reads/checkpoints longer than one lease.
+    // Keep ownership alive, but leave the public command gate closed until done.
+    const timer = setInterval(() => {
+      if (renewal || !canRecover()) return;
+      const requestedAt = Date.now();
+      renewal = this.acquireLease(lease).then((acquired) => {
+        if (!acquired || expiresAt <= Date.now()) throw new Error('Media lease lost during recovery');
+        expiresAt = requestedAt + 60000;
+      }).catch((error: unknown) => {
+        failure = error instanceof Error ? error : new Error('Media lease renewal failed during recovery');
+      }).finally(() => { renewal = null; });
+    }, 30000);
+    timer.unref();
+    try {
+      await this.commands.sessions.recover(lease.guild, canRecover);
+    } finally {
+      clearInterval(timer);
+      await renewal;
+    }
+    if (failure) throw failure;
+    if (!canRecover()) throw new Error('Media lease expired or stopped during recovery');
+    return expiresAt;
+  }
   private async renewLease(lease: GuildLease): Promise<void> {
     const guildId = lease.guild.id;
     const previouslyOwned = lease.expiresAt > Date.now();
@@ -71,14 +99,14 @@ export class MediaModule {
       const acquired = await this.acquireLease(lease);
       if (!this.activeLease(lease)) return;
       if (!acquired) { await this.suspendLease(lease); log('warn', 'media', 'lease.occupied', { guildId }); return; }
+      let expiresAt = requestedAt + 60000;
       if (!previouslyOwned) {
-        await this.commands.sessions.recover(lease.guild);
+        expiresAt = await this.recoverWithLease(lease, expiresAt);
         if (!this.activeLease(lease)) return;
-        if (requestedAt + 60000 <= Date.now()) throw new Error('Media lease expired during recovery');
-        log('info', 'media', 'recovery.complete', { guildId });
+        log('info', 'media', 'recovery.complete', { guildId, durationMs: Date.now() - requestedAt });
         void this.repository.pruneHistory(guildId).catch((error: unknown) => log('warn', 'media', 'history.cleanup.failed', { guildId }, error));
       }
-      lease.expiresAt = requestedAt + 60000;
+      lease.expiresAt = expiresAt;
     } catch (error) { await this.suspendLease(lease); log('error', 'media', 'lease.failed', { guildId }, error); }
   }
   async stopGuild(guildId: string) {

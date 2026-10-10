@@ -68,11 +68,15 @@ class ExtractionFailure extends MediaSourceError {
 }
 function extractionError(provider: OnlineProviderId, stderr: string): ExtractionFailure {
   if (/confirm you[^\r\n]{0,30}not a bot/i.test(stderr)) return new ExtractionFailure(`${names[provider]} тимчасово відхилив запит із мережі бота. Спробуйте ще раз трохи пізніше.`, true);
+  // YouTube prefixes both throttling and deleted videos with "Video unavailable".
+  // Classify the reason before that generic prefix or extractor advice/URLs.
+  if (/this content isn['’]t available,? try again later|rate[- ]limited|too many requests|HTTP Error 429/i.test(stderr)) return new ExtractionFailure(`${names[provider]} тимчасово обмежив запити з мережі бота. Спробуйте ще раз пізніше.`, false);
+  if (/timed?\s*out|connection (?:reset|closed|aborted)|remote end closed|HTTP Error 5\d\d|temporarily unavailable|temporary failure|name or service not known|unable to resolve|failed to resolve/i.test(stderr)) return new ExtractionFailure(`${names[provider]} тимчасово не відповідає. Спробуйте ще раз пізніше.`, true);
   if (/requested format is not available/i.test(stderr)) return new ExtractionFailure('Для цього треку немає підтримуваного публічного аудіоформату.', false);
-  if (/private|not available|not found|404|removed|restricted|geo/i.test(stderr)) return new ExtractionFailure('Трек недоступний: видалений, приватний або має обмеження доступу.', false);
   if (/sign in|login required|authentication required/i.test(stderr)) return new ExtractionFailure(`${names[provider]} вимагає авторизації для цього треку. Підтримуються лише публічні аудіопотоки.`, false);
-  if (/timed?\s*out|connection (?:reset|closed|aborted)|remote end closed|HTTP Error (?:429|5\d\d)|temporarily unavailable/i.test(stderr)) return new ExtractionFailure(`${names[provider]} тимчасово не відповідає. Спробуйте ще раз пізніше.`, true);
-  if (/unavailable/i.test(stderr)) return new ExtractionFailure('Трек недоступний: видалений, приватний або має обмеження доступу.', false);
+  if (/private (?:video|track)|(?:video|track)(?: has been| was| is)? (?:deleted|removed|private)|removed by|not available in your (?:country|region)|not made this video available in your country|geo[- ]restricted|HTTP Error 404|(?:video|track) not found|members[- ]only|premium[- ]only/i.test(stderr)) return new ExtractionFailure('Трек недоступний: видалений, приватний або має обмеження доступу.', false);
+  if (/HTTP Error (?:401|403)|access denied|forbidden/i.test(stderr)) return new ExtractionFailure(`${names[provider]} відхилив доступ до аудіо з мережі бота. Спробуйте ще раз пізніше або інше джерело.`, false);
+  if (/unavailable|not available|try again later/i.test(stderr)) return new ExtractionFailure(`${names[provider]} тимчасово не надав аудіо цього треку. Спробуйте ще раз пізніше.`, true);
   return new ExtractionFailure('Не вдалося отримати аудіо з цього джерела. Спробуйте пізніше або інший трек.', false);
 }
 export class YtDlpExtractor implements OnlineAudioExtractor {
@@ -200,6 +204,20 @@ export class OnlineAudioProvider implements MediaSourceProvider {
     if (!hosts.some((host) => url.hostname === host || url.hostname.endsWith(`.${host}`))) throw new MediaSourceError('Джерело повернуло недозволену адресу аудіо.');
     const headers = Object.fromEntries(Object.entries(value.http_headers ?? {}).filter(([name, value]) =>
       ['user-agent', 'referer', 'origin', 'accept-language'].includes(name.toLowerCase()) && value.length <= 2048 && !/[\r\n]/.test(value)));
-    return openAudioStream(url.href, signal, 0, undefined, headers);
+    for (let attempt = 0; ; attempt++) {
+      try { return await openAudioStream(url.href, signal, 0, undefined, headers); }
+      catch (error) {
+        const temporary = error instanceof MediaAudioHttpError && [408, 500, 502, 503, 504].includes(error.status)
+          || error instanceof Error && 'code' in error && ['EAI_AGAIN', 'ECONNRESET', 'ETIMEDOUT'].includes(String(error.code));
+        if (temporary && attempt === 0 && !signal.aborted) {
+          try { await delay(500, undefined, { signal }); }
+          catch { throw new MediaSourceError('Завантаження аудіо скасовано.'); }
+          continue;
+        }
+        if (temporary) throw new MediaSourceError(`${names[this.id]} тимчасово не відповідає. Спробуйте ще раз пізніше.`);
+        if (error instanceof MediaAudioHttpError && error.status === 429) throw new MediaSourceError(`${names[this.id]} тимчасово обмежив запити з мережі бота. Спробуйте ще раз пізніше.`);
+        throw error;
+      }
+    }
   }
 }

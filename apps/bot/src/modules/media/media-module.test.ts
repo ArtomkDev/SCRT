@@ -100,3 +100,33 @@ describe('Media worker lease recovery', () => {
     await vi.advanceTimersByTimeAsync(30000); expect(f.recover).toHaveBeenCalledOnce();
   });
 });
+
+describe('Cold deployment recovery lease', () => {
+ it('renews ownership during slow recovery without enabling commands early', async () => {
+  const f = await fixture(); let finish!: () => void;
+  f.recover.mockImplementationOnce(async (_guild, canRecover) => { await new Promise<void>((resolve) => { finish = resolve; }); expect(canRecover!()).toBe(true); });
+  const recovery = f.module.recover(f.guild); await vi.advanceTimersByTimeAsync(0);
+  await expect(f.actor()).rejects.toThrow('недоступний');
+  await vi.advanceTimersByTimeAsync(90000);
+  expect(f.repo.lease).toHaveBeenCalledTimes(4); expect(f.recover).toHaveBeenCalledOnce();
+  await expect(f.actor()).rejects.toThrow('недоступний'); finish(); await recovery;
+  await expect(f.actor()).resolves.toMatchObject({ userId }); expect(vi.getTimerCount()).toBe(1);
+ });
+ it.each(['denied', 'failed'])('keeps commands disabled if recovery heartbeat is %s', async (outcome) => {
+  const f = await fixture(); let finish!: () => void; let allowed!: () => boolean;
+  f.recover.mockImplementationOnce(async (_guild, canRecover) => { allowed = canRecover!; await new Promise<void>((resolve) => { finish = resolve; }); });
+  const recovery = f.module.recover(f.guild); await vi.advanceTimersByTimeAsync(0);
+  if (outcome === 'denied') f.repo.lease.mockResolvedValueOnce(false); else f.repo.lease.mockRejectedValueOnce(new Error('Firestore failure'));
+  await vi.advanceTimersByTimeAsync(30000); expect(allowed()).toBe(false); finish(); await recovery;
+  await expect(f.actor()).rejects.toThrow('недоступний'); expect(vi.getTimerCount()).toBe(1);
+  await vi.advanceTimersByTimeAsync(30000); await expect(f.actor()).resolves.toMatchObject({ userId });
+ });
+ it('does not extend a stopped guild lease while recovery is pending', async () => {
+  const f = await fixture(); let finish!: () => void;
+  f.recover.mockImplementationOnce(async () => { await new Promise<void>((resolve) => { finish = resolve; }); });
+  const recovery = f.module.recover(f.guild); await vi.advanceTimersByTimeAsync(0);
+  const stopping = f.module.stopGuild(guildId); await vi.advanceTimersByTimeAsync(30000);
+  expect(f.repo.lease).toHaveBeenCalledOnce(); finish(); await Promise.all([recovery, stopping]);
+  expect(vi.getTimerCount()).toBe(0); await expect(f.actor()).rejects.toThrow('недоступний');
+ });
+});

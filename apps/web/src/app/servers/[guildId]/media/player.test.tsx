@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import * as React from 'react';
+import { renderToString } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { mediaSettingsSchema, mediaSnapshotSchema } from '@scrt/validation';
@@ -36,6 +37,19 @@ async function search(response: { results: unknown[]; unavailable: string[]; err
 }
 
 describe('Media catalog search feedback', () => {
+  it('uses the supplied server timestamp for initial progress despite clock changes between renders', () => {
+    const initial = snapshot(true);
+    const current = { provider: 'direct' as const, providerItemId: 'https://audio.example/test.mp3', title: 'Hydrated track', artist: 'Artist', type: 'track' as const, durationMs: 180000, artworkUrl: null, externalUrl: 'https://audio.example/test.mp3', playable: true, seekable: false, explicit: null, queueItemId: 'e1f2d646-c71b-447e-8f8b-1d537d3b17c1', requestedByUserId: guildId, requestedByName: 'Listener', requestedAt: 1 };
+    const playing = mediaSnapshotSchema.parse({ ...initial, serverTimestamp: 100000, session: { sessionId: 'e1f2d646-c71b-447e-8f8b-1d537d3b17c0', guildId, voiceChannelId: initial.actorVoice.id, voiceChannelName: 'Gaming', state: 'playing', currentTrack: current, queue: [], played: [], startedAt: 70000, pausedAt: null, accumulatedPauseMs: 0, volume: 60, repeatMode: 'off', queueMode: 'normal', shuffle: false, lockedMode: 'unlocked', createdByUserId: guildId, queueVersion: 2, revision: 2, createdAt: 1, updatedAt: 2, recoverable: false, lastError: null, lastRequesterId: null } });
+    const clock = vi.spyOn(Date, 'now'); let now = 100000;
+    clock.mockImplementation(() => now++);
+    try {
+      const server = renderToString(<MediaPlayerClient guildId={guildId} userId={guildId} initial={playing} initialError={null} />);
+      now = 200000;
+      const client = renderToString(<MediaPlayerClient guildId={guildId} userId={guildId} initial={playing} initialError={null} />);
+      expect(client).toBe(server); expect(client).toContain('value="30000"');
+    } finally { clock.mockRestore(); }
+  });
   it('shows the confirmed track and progress until a requested replacement is acknowledged', async () => {
     const initial = snapshot(true);
     const current = { provider: 'youtube' as const, providerItemId: 'G63iPGvgGYs', title: 'Confirmed track', artist: 'Artist', type: 'track' as const, durationMs: 180000, artworkUrl: null, externalUrl: 'https://www.youtube.com/watch?v=G63iPGvgGYs', playable: true, seekable: true, explicit: null, queueItemId: 'e1f2d646-c71b-447e-8f8b-1d537d3b17c1', requestedByUserId: guildId, requestedByName: 'Listener', requestedAt: 1 };

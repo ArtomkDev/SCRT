@@ -22,6 +22,15 @@ function ack(value: MediaSnapshot) { return Response.json({ replayed: false, sna
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe('Immediate player controls and ordered worker acknowledgments', () => {
+  it('keeps partial continuation feedback while confirming successful playback', async () => {
+    const initial = snapshot(); const changed = structuredClone(initial); changed.session!.currentTrack = changed.session!.queue[0]!; changed.session!.queueVersion++;
+    const warning = 'Вибраний трек запущено. Частину добірки не додано; повторіть пошук, щоб оновити її.';
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => Response.json(init?.method === 'POST' ? { replayed: false, snapshot: changed, warning } : initial)));
+    const { result } = renderHook(() => useMediaController(guildId, initial, null)); await act(async () => {});
+    await act(async () => result.current.send({ type: 'PLAY_TRACK', provider: 'direct', providerItemId: changed.session!.currentTrack!.providerItemId }, changed.session!.currentTrack!));
+    expect(result.current.snapshot.session?.currentTrack?.title).toBe('second'); expect(result.current.pending).toHaveLength(0);
+    expect(result.current.message).toBe(warning); expect(result.current.transient).toBe(false); expect(result.current.unavailable).toBeNull();
+  });
   it('keeps only the newest unstarted selection during rapid track clicks', async () => {
     const initial = snapshot(), first = deferred(); let post = 0;
     const second = initial.session!.queue[0]!, third = initial.session!.queue[1]!;

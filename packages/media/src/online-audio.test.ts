@@ -185,7 +185,6 @@ describe('extractor process boundary', () => {
   it.each([
     'ERROR: Sign in to confirm you’re not a bot https://secret.example/token',
     'ERROR: HTTP Error 503: Service Unavailable',
-    'ERROR: HTTP Error 429: Too Many Requests',
     'ERROR: The read operation timed out',
   ])('recovers from one transient extraction failure within the original time budget: %s', async (stderr) => {
     vi.useFakeTimers();
@@ -229,4 +228,55 @@ describe('extractor process boundary', () => {
     const adapter = new YtDlpExtractor('/missing/yt-dlp'); expect(adapter.available()).toBe(false);
     await expect(adapter.inspect('youtube', 'TwumA6YhQp4')).rejects.toThrow('не встановлено'); expect(mocks.exec).not.toHaveBeenCalled();
   });
+});
+
+describe('hosting source failures', () => {
+ it.each([
+  "ERROR: Video unavailable. This content isn't available, try again later. The current session has been rate-limited",
+  'ERROR: HTTP Error 429: Too Many Requests',
+ ])('reports throttling without marking a public track private or retrying immediately: %s', async (stderr) => {
+  mocks.exec.mockImplementation((_file, _args, _options, callback) => callback(new Error('failed'), '', stderr));
+  await expect(new YtDlpExtractor('/installed/yt-dlp').inspect('youtube', 'TwumA6YhQp4')).rejects.toThrow('тимчасово обмежив');
+  expect(mocks.exec).toHaveBeenCalledOnce();
+ });
+ it.each([
+  'ERROR: Video unavailable. Please try again later',
+  'ERROR: HTTP Error 503: Service not available',
+  'ERROR: Unable to download webpage: Temporary failure in name resolution',
+  'ERROR: Video unavailable. See https://example.test/geographic-help',
+ ])('recovers a temporary failure without falsely inferring removal: %s', async (stderr) => {
+  vi.useFakeTimers();
+  mocks.exec.mockImplementationOnce((_file, _args, _options, callback) => callback(new Error('failed'), '', stderr))
+   .mockImplementationOnce((_file, _args, _options, callback) => callback(null, JSON.stringify(details()), ''));
+  const result = new YtDlpExtractor('/installed/yt-dlp').inspect('youtube', 'TwumA6YhQp4');
+  await vi.advanceTimersByTimeAsync(500); expect(await result).toMatchObject({ id: 'TwumA6YhQp4' }); expect(mocks.exec).toHaveBeenCalledTimes(2);
+ });
+ it.each(['Private video', 'This video has been removed by the uploader', 'The uploader has not made this video available in your country', 'HTTP Error 404: Not Found'])('preserves a permanent refusal without retries: %s', async (stderr) => {
+  mocks.exec.mockImplementation((_file, _args, _options, callback) => callback(new Error('failed'), '', stderr));
+  await expect(new YtDlpExtractor('/installed/yt-dlp').inspect('youtube', 'TwumA6YhQp4')).rejects.toThrow('Трек недоступний'); expect(mocks.exec).toHaveBeenCalledOnce();
+ });
+ it.each([503, 502])('retries a temporary CDN HTTP %s once using the same validated source', async (status) => {
+  vi.useFakeTimers(); const adapter = extractor(), provider = new OnlineAudioProvider('youtube', adapter), stream = new PassThrough();
+  mocks.open.mockRejectedValueOnce(new MediaAudioHttpError(status)).mockResolvedValueOnce(stream);
+  const result = provider.getPlayableResource('TwumA6YhQp4', new AbortController().signal);
+  await vi.advanceTimersByTimeAsync(500); expect(await result).toBe(stream); expect(mocks.open).toHaveBeenCalledTimes(2); expect(adapter.inspect).toHaveBeenCalledOnce();
+ });
+ it('stops after a repeated temporary CDN failure and keeps signed URLs out of the error', async () => {
+  vi.useFakeTimers(); mocks.open.mockRejectedValue(new MediaAudioHttpError(503));
+  const result = new OnlineAudioProvider('youtube', extractor()).getPlayableResource('TwumA6YhQp4', new AbortController().signal);
+  const failure = expect(result).rejects.toThrow('тимчасово не відповідає');
+  await vi.advanceTimersByTimeAsync(500); await failure; expect(mocks.open).toHaveBeenCalledTimes(2);
+ });
+ it.each(['DNS timeout', 'Audio connection timeout'])('retries a transport deadline once: %s', async (message) => {
+  vi.useFakeTimers(); const adapter = extractor(), stream = new PassThrough();
+  mocks.open.mockRejectedValueOnce(Object.assign(new Error(message), { code: 'ETIMEDOUT' })).mockResolvedValueOnce(stream);
+  const pending = new OnlineAudioProvider('youtube', adapter).getPlayableResource('TwumA6YhQp4', new AbortController().signal);
+  await vi.advanceTimersByTimeAsync(500); expect(await pending).toBe(stream); expect(mocks.open).toHaveBeenCalledTimes(2); expect(adapter.inspect).toHaveBeenCalledOnce();
+ });
+ it('cancels CDN retry without another request', async () => {
+  vi.useFakeTimers(); const controller = new AbortController(); mocks.open.mockRejectedValueOnce(new MediaAudioHttpError(503));
+  const result = new OnlineAudioProvider('youtube', extractor()).getPlayableResource('TwumA6YhQp4', controller.signal);
+  const failure = expect(result).rejects.toThrow('скасовано');
+  await vi.advanceTimersByTimeAsync(0); controller.abort(); await failure; expect(mocks.open).toHaveBeenCalledOnce();
+ });
 });

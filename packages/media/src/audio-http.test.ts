@@ -5,8 +5,18 @@ import type { IncomingMessage } from 'node:http';
 const mocks = vi.hoisted(() => ({ request: vi.fn() }));
 vi.mock('node:https', () => ({ request: mocks.request }));
 import { openAudioStream } from './audio-http';
-afterEach(() => vi.clearAllMocks());
+afterEach(() => { vi.clearAllMocks(); vi.useRealTimers(); });
 describe('audio HTTP redirect transport', () => {
+  it('marks the actual connection deadline as retryable without changing DNS pinning', async () => {
+    vi.useFakeTimers();
+    mocks.request.mockImplementationOnce(() => {
+      const req = new EventEmitter() as EventEmitter & { setTimeout: () => void; end: () => void; destroy: (error: Error) => void };
+      req.setTimeout = vi.fn(); req.end = vi.fn(); req.destroy = (error) => { req.emit('error', error); }; return req;
+    });
+    const pending = openAudioStream('https://audio.example/track', undefined, 0, async () => [{ address: '8.8.8.8', family: 4 }]);
+    const failure = expect(pending).rejects.toMatchObject({ message: 'Audio connection timeout', code: 'ETIMEDOUT' });
+    await vi.advanceTimersByTimeAsync(8000); await failure; expect(mocks.request).toHaveBeenCalledOnce();
+  });
   function response(status: number, headers: Record<string, string>) { const stream = new PassThrough() as unknown as IncomingMessage; Object.assign(stream, { statusCode: status, headers }); return stream; }
   function transport(reply: IncomingMessage) { mocks.request.mockImplementationOnce((_url, options, accept) => {
     const req = new EventEmitter() as EventEmitter & { setTimeout: () => void; end: () => void; destroy: () => void };

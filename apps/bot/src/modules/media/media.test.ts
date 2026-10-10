@@ -208,12 +208,33 @@ describe('Media session commands', () => {
     await f.service.execute(f.command({ type: 'PLAY_TRACK', provider: 'direct', providerItemId: 'selected', following: ['blocked', 'next', 'overflow'].map((providerItemId) => ({ provider: 'direct', providerItemId })) }));
     expect(f.store.session?.queue.map((item) => item.title)).toEqual(['next']);
   });
-  it('rejects unknown continuation before interrupting audio and revalidates restrictions when the next track starts', async () => {
+  it('omits unavailable continuation without rejecting the selected song', async () => {
     const f = fixture(); await f.add('current'); f.engine.stop.mockClear();
     const original = f.provider.resolve;
-    f.provider.resolve = async (id) => { if (id === 'forged') throw new Error('Invalid source'); return original(id); };
-    await expect(f.service.execute(f.command({ type: 'PLAY_TRACK', provider: 'direct', providerItemId: 'selected', following: [{ provider: 'direct', providerItemId: 'forged' }] }, ownerId))).rejects.toThrow('Повторіть пошук');
-    expect(f.engine.stop).not.toHaveBeenCalled(); expect(f.store.session?.currentTrack?.title).toBe('current');
+    f.provider.resolve = async (id) => { if (id === 'forged') throw new MediaSourceError('Трек недоступний: видалений, приватний або має обмеження доступу.'); return original(id); };
+    const result = await f.service.execute(f.command({ type: 'PLAY_TRACK', provider: 'direct', providerItemId: 'selected', following: ['first', 'forged', 'last'].map((providerItemId) => ({ provider: 'direct', providerItemId })) }, ownerId));
+    expect(result.warning).toContain('Частину добірки не додано');
+    expect(f.engine.stop).not.toHaveBeenCalled(); expect(f.store.session?.currentTrack?.title).toBe('selected');
+    expect(f.store.session?.queue.map((item) => item.title)).toEqual(['first', 'last']);
+  });
+  it('bounds hung continuation, retains cached songs and ignores late source results', async () => {
+    vi.useFakeTimers(); const f = fixture(); await f.add('current');
+    const original = f.provider.resolve;
+    f.provider.search = async () => [await original('cached')]; await f.service.search(guildId, ownerId, 'songs');
+    let finish!: (track: MediaTrack) => void; let signal!: AbortSignal;
+    const hung = new Promise<MediaTrack>((resolve) => { finish = resolve; });
+    f.provider.resolve = async (id, abort) => { if (id === 'hung') { signal = abort!; return hung; } return original(id); };
+    const started = Date.now();
+    const command = f.service.execute(f.command({ type: 'PLAY_TRACK', provider: 'direct', providerItemId: 'selected', following: ['hung', 'cached'].map((providerItemId) => ({ provider: 'direct', providerItemId })) }, ownerId));
+    await vi.advanceTimersByTimeAsync(2000); const result = await command;
+    expect(Date.now() - started).toBe(2000); expect(result.warning).toBeTruthy(); expect(signal.aborted).toBe(true);
+    expect(f.store.session?.currentTrack?.title).toBe('selected'); expect(f.store.session?.queue.map((item) => item.title)).toEqual(['cached']);
+    finish(await original('hung')); await Promise.resolve();
+    expect((await f.service.state(guildId, ownerId)).session?.queue.map((item) => item.title)).toEqual(['cached']);
+    expect(f.provider.getPlayableResource).toHaveBeenLastCalledWith('selected', expect.any(AbortSignal));
+  });
+  it('revalidates restrictions when the next continuation track starts', async () => {
+    const f = fixture();
     f.provider.search = async () => Promise.all(['selected', 'next', 'last'].map((id) => f.provider.resolve(id)));
     await f.service.search(guildId, ownerId, 'songs');
     await f.service.execute(f.command({ type: 'PLAY_TRACK', provider: 'direct', providerItemId: 'selected', following: ['next', 'last'].map((providerItemId) => ({ provider: 'direct', providerItemId })) }, ownerId));
@@ -522,4 +543,29 @@ describe('authenticated internal endpoint', () => {
       expect((await fetch(url, { method: 'POST', headers: { Authorization: `Bearer ${secret}` }, body: '{"operation":"command","actorUserId":"forged"}' })).status).toBe(400);
     } finally { server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); }
   });
+});
+
+it('does not checkpoint recovered state after losing ownership during a cold read', async () => {
+ const f = fixture(); await f.add('first'); const persisted = structuredClone(f.store.session); const before = f.store.writes;
+ let owned = true; const originalRead = f.store.getSession.bind(f.store);
+ vi.spyOn(f.store, 'getSession').mockImplementationOnce(async () => { const value = await originalRead(); owned = false; return value; });
+ await expect(f.createService().recover(f.guild, () => owned)).rejects.toMatchObject({ status: 503 });
+ expect(f.store.session).toEqual(persisted); expect(f.store.writes).toBe(before);
+});
+it('records a source rejection with guild/provider context without logging its track URL', async () => {
+ const f = fixture(); const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+ try {
+  vi.mocked(f.provider.resolve).mockRejectedValueOnce(new MediaSourceError('Джерело тимчасово не відповідає.'));
+  await expect(f.service.execute(f.command({ type: 'PLAY_TRACK', provider: 'direct', providerItemId: 'https://audio.example/track.mp3?signature=private' }, ownerId))).rejects.toMatchObject({ status: 422 });
+  expect(warn).toHaveBeenCalledOnce(); const entry = JSON.parse(String(warn.mock.calls[0]![0]));
+  expect(entry).toMatchObject({ guildId, provider: 'direct', action: 'command.source.rejected', commandType: 'PLAY_TRACK', status: 422 });
+  expect(JSON.stringify(entry)).not.toContain('signature');
+ } finally { warn.mockRestore(); }
+});
+
+it('recovers an active persisted session in one checkpoint', async () => {
+ const f = fixture(); await f.add('first'); const previous = f.store.writes; const oldIdentity = f.store.session!.sessionId;
+ await f.createService().recover(f.guild);
+ expect(f.store.writes).toBe(previous + 1); expect(f.store.session!.sessionId).not.toBe(oldIdentity);
+ expect(f.store.session!.currentTrack).toBeNull(); expect(f.store.session!.queue.map((item) => item.title)).toEqual(['first']);
 });

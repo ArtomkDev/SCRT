@@ -99,4 +99,4 @@ export const mediaSnapshotSchema = z.object({
   engine: z.object({ available: z.boolean(), ffmpeg: z.boolean(), opus: z.boolean(), dave: z.boolean() }), serverTimestamp: z.number(), canManage: z.boolean(),
 });
 export type MediaSnapshot = z.infer<typeof mediaSnapshotSchema>;
-export const mediaCommandResultSchema = z.object({ replayed: z.boolean(), snapshot: mediaSnapshotSchema });
+export const mediaCommandResultSchema = z.object({ replayed: z.boolean(), snapshot: mediaSnapshotSchema, warning: z.string().max(400).optional() });

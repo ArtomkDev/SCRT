@@ -72,10 +72,9 @@ async function loadArtwork(url: string | null): Promise<Artwork> {
   inflight.set(url, task);
   try { return await task; } finally { inflight.delete(url); }
 }
-export function cachedArtworkAccent(url: string | null): string { return url ? artworkCache.get(url)?.accent ?? neutralAccent : neutralAccent; }
-
 export function MediaCover({ url, onAccent }: { url: string | null; onAccent: (color: string) => void }) {
-  const [layers, setLayers] = useState<Layer[]>(() => [{ ...(url ? artworkCache.get(url) : null) ?? { url: null, accent: neutralAccent, cors: false }, id: 0, visible: true }]);
+  // Browser caches must only affect effects, never the initial hydrated markup.
+  const [layers, setLayers] = useState<Layer[]>([{ url: null, accent: neutralAccent, cors: false, id: 0, visible: true }]);
   const sequence = useRef(0);
   const onColor = useRef(onAccent); onColor.current = onAccent;
   useEffect(() => {
