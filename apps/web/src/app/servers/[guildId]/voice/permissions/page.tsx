@@ -1,3 +1,4 @@
+import { Panel } from '@/app/components/dashboard-screen';
 import { installUrl } from '@scrt/discord';
 import { Suspense } from 'react';
 import { permissionNames as names, VoicePageLoading } from '../loading-content';
@@ -18,7 +19,7 @@ async function PermissionsContent({ params }: { params: Promise<{ guildId: strin
   const missing = groups.some((group) => permissionStatus(guildId, resources, group.channel).some((item) => !item.granted));
   return <section><h2 className="subheading">Дозволи SCRT</h2>
     {missing && <div className="voice-warning"><p>Боту бракує прав для роботи з голосовими кімнатами. Відсутні дозволи позначено в таблиці.</p><a className="action-link" href={installUrl(env().DISCORD_CLIENT_ID, guildId)}>Оновити дозволи</a></div>}
-    {groups.map((group) => <section key={group.label} className="voice-item"><h3>{group.label}</h3><ul className="voice-permission-list">{permissionStatus(guildId, resources, group.channel).map((item, index) => <li key={item.flag.toString()} className={item.granted ? 'voice-ok' : 'voice-missing'}>{item.granted ? '✓' : '✕'} {names[index]}</li>)}</ul></section>)}
+    {groups.map((group) => <Panel key={group.label} className="voice-item"><h3>{group.label}</h3><ul className="voice-permission-list">{permissionStatus(guildId, resources, group.channel).map((item, index) => <li key={item.flag.toString()} className={item.granted ? 'voice-ok' : 'voice-missing'}>{item.granted ? '✓' : '✕'} {names[index]}</li>)}</ul></Panel>)}
     <p className="muted">Права окремого каналу можуть перевизначати права ролі бота. Для роботи з категоріями перевірте також права бота на сервері.</p>
   </section>;
 }

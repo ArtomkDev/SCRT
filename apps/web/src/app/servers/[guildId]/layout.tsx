@@ -8,6 +8,15 @@ import { activitySettings } from '@/lib/activity-data';
 import { LoadingValue } from '../../components/data-loading';
 import { DataBoundary } from '../../components/data-boundary';
 import { initialMediaSnapshot } from '@/lib/media-data';
+import { MediaGuildRegistration } from '../../components/media-player/media-player-context';
+import { env } from '@/lib/server';
+import { GuildModuleStatusProvider } from '../../components/guild-module-status';
+
+async function GuildMedia({ guildId, userId, guildName, allowed }: { guildId: string; userId: string; guildName: string; allowed: boolean }) {
+  if (!allowed) return <MediaGuildRegistration scope={null} />;
+  const initial = await initialMediaSnapshot(guildId, userId);
+  return <MediaGuildRegistration scope={{ guildId, userId, guildName, initial: initial.snapshot, initialError: initial.unavailable, allowYoutube: env().NODE_ENV !== 'production' }} />;
+}
 
 async function ModuleNavigation({ guildId, userId, showVoice, showActivity, showMedia, showAccess }: { guildId: string; userId: string; showVoice: boolean; showActivity: boolean; showMedia: boolean; showAccess: boolean }) {
   const [voice, activity, media] = await Promise.all([showVoice ? voiceSettings(guildId) : null, showActivity ? activitySettings(guildId) : null, showMedia ? initialMediaSnapshot(guildId, userId) : null]);
@@ -18,9 +27,14 @@ async function GuildSidebar({ params }: { params: Promise<{ guildId: string }> }
   const { guildId } = await params;
   const { discordGuild, permissions, user } = await requireGuildAccess(guildId);
   const navigation = { guildId, userId: user.id, showVoice: permissions.has('voice.view'), showActivity: permissions.has('activity.view'), showMedia: permissions.has('media.view'), showAccess: permissions.has('settings.view') };
-  return <aside className="guild-sidebar"><div className="guild-context"><GuildIcon id={guildId} name={discordGuild.name} icon={discordGuild.icon} size={32} /><span className="guild-context-name">{discordGuild.name}</span></div><span className="sidebar-label">Сервер</span><DataBoundary title="Статус модулів недоступний" compact fallback={<DashboardNav {...navigation} />}><Suspense fallback={<DashboardNav {...navigation} />}><ModuleNavigation {...navigation} /></Suspense></DataBoundary><LiveRefresh endpoint={`/api/guilds/${guildId}/events`} /></aside>;
+  return <aside className="guild-sidebar"><div className="guild-context"><GuildIcon id={guildId} name={discordGuild.name} icon={discordGuild.icon} size={32} /><span className="guild-context-name">{discordGuild.name}</span></div><span className="sidebar-label">Сервер</span><DataBoundary title="Статус модулів недоступний" compact fallback={<DashboardNav {...navigation} />}><Suspense fallback={<DashboardNav {...navigation} />}><ModuleNavigation {...navigation} /></Suspense></DataBoundary><DataBoundary title="Плеєр недоступний" compact><Suspense fallback={null}><GuildMedia guildId={guildId} userId={user.id} guildName={discordGuild.name} allowed={navigation.showMedia} /></Suspense></DataBoundary><LiveRefresh endpoint={`/api/guilds/${guildId}/events`} /></aside>;
 }
 
-export default function GuildLayout(props: { children: ReactNode; params: Promise<{ guildId: string }> }) {
+function GuildWorkspace(props: { children: ReactNode; params: Promise<{ guildId: string }> }) {
   return <div className="guild-workspace"><DataBoundary title="Меню сервера недоступне" className="guild-sidebar" fallback={<><span className="sidebar-label">Сервер</span><a href="/servers">Усі сервери</a></>}><Suspense fallback={<aside className="guild-sidebar" aria-label="Завантаження сервера…" aria-busy="true"><div className="guild-context"><span className="guild-icon" style={{ width: 32, height: 32 }} aria-hidden="true" /><span className="guild-context-name"><LoadingValue width="14ch" /></span></div><span className="sidebar-label">Сервер</span></aside>}><GuildSidebar params={props.params} /></Suspense></DataBoundary><div className="guild-content">{props.children}</div></div>;
+}
+
+export default async function GuildLayout(props: { children: ReactNode; params: Promise<{ guildId: string }> }) {
+  const { guildId } = await props.params;
+  return <GuildModuleStatusProvider key={guildId} guildId={guildId}><GuildWorkspace {...props} /></GuildModuleStatusProvider>;
 }

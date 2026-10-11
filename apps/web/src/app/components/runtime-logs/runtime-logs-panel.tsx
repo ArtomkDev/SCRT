@@ -2,6 +2,8 @@
 import { createContext, useContext, useId, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { RuntimeLogs } from './runtime-logs';
 import './runtime-logs.css';
+import { useMediaPlayerWorkspace } from '../media-player/media-player-context';
+import { MediaPlayerDock } from '../media-player/media-player-dock';
 
 type PanelState = { open: boolean; visited: boolean; id: string; trigger: RefObject<HTMLButtonElement | null>; toggle: () => void; close: () => void };
 const PanelContext = createContext<PanelState | null>(null);
@@ -25,13 +27,17 @@ export function RuntimeLogsButton() {
 }
 export function RuntimeLogsWorkspace({ children }: { children: ReactNode }) {
   const { open, visited, id, close } = usePanel();
-  return <div className="runtime-logs-workspace" data-logs-open={open}>
-    <div className="runtime-logs-main">{children}</div>
+  const player = useMediaPlayerWorkspace();
+  const playerOpen = player?.open ?? false;
+  return <div className="runtime-logs-workspace" data-logs-open={open} data-player-open={playerOpen} data-tools-open={open || playerOpen}>
+    <div className="runtime-logs-main"><span className="runtime-logs-corner" style={player?.ambienceStyle} aria-hidden="true" />{children}</div>
+    <div className="dashboard-tools"><MediaPlayerDock />
     <aside id={id} className="runtime-logs-dock" aria-label="Логи поточного запуску" aria-hidden={!open} inert={!open} onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); close(); } }}>
       <div className="runtime-logs-panel">
         <header className="runtime-logs-panel-header"><div><span className="sidebar-label">Діагностика SCRT</span><h2>Логи запуску</h2></div><button type="button" className="runtime-logs-close" aria-label="Закрити логи" onClick={close}>×</button></header>
         <div className="runtime-logs-panel-body">{visited && <RuntimeLogs active={open} />}</div>
       </div>
     </aside>
+    </div>
   </div>;
 }

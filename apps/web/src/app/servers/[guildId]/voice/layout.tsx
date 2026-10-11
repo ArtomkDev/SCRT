@@ -2,16 +2,18 @@ import { Suspense, type ReactNode } from 'react';
 import { VoiceTabs } from '../../../components/voice-tabs';
 import { requireGuildAccess } from '@/lib/guards';
 import { voiceSettings } from '@/lib/voice-data';
-import { ModuleStatus } from '@/app/components/module-status';
+import { GuildModuleStatus } from '@/app/components/guild-module-status';
 import { DataBoundary } from '@/app/components/data-boundary';
+import { DashboardScreen, ScreenHeader } from '@/app/components/dashboard-screen';
 
 async function VoiceStatus({ guildId }: { guildId: string }) {
   await requireGuildAccess(guildId, 'voice.view');
   const settings = await voiceSettings(guildId);
-  return <ModuleStatus state={settings.enabled ? 'enabled' : 'disabled'} />;
+  return <GuildModuleStatus guildId={guildId} module="voice" state={settings.enabled ? 'enabled' : 'disabled'} />;
 }
 
 export default async function VoiceLayout({ children, params }: { children: ReactNode; params: Promise<{ guildId: string }> }) {
   const { guildId } = await params;
-  return <main className="content-page"><div className="page-heading"><h1>Голосові канали</h1><p>Створення та налаштування тимчасових голосових кімнат.</p><DataBoundary title="Статус голосових каналів недоступний" compact><Suspense fallback={null}><VoiceStatus guildId={guildId} /></Suspense></DataBoundary></div><VoiceTabs guildId={guildId} />{children}</main>;
+  const fallback = <GuildModuleStatus guildId={guildId} module="voice" />;
+  return <DashboardScreen header={<ScreenHeader title="Голосові канали" description="Створення та налаштування тимчасових голосових кімнат." navigation={<VoiceTabs guildId={guildId} />} status={<DataBoundary title="Статус голосових каналів недоступний" compact fallback={fallback}><Suspense fallback={fallback}><VoiceStatus guildId={guildId} /></Suspense></DataBoundary>} />}>{children}</DashboardScreen>;
 }

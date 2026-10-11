@@ -2,7 +2,7 @@
 import * as React from 'react';
 import { renderToString } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { mediaSettingsSchema, mediaSnapshotSchema } from '@scrt/validation';
 import { MediaPlayerClient } from './player';
 
@@ -29,7 +29,7 @@ beforeEach(() => {
   HTMLDialogElement.prototype.close = function () { this.open = false; };
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
-async function search(response: { results: unknown[]; unavailable: string[]; errors?: string[] }, configured = false) {
+async function search(response: { results: unknown[]; playlists?: unknown[]; unavailable: string[]; errors?: string[] }, configured = false) {
   const initial = snapshot(configured);
   const fetch = vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method && init.method !== 'GET') throw new Error('Unexpected media mutation');
@@ -44,6 +44,32 @@ async function search(response: { results: unknown[]; unavailable: string[]; err
 }
 
 describe('Media catalog search feedback', () => {
+  it('shows a playlist card without autoplay and applies the selected source filter', async () => {
+    const reference = 'https://soundcloud.com/artist/sets/list';
+    const fetch = await search({ results: [], playlists: [{ provider: 'soundcloud', providerItemId: reference, externalUrl: reference, title: 'Playlist collection', artist: 'Artist', trackCount: 12, artworkUrl: null }], unavailable: [] }, true);
+    await screen.findByRole('button', { name: 'Відкрити плейлист: Playlist collection' });
+    expect(screen.getByText('Знайдено: 1')).toBeTruthy(); expect(screen.queryByText('Спробуй інший запит')).toBeNull();
+    expect(fetch.mock.calls.every((call) => !call[1]?.method || call[1]?.method === 'GET')).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: /^YouTube$/ }));
+    expect(screen.queryByText('Playlist collection')).toBeNull(); expect(screen.getByText('Знайдено: 0')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /^Усі$/ })); expect(screen.getByText('Playlist collection')).toBeTruthy();
+  });
+  it('lets an edited query replace a running search and shows its result count and correction', async () => {
+    const initial = snapshot(true); let resolve!: (response: Response) => void; let firstSignal!: AbortSignal;
+    const fetch = vi.fn((url: string, init?: RequestInit) => {
+      if (url.includes('q=First')) { firstSignal = init!.signal!; return new Promise<Response>((done) => { resolve = done; }); }
+      if (url.includes('?q=')) return Promise.resolve(Response.json({ results: [{ provider: 'youtube', providerItemId: 'TwumA6YhQp4', title: 'New song', artist: 'Artist', type: 'track', durationMs: 180000, artworkUrl: null, externalUrl: 'https://www.youtube.com/watch?v=TwumA6YhQp4', playable: true, seekable: true, explicit: null }], unavailable: [], matchedQuery: 'Second' }));
+      return Promise.resolve(Response.json(initial));
+    }); vi.stubGlobal('fetch', fetch);
+    render(<MediaPlayerClient guildId={guildId} userId="42345678901234567" initial={initial} initialError={null} />);
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'First' } }); fireEvent.click(screen.getByRole('button', { name: 'Знайти' }));
+    expect((screen.getByRole('button', { name: 'Пошук…' }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'Secnd' } });
+    expect((screen.getByRole('button', { name: 'Знайти' }) as HTMLButtonElement).disabled).toBe(false); fireEvent.click(screen.getByRole('button', { name: 'Знайти' }));
+    await screen.findByText('New song'); expect(firstSignal.aborted).toBe(true);
+    expect(screen.getByText('Знайдено: 1')).toBeDefined(); expect(screen.getByText('Також шукали «Second»')).toBeDefined();
+    await act(async () => { resolve(Response.json({ results: [], unavailable: [] })); }); expect(screen.getByText('New song')).toBeDefined();
+  });
   it('uses the supplied server timestamp for initial progress despite clock changes between renders', () => {
     const initial = snapshot(true);
     const current = { provider: 'direct' as const, providerItemId: 'https://audio.example/test.mp3', title: 'Hydrated track', artist: 'Artist', type: 'track' as const, durationMs: 180000, artworkUrl: null, externalUrl: 'https://audio.example/test.mp3', playable: true, seekable: false, explicit: null, queueItemId: 'e1f2d646-c71b-447e-8f8b-1d537d3b17c1', requestedByUserId: guildId, requestedByName: 'Listener', requestedAt: 1 };

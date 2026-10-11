@@ -1,11 +1,16 @@
-.runtime-logs-workspace { --runtime-panel-width: clamp(340px, 30vw, 520px); display: flex; align-items: stretch; min-height: calc(100dvh - var(--topbar-height)); }
-.runtime-logs-main { flex: 1; min-width: 0; container: dashboard-main / inline-size; }
-/* Mirror the shell's sticky left corner without clipping its navigation or content. */
-.runtime-logs-main::before { content: ''; position: sticky; top: var(--topbar-height); z-index: 30; display: block; width: var(--radius-sheet); height: var(--radius-sheet); margin-left: auto; margin-right: -1px; margin-bottom: calc(-1 * var(--radius-sheet)); background: radial-gradient(circle at bottom left, transparent calc(var(--radius-sheet) - 1px), var(--shell-border) calc(var(--radius-sheet) - 1px), var(--shell-border) var(--radius-sheet), var(--header) var(--radius-sheet)); transform: scale(0); transform-origin: top right; transition: transform 240ms cubic-bezier(.22, 1, .36, 1); pointer-events: none; }
-.runtime-logs-workspace[data-logs-open="true"] .runtime-logs-main::before { transform: scale(1); }
+.runtime-logs-workspace { --runtime-panel-width: clamp(340px, 27vw, 480px); display: flex; align-items: stretch; min-height: calc(100dvh - var(--topbar-height)); }
+.runtime-logs-main { --media-accent: initial; --media-accent-secondary: initial; --media-accent-tertiary: initial; flex: 1; min-width: 0; container: dashboard-main / inline-size; }
+.runtime-logs-corner { position: sticky; top: var(--topbar-height); z-index: 30; display: block; width: var(--radius-sheet); height: var(--radius-sheet); margin-left: auto; margin-bottom: calc(-1 * var(--radius-sheet)); background-color: var(--header); mask-image: radial-gradient(circle at bottom left, transparent calc(var(--radius-sheet) - 1px), #000 calc(var(--radius-sheet) - 1px)); clip-path: inset(0 0 100% 100%); transition: clip-path 240ms cubic-bezier(.22, 1, .36, 1), var(--media-ambient-transitions, opacity 240ms ease); pointer-events: none; }
+/* Only these small leaf layers animate; the module tree has no ambient transitions. */
+.runtime-logs-corner::before { content: ""; position: absolute; inset: 0; background-image: var(--media-ambient-mesh, none); background-size: 100vw 100dvh; background-position: right calc(-1 * var(--player-panel-width)) top calc(-1 * var(--topbar-height)); background-repeat: no-repeat; opacity: 0; transition: opacity 240ms ease; }
+.runtime-logs-workspace[data-player-open="true"] .runtime-logs-corner::before { opacity: 1; }
+.runtime-logs-corner::after { content: ''; position: absolute; inset: 0; background: radial-gradient(circle at bottom left, transparent calc(var(--radius-sheet) - 1px), var(--shell-border) calc(var(--radius-sheet) - 1px), var(--shell-border) var(--radius-sheet), transparent var(--radius-sheet)); }
+.runtime-logs-workspace[data-tools-open="true"] .runtime-logs-corner { clip-path: inset(0); }
+/* During compact-mode width animation, each dock still has its full inner width. */
+.dashboard-tools { display: flex; flex: 0 0 auto; align-self: flex-start; position: sticky; top: var(--topbar-height); min-width: 0; max-height: calc(100dvh - var(--topbar-height)); overflow: clip; }
 .runtime-logs-dock { flex: 0 0 auto; width: 0; min-width: 0; overflow: clip; background: var(--header); color: var(--text); transition: width 240ms cubic-bezier(.22, 1, .36, 1); }
 .runtime-logs-workspace[data-logs-open="true"] .runtime-logs-dock { width: var(--runtime-panel-width); }
-.runtime-logs-panel { position: sticky; top: var(--topbar-height); display: flex; flex-direction: column; width: var(--runtime-panel-width); height: calc(100dvh - var(--topbar-height)); border-left: 1px solid var(--shell-border); opacity: 0; transform: translateX(16px); transition: opacity 160ms ease, transform 240ms ease; }
+.runtime-logs-panel { display: flex; flex-direction: column; width: var(--runtime-panel-width); height: calc(100dvh - var(--topbar-height)); border-left: 1px solid var(--shell-border); opacity: 0; transform: translateX(16px); transition: opacity 160ms ease, transform 240ms ease; }
 .runtime-logs-workspace[data-logs-open="true"] .runtime-logs-panel { opacity: 1; transform: translateX(0); }
 .runtime-logs-toggle[aria-expanded="true"] { background: var(--surface-hover); color: var(--text); }
 .runtime-logs-panel-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 18px 16px; border-bottom: 1px solid var(--shell-border); }
@@ -15,8 +20,26 @@
 .runtime-logs-close:hover { background: var(--surface); color: var(--text); }
 .runtime-logs-panel-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 16px; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
 .runtime-logs-panel :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-@media (max-width: 800px) { .runtime-logs-workspace { --runtime-panel-width: 45vw; } .runtime-logs-panel-body { padding: 10px; } }
-@media (prefers-reduced-motion: reduce) { .runtime-logs-dock, .runtime-logs-panel, .runtime-logs-main::before { transition: none; } }
+@media (min-width: 801px) and (max-width: 1700px) {
+  .dashboard-tools { flex-direction: column; width: 0; --tools-width: var(--player-panel-width); --tool-height: calc(100dvh - var(--topbar-height)); transition: width 240ms cubic-bezier(.22, 1, .36, 1); }
+  .runtime-logs-workspace[data-tools-open="true"] .dashboard-tools { width: var(--tools-width); }
+  .runtime-logs-workspace[data-player-open="true"][data-logs-open="true"] .dashboard-tools { --tool-height: calc((100dvh - var(--topbar-height)) / 2); }
+  .runtime-logs-workspace .runtime-logs-dock, .runtime-logs-workspace .media-player-dock { width: var(--tools-width); height: 0; transition: height 240ms cubic-bezier(.22, 1, .36, 1); }
+  .runtime-logs-workspace[data-logs-open="true"] .runtime-logs-dock, .runtime-logs-workspace[data-player-open="true"] .media-player-dock { height: var(--tool-height); }
+  .runtime-logs-workspace[data-player-open="true"] .dashboard-tools .media-player-dock { width: var(--tools-width); }
+  .dashboard-tools .runtime-logs-panel, .dashboard-tools .media-player-dock-panel { width: var(--tools-width); height: var(--tool-height); }
+  .runtime-logs-workspace[data-player-open="true"] .runtime-logs-dock { border-top: 1px solid var(--shell-border); }
+}
+@media (max-width: 800px) {
+  .runtime-logs-workspace { flex-direction: column; }
+  .dashboard-tools { order: -1; position: static; flex-direction: column; width: 100%; max-height: none; }
+  .runtime-logs-workspace .runtime-logs-dock, .runtime-logs-workspace .media-player-dock { width: 100%; max-height: 0; transition: max-height 240ms ease; }
+  .runtime-logs-workspace[data-logs-open="true"] .runtime-logs-dock, .runtime-logs-workspace[data-player-open="true"] .dashboard-tools .media-player-dock { width: 100%; max-height: 70dvh; }
+  .dashboard-tools .runtime-logs-panel, .dashboard-tools .media-player-dock-panel { width: 100%; height: auto; max-height: 70dvh; border-left: 0; border-bottom: 1px solid var(--shell-border); }
+  .runtime-logs-panel-body { padding: 12px; }
+  .runtime-logs-corner { display: none; }
+}
+@media (prefers-reduced-motion: reduce) { .dashboard-tools, .runtime-logs-dock, .runtime-logs-panel, .runtime-logs-corner, .runtime-logs-corner::before { transition: none; } }
 .runtime-log-toolbar { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: end; gap: 10px; margin: 0 0 14px; }
 .runtime-log-toolbar label { display: grid; min-width: 0; gap: 6px; font-size: 11px; color: var(--muted); }
 .runtime-log-toolbar label:first-child { grid-column: 1 / -1; }

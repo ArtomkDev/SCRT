@@ -3,6 +3,7 @@ import { BlockList, isIP } from 'node:net';
 import { request as httpRequest, type IncomingMessage, type RequestOptions } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { log } from '@scrt/shared';
+import { audioProxyAgent } from './audio-proxy';
 
 const blocked = new BlockList();
 for (const [address, prefix] of [['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8], ['169.254.0.0', 16], ['172.16.0.0', 12], ['192.0.0.0', 24], ['192.0.2.0', 24], ['192.168.0.0', 16], ['198.18.0.0', 15], ['198.51.100.0', 24], ['203.0.113.0', 24], ['224.0.0.0', 4], ['240.0.0.0', 4]] as const) blocked.addSubnet(address, prefix, 'ipv4');
@@ -43,44 +44,67 @@ export async function mediaDestination(value: string, resolve: MediaDnsLookup = 
   if (!selected) throw Object.assign(new Error(`Джерело не має доступної IPv${requiredFamily}-адреси.`), { code: 'EAFNOSUPPORT' });
   return { url, ...selected };
 }
-export async function openAudioStream(value: string, signal?: AbortSignal, redirects = 0, resolve?: MediaDnsLookup, headers: Record<string, string> = {}, requiredFamily?: 4 | 6): Promise<IncomingMessage> {
+export async function openAudioStream(value: string, signal?: AbortSignal, redirects = 0, resolve?: MediaDnsLookup, headers: Record<string, string> = {}, requiredFamily?: 4 | 6, proxyUrl?: string): Promise<IncomingMessage> {
+  return openMediaResponse(value, signal, redirects, resolve, headers, requiredFamily, proxyUrl);
+}
+type DocumentPolicy = { hosts: string[]; contentTypes: string[]; maxBytes: number };
+export async function readMediaDocument(value: string, policy: DocumentPolicy, signal?: AbortSignal): Promise<string> {
+  const stream = await openMediaResponse(value, signal, 0, undefined, { Accept: policy.contentTypes.join(', '), 'Accept-Encoding': 'identity' }, undefined, undefined, policy);
+  try {
+    if (Number(stream.headers['content-length']) > policy.maxBytes) throw new Error('Документ джерела завеликий.');
+    const chunks: Buffer[] = []; let size = 0;
+    for await (const chunk of stream) {
+      size += chunk.length;
+      if (size > policy.maxBytes) throw new Error('Документ джерела завеликий.');
+      chunks.push(Buffer.from(chunk));
+    }
+    return Buffer.concat(chunks).toString('utf8');
+  } finally { stream.destroy(); }
+}
+async function openMediaResponse(value: string, signal?: AbortSignal, redirects = 0, resolve?: MediaDnsLookup, headers: Record<string, string> = {}, requiredFamily?: 4 | 6, proxyUrl?: string, document?: DocumentPolicy): Promise<IncomingMessage> {
   if (redirects > 3) throw new Error('Забагато переадресацій аудіо.');
+  if (document) {
+    const url = validateMediaUrl(value);
+    if (url.protocol !== 'https:' || !document.hosts.includes(url.hostname)) throw new Error('Недозволена адреса документа джерела.');
+  }
   const requestId = globalThis.crypto.randomUUID(); const startedAt = Date.now();
   let destination: Awaited<ReturnType<typeof mediaDestination>>;
   try { destination = await mediaDestination(value, resolve, requiredFamily); }
   catch (error) { log('error', 'media', 'source.http.dns.failed', { requestId, redirects, requiredFamily, durationMs: Date.now() - startedAt }, error); throw error; }
   const { url, address, family } = destination;
-  log('info', 'media', 'source.http.connecting', { requestId, redirects, family, dnsMs: Date.now() - startedAt });
+  const route = proxyUrl ? 'proxy' : 'direct';
+  log('info', 'media', 'source.http.connecting', { requestId, redirects, family, route, dnsMs: Date.now() - startedAt });
   const response = await new Promise<IncomingMessage>((accept, reject) => {
     const options: RequestOptions & { autoSelectFamily: boolean } = {
       signal, autoSelectFamily: false, family, headers: { Accept: 'audio/*, application/ogg', 'User-Agent': 'SCRT-Media/1', ...headers },
       // Pin the validated DNS address for this connection; TLS verifies the original hostname.
       lookup: (_host, _options, callback) => callback(null, address, family),
+      ...(proxyUrl ? { agent: audioProxyAgent(proxyUrl, address, url.hostname.replace(/^\[|\]$/g, ''), signal) } : {}),
     };
     const req = (url.protocol === 'https:' ? httpsRequest : httpRequest)(url, options, accept);
     const deadline = setTimeout(() => req.destroy(audioTimeout('Audio connection timeout')), 8000);
     req.once('response', () => clearTimeout(deadline));
     req.once('error', (error) => {
       clearTimeout(deadline);
-      log('error', 'media', 'source.http.failed', { requestId, family, durationMs: Date.now() - startedAt, code: 'code' in error ? String(error.code) : undefined, cancelled: signal?.aborted ?? false }, error);
+      log('error', 'media', 'source.http.failed', { requestId, family, route, durationMs: Date.now() - startedAt, code: 'code' in error ? String(error.code) : undefined, cancelled: signal?.aborted ?? false }, error);
       reject(error);
     });
     req.setTimeout(15000, () => req.destroy(audioTimeout('Audio read timeout')));
     req.end();
   });
   streamRequests.set(response, requestId);
-  log('info', 'media', 'source.http.response', { requestId, family, redirects, durationMs: Date.now() - startedAt, status: response.statusCode, contentType: String(response.headers['content-type'] ?? ''), contentLength: String(response.headers['content-length'] ?? '') });
+  log('info', 'media', 'source.http.response', { requestId, family, route, redirects, durationMs: Date.now() - startedAt, status: response.statusCode, contentType: String(response.headers['content-type'] ?? ''), contentLength: String(response.headers['content-length'] ?? '') });
   if ([301, 302, 303, 307, 308].includes(response.statusCode ?? 0)) {
     response.destroy();
     if (!response.headers.location) throw new Error('Invalid audio redirect');
-    return openAudioStream(new URL(response.headers.location, url).href, signal, redirects + 1, resolve, headers, requiredFamily);
+    return openMediaResponse(new URL(response.headers.location, url).href, signal, redirects + 1, resolve, headers, requiredFamily, proxyUrl, document);
   }
   const contentType = String(response.headers['content-type'] ?? '').split(';')[0]!.toLowerCase();
   if (response.statusCode !== 200) {
     response.destroy(); throw new MediaAudioHttpError(response.statusCode ?? 0);
   }
-  if (!(/^audio\/(mpeg|mp3|aac|aacp|ogg|opus|wav|wave|x-wav|flac|x-flac|mp4|webm)$/.test(contentType) || contentType === 'application/ogg')) {
-    response.destroy(); throw new Error('Джерело не повернуло підтримуваний аудіопотік.');
+  if (!(document ? document.contentTypes.includes(contentType) : /^audio\/(mpeg|mp3|aac|aacp|ogg|opus|wav|wave|x-wav|flac|x-flac|mp4|webm)$/.test(contentType) || contentType === 'application/ogg')) {
+    response.destroy(); throw new Error(document ? 'Джерело не повернуло очікуваний документ плейлиста.' : 'Джерело не повернуло підтримуваний аудіопотік.');
   }
   return response;
 }

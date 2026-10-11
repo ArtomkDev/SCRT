@@ -1,3 +1,4 @@
+import { Panel } from '@/app/components/dashboard-screen';
 import { requireGuildAccess } from '@/lib/guards';
 import { Suspense } from 'react';
 import { VoiceSettingsLoading } from '../loading-content';
@@ -19,13 +20,13 @@ async function SettingsContent({ params }: { params: Promise<{ guildId: string }
     <div className="section-intro"><div><h2>Налаштування модуля</h2><p>Створення кімнат, права власника та автоматичне видалення.</p></div></div>
     {!editable && <p className="form-feedback" role="status">Лише перегляд. Для змін потрібен дозвіл керувати голосовими каналами.</p>}
     <ActionForm action={saveVoiceSettings.bind(null, guildId)} className="voice-form settings-form settings-sections">
-      <fieldset className="settings-card settings-section" id="module-enabled" tabIndex={-1}>
+      <Panel as="fieldset" className="settings-card settings-section" id="module-enabled" tabIndex={-1}>
         <legend>Робота модуля</legend>
         <Switch label="Створювати голосові кімнати" help="SCRT створює кімнати після входу в канал створення." name="enabled" defaultChecked={settings.enabled} disabled={!editable} />
         <p className="field-help">Вимкнення зупиняє створення нових кімнат. Наявні кімнати залишаються до автоматичного або ручного видалення.</p>
-      </fieldset>
+      </Panel>
 
-      <fieldset className="settings-card settings-section">
+      <Panel as="fieldset" className="settings-card settings-section">
         <legend>Видалення та зміна власника</legend>
         <p className="field-help">Дії після виходу власника або останнього учасника.</p>
         <div className="form-grid">
@@ -35,22 +36,22 @@ async function SettingsContent({ params }: { params: Promise<{ guildId: string }
           <label>Повторний вхід у канал створення<Select name="duplicateRoomPolicy" aria-label="Повторний вхід у канал створення" defaultValue={settings.duplicateRoomPolicy} disabled={!editable}><option value="reuse">Повернути в наявну кімнату</option><option value="allow">Створити ще одну кімнату</option></Select></label>
           <label>Кімнат на одного учасника<Input type="number" name="maxRoomsPerUser" min="1" max="5" defaultValue={settings.maxRoomsPerUser} disabled={!editable} /><small>Від 1 до 5 кімнат.</small></label>
         </div>
-      </fieldset>
+      </Panel>
 
-      <fieldset className="settings-card settings-section">
+      <Panel as="fieldset" className="settings-card settings-section">
         <legend>Панель і журнал</legend>
         <p className="field-help">Розташування панелі керування та канал для журналу подій.</p>
         <div className="form-grid">
           <label>Панель за замовчуванням<Select name="defaultInterfaceMode" aria-label="Панель за замовчуванням" defaultValue={settings.defaultInterfaceMode} disabled={!editable}><option value="room">У кімнаті</option><option value="global">У спільному каналі</option><option value="both">В обох місцях</option><option value="none">Без панелі</option></Select><small>Канал створення може мати іншу панель.</small></label>
           <label>Канал журналу<Select name="logChannelId" aria-label="Канал журналу" defaultValue={settings.logChannelId ?? ''} searchable disabled={!editable}><option value="">Не вибрано</option>{resources.channels.filter((channel) => channel.type === 0).map((channel) => <option key={channel.id} value={channel.id}>{channel.name}</option>)}</Select><small>Текстовий канал для подій голосового модуля.</small></label>
         </div>
-      </fieldset>
+      </Panel>
 
-      <fieldset className="settings-card settings-section">
+      <Panel as="fieldset" className="settings-card settings-section">
         <legend>Вхід без обмежень</legend>
         <p className="field-help">Учасники з цими ролями можуть входити в кімнати попри встановлені обмеження.</p>
         <ResourceMultiSelect name="bypassRoleIds" label="Ролі" options={roles} defaultSelected={settings.bypassRoleIds} disabled={!editable} />
-      </fieldset>
+      </Panel>
       {editable && <div className="form-actions"><Button type="submit">Зберегти налаштування</Button><span>Зміни застосовуються після збереження.</span></div>}
     </ActionForm>
   </section>;

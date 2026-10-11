@@ -1,16 +1,13 @@
-/* Shared dashboard grammar. Existing feature classes are supported during migration. */
-.content-page.content-wide { max-width: none; }
-.content-page.content-compact, .content-page.access-control-page, .content-page:has(> .settings-page), .content-page:has(> .creators-page) { max-width: 1240px; }
+/* Shared dashboard controls. Screen and panel surfaces live in dashboard-screen.css. */
 .app-shell .voice-module-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.app-shell .page-heading { margin-bottom: 20px; padding-bottom: 20px; }
-.page-heading p, .section-intro p, .field-help, .module-state-panel p { max-width: 85ch; }
-.page-heading > .module-status { margin-top: 12px; }
+.section-intro p, .field-help, .module-state-panel p { max-width: 85ch; }
 .module-status { display: inline-flex; align-items: center; gap: 8px; color: var(--text-secondary); font-size: 12px; }
 .module-status-dot { display: inline-block; flex: none; width: 7px; height: 7px; border-radius: 50%; }
 .module-status-enabled { background: var(--success); }
 .module-status-disabled { background: var(--text-muted); }
+.module-status-unknown { background: var(--text-muted); }
 .module-status-degraded { background: var(--warning); }
-.module-state-panel { max-width: 780px; margin-top: var(--space-section); padding: clamp(20px, 3vw, 32px); border: 1px solid var(--border-default); border-radius: var(--radius-lg); background: var(--surface-card); }
+.module-state-panel { --panel-space: clamp(20px, 3vw, 32px); max-width: 780px; margin-top: var(--space-section); }
 .module-state-panel h2 { margin: 18px 0 8px; font-size: 24px; letter-spacing: -.025em; }
 .module-state-panel p { color: var(--text-secondary); }
 .module-state-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-top: 20px; }
@@ -70,11 +67,7 @@
 .duration-field > label { font-size: 13px; font-weight: 650; }
 .duration-control { display: grid; grid-template-columns: minmax(0, 1fr) 76px; gap: 8px; }
 
-.app-shell :is(.detail-panel, .voice-item, .settings-card) { border: 1px solid var(--border-default); border-radius: var(--radius-md); background: var(--surface-card); }
-.app-shell .voice-summary > div { padding: var(--space-panel); border-radius: var(--radius-md); background: var(--surface-card); }
 .app-shell .settings-sections { gap: var(--space-section); }
-.app-shell .settings-section { padding: 18px 0 0; border: 0; border-top: 1px solid var(--border-default); border-radius: 0; background: transparent; }
-.app-shell .settings-section legend { padding: 0 12px 0 0; }
 .resource-multiselect { min-width: 0; }
 .resource-chips { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 0 0 10px; }
 .resource-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 4px 8px; border: 1px solid var(--border-default); border-radius: var(--radius-sm); background: var(--surface-card); color: var(--text-secondary); font-size: 12px; overflow-wrap: anywhere; }
@@ -119,7 +112,6 @@
 .activity-health dd { overflow-wrap: anywhere; }
 .app-shell .unsaved-banner { border-color: var(--border-strong); border-radius: var(--radius-md); background: var(--surface-card); animation: none; }
 .app-shell .unsaved-banner-blocked { border-color: var(--warning); box-shadow: 0 8px 24px #0005; }
-.app-shell .voice-tabs a { border-radius: var(--radius-sm); }
 .app-shell :is(.voice-table, .activity-table) th { color: var(--text-muted); font-size: 12px; font-weight: 600; }
 .app-shell :is(.voice-table, .activity-table) tbody tr:hover { background: color-mix(in srgb, var(--surface-hover) 40%, transparent); }
 

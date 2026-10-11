@@ -1,4 +1,6 @@
 'use client';
+import { Panel } from '@/app/components/dashboard-screen';
+
 
 import { useMemo, useState, type CSSProperties } from 'react';
 import Image from 'next/image';
@@ -58,13 +60,13 @@ function AccessRoleCard({ guildId, mapping, role, members, mode, editable, saveA
   saveAction: (form: FormData) => Promise<void>; removeAction: (form: FormData) => Promise<void>;
 }) {
   const [expanded, setExpanded] = useState(false);
-  return <li className="detail-panel access-role-card">
+  return <Panel as="li" className="detail-panel access-role-card">
     <div className="access-role-card-head"><div className="access-role-card-identity"><RoleBadge role={role} /><PermissionBadge role={mapping.appRole} /></div>
       {editable && <AccessMappingActions label={role?.name ?? 'Роль видалено'} onMembers={() => setExpanded(true)} edit={mapping.discordRoleId !== guildId && role ? <ActionForm trackChanges={false} action={saveAction} className="access-role-update" successMessage="Рівень доступу змінено." feedbackPlacement="toast"><input type="hidden" name="roleId" value={mapping.discordRoleId} /><label>Рівень доступу<AccessLevelSelect defaultValue={mapping.appRole} /></label><Button type="submit">Зберегти</Button></ActionForm> : undefined} remove={<ActionForm trackChanges={false} action={removeAction} feedbackPlacement="toast" confirmation={{ title: 'Скасувати доступ?', description: `Роль «${role?.name ?? 'Роль видалено'}» втратить доступ за цим призначенням. Інші призначення залишаться чинними.`, actionLabel: 'Скасувати доступ' }}><input type="hidden" name="roleId" value={mapping.discordRoleId} /><Button type="submit" variant="danger" tabIndex={-1}>Скасувати доступ</Button></ActionForm>} />}
     </div>
     {!editable && mapping.appRole === 'SUPER_ADMIN' && <p className="muted">Змінювати цей доступ може лише власник сервера або адміністратор, який його надав.</p>}
     <RoleMembers members={members} mode={mode} expanded={expanded} setExpanded={setExpanded} />
-  </li>;
+  </Panel>;
 }
 
 export function AccessRoleLists({ guildId, ownerId, mappings, roles, editable, actor, saveAction, removeAction }: {

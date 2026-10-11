@@ -1,4 +1,6 @@
 'use client';
+import { Panel } from '@/app/components/dashboard-screen';
+
 import { Select } from '@/app/components/select';
 
 
@@ -44,7 +46,7 @@ export function MemberSearch({ guildId, ownerId, mappings, action }: {
   const levels = useMemo(() => memberAccessLevels(guildId, ownerId, searchSource, mappings), [guildId, ownerId, searchSource, mappings]);
   const result = useMemo(() => searchMemberIndex(index, deferredQuery, levels), [index, deferredQuery, levels]);
   const selected = result.matches.find((member) => member.id === selectedId && !assigned.has(member.id));
-  return <section className="detail-panel access-role-editor"><h2>Надати доступ учаснику</h2>
+  return <Panel className="detail-panel access-role-editor"><h2>Надати доступ учаснику</h2>
     <p className="muted">Знайдіть учасника за ніком, іменем користувача або ID Discord.</p>
     <p className="muted">Учасники з доступом — наприкінці результатів. Їхні персональні права можна змінити у списку вище.</p>
     <label className="member-search-label">Пошук учасника<input value={query} onChange={(event) => { setQuery(event.target.value); setSelectedId(null); }} maxLength={50} placeholder="Нік, ім’я користувача або ID" autoComplete="off" /></label>
@@ -65,5 +67,5 @@ export function MemberSearch({ guildId, ownerId, mappings, action }: {
       {mode === 'directory' && result.total === 0 && <p className="empty-state">Учасників не знайдено.</p>}
     </>}
     {selected && <ActionForm trackChanges={false} key={selected.id} action={action} className="access-role-update member-search-grant" successMessage="Доступ надано." feedbackPlacement="toast"><input type="hidden" name="userId" value={selected.id} /><label>Рівень доступу<Select aria-label="Рівень доступу" name="appRole" defaultValue="ADMIN"><option value="SUPER_ADMIN">Повний доступ</option><option value="ADMIN">Налаштування бота</option><option value="VIEWER">Лише перегляд</option></Select></label><button type="submit" className="action-link">Надати доступ</button></ActionForm>}
-  </section>;
+  </Panel>;
 }

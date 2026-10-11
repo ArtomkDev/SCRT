@@ -1,6 +1,7 @@
-import { FieldPath, FieldValue, Timestamp, type Firestore } from 'firebase-admin/firestore';
-import { guildIdSchema, snowflakeSchema, mediaHistoryItemSchema, mediaSettingsSchema, mediaSessionSchema, type MediaHistoryPage, type MediaSettings } from '@scrt/validation';
-import type { MediaHistoryItem, MediaSession } from '@scrt/shared';
+import { FieldPath, FieldValue, Timestamp, type DocumentReference, type Firestore } from 'firebase-admin/firestore';
+import { guildIdSchema, snowflakeSchema, mediaHistoryItemSchema, mediaSettingsSchema, mediaSessionSchema, mediaTrackSchema, mediaFavoriteSchema, mediaFavoriteIdSchema, type MediaFavorite, type MediaHistoryPage, type MediaSettings } from '@scrt/validation';
+import { mediaFavoritePlaylistSchema, mediaPlaylistReferenceSchema, mediaPlaylistSchema, type MediaFavoritePlaylist } from '@scrt/validation';
+import type { MediaHistoryItem, MediaPlaylist, MediaSession, MediaTrack } from '@scrt/shared';
 import { createHash } from 'node:crypto';
 import { isRetiredMediaTrack, migrateMediaSession } from './media-legacy';
 
@@ -8,6 +9,7 @@ export interface MediaStore {
   getSettings(guildId: string): Promise<MediaSettings>;
   saveSettings(guildId: string, settings: MediaSettings, actorId: string): Promise<void>;
   getSession(guildId: string): Promise<MediaSession | null>;
+  favoriteTracks(guildId: string, ids: string[]): Promise<MediaFavorite[]>;
   receipt(guildId: string, commandId: string): Promise<{ fingerprint: string } | null>;
   checkpoint(session: MediaSession, priorRevision: number | null, history: MediaHistoryItem[], audit: { action: string; actorId: string | null }, receipt?: { commandId: string; fingerprint: string }): Promise<void>;
 }
@@ -96,10 +98,56 @@ export class MediaRepository implements MediaStore {
     old.docs.forEach((doc) => batch.delete(doc.ref));
     if (!old.empty) await batch.commit();
   }
-  // Explicit guild favorites; canonical references only, no streams or credentials.
-  async saveFavorite(guildId: string, track: MediaHistoryItem['track'], actorId: string): Promise<void> {
-    const id = createHash('sha256').update(`${track.provider}:${track.providerItemId}`).digest('hex');
-    await this.root(guildId).collection('mediaFavorites').doc(id).set({ provider: track.provider, providerItemId: track.providerItemId, title: track.title, savedBy: actorId, savedAt: FieldValue.serverTimestamp() });
+  async favorites(guildId: string, after?: string) {
+    let query = this.root(guildId).collection('mediaFavorites').orderBy(FieldPath.documentId());
+    if (after) query = query.startAfter(mediaFavoriteIdSchema.parse(after));
+    const snapshot = await query.limit(50).get();
+    // Old unused saved-reference records lack a full track. Advance past them too.
+    const items = snapshot.docs.filter((doc) => doc.get('track')).map((doc) => mediaFavoriteSchema.parse({ ...doc.data(), id: doc.id }));
+    return { items, next: snapshot.size === 50 ? snapshot.docs.at(-1)!.id : null };
+  }
+  async favoriteTracks(guildId: string, ids: string[]): Promise<MediaFavorite[]> {
+    if (ids.length > 100) throw new Error('Favorite collection exceeds queue capacity');
+    const collection = this.root(guildId).collection('mediaFavorites');
+    if (!ids.length) return [];
+    const documents = await this.db.getAll(...ids.map((id) => collection.doc(mediaFavoriteIdSchema.parse(id))));
+    return documents.filter((doc) => doc.exists).map((doc) => mediaFavoriteSchema.parse({ ...doc.data(), id: doc.id }));
+  }
+  async setFavorite(guildId: string, reference: Pick<MediaTrack, 'provider' | 'providerItemId'>, actor: { userId: string; name: string }, liked: boolean, input?: MediaTrack): Promise<MediaFavorite | null> {
+    const provider = mediaTrackSchema.shape.provider.parse(reference.provider);
+    const providerItemId = mediaTrackSchema.shape.providerItemId.parse(reference.providerItemId);
+    const id = createHash('sha256').update(JSON.stringify([provider, providerItemId])).digest('hex');
+    const ref = this.root(guildId).collection('mediaFavorites').doc(id);
+    const track = input ? mediaTrackSchema.parse(input) : null;
+    if (liked && (!track || track.provider !== provider || track.providerItemId !== providerItemId)) throw new Error('Favorite reference mismatch');
+    return this.setLike(ref, mediaFavoriteSchema, actor, liked, track ? { track } : {});
+  }
+  async favoritePlaylists(guildId: string, after?: string) {
+    let query = this.root(guildId).collection('mediaFavoritePlaylists').orderBy(FieldPath.documentId());
+    if (after) query = query.startAfter(mediaFavoriteIdSchema.parse(after));
+    const snapshot = await query.limit(50).get();
+    return { items: snapshot.docs.map((doc) => mediaFavoritePlaylistSchema.parse({ ...doc.data(), id: doc.id })), next: snapshot.size === 50 ? snapshot.docs.at(-1)!.id : null };
+  }
+  async setFavoritePlaylist(guildId: string, reference: string, actor: { userId: string; name: string }, liked: boolean, input?: MediaPlaylist): Promise<MediaFavoritePlaylist | null> {
+    const canonical = mediaPlaylistReferenceSchema.parse(reference);
+    const id = createHash('sha256').update(JSON.stringify(['soundcloud', canonical])).digest('hex');
+    const ref = this.root(guildId).collection('mediaFavoritePlaylists').doc(id);
+    const playlist = input ? mediaPlaylistSchema.parse(input) : null;
+    if (liked && (!playlist || playlist.providerItemId !== canonical)) throw new Error('Favorite playlist reference mismatch');
+    return this.setLike(ref, mediaFavoritePlaylistSchema, actor, liked, playlist ? { playlist } : {});
+  }
+  private async setLike<T extends MediaFavorite | MediaFavoritePlaylist>(ref: DocumentReference, schema: { parse(input: unknown): T }, actor: { userId: string; name: string }, liked: boolean, metadata: Partial<T>): Promise<T | null> {
+    const userId = snowflakeSchema.parse(actor.userId); const id = ref.id;
+    return this.db.runTransaction(async (transaction) => {
+      const doc = await transaction.get(ref);
+      const previous = doc.exists ? schema.parse({ ...doc.data(), id }) : null;
+      const likes = previous?.likedBy.filter((entry) => entry.userId !== userId) ?? [];
+      if (liked) likes.push({ userId, name: actor.name.slice(0, 100) || userId, likedAt: previous?.likedBy.find((entry) => entry.userId === userId)?.likedAt ?? Date.now() });
+      if (!likes.length) { if (doc.exists) transaction.delete(ref); return null; }
+      const value = schema.parse({ ...previous, ...metadata, id, likedBy: likes, updatedAt: Date.now() });
+      transaction.set(ref, { ...value, writtenAt: FieldValue.serverTimestamp() });
+      return value;
+    });
   }
   async lease(guildId: string, workerId: string, release = false): Promise<boolean> {
     const ref = this.root(guildId).collection('mediaLease').doc('worker');

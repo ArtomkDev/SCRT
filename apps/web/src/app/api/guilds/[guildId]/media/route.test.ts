@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+vi.mock('server-only', () => ({}));
 import { mediaSettingsSchema, mediaSnapshotSchema } from '@scrt/validation';
 const mocks = vi.hoisted(() => ({ token: vi.fn(), session: vi.fn(), access: vi.fn(), state: vi.fn(), internal: vi.fn(), history: vi.fn(), deleteHistory: vi.fn(), clearHistory: vi.fn() }));
 vi.mock('@/lib/guards', () => ({ requireGuildAccess: mocks.access, requireSession: mocks.session }));
@@ -13,6 +14,17 @@ const request = (body: unknown, origin = 'https://scrt.example') => new Request(
 const snapshot = mediaSnapshotSchema.parse({ settings: mediaSettingsSchema.parse({ enabled: true }), session: null, actorVoice: { id: null, name: null }, controls: {}, queueControls: {}, remoteControl: false, listenerCount: 0, votes: { count: 0, required: 1 }, providers: [], engine: { available: true, ffmpeg: true, opus: true, dave: true }, canManage: true, serverTimestamp: 1 });
 beforeEach(() => { vi.clearAllMocks(); mocks.token.mockResolvedValue('session'); mocks.session.mockResolvedValue({ user: { id: userId } }); mocks.access.mockResolvedValue({ user: { id: userId } }); mocks.state.mockResolvedValue(snapshot); mocks.internal.mockResolvedValue({ replayed: false, snapshot }); mocks.history.mockResolvedValue({ items: [], next: null }); });
 describe('Media web identity and worker authorization boundary', () => {
+  it('previews a bounded public playlist using session identity without sending a playback command', async () => {
+    const reference = 'https://soundcloud.com/artist/sets/list';
+    const value = { playlist: { provider: 'soundcloud', providerItemId: reference, externalUrl: reference, title: 'List', artist: 'Artist', trackCount: 0, artworkUrl: null }, page: 1, entries: [], unavailableCount: 0, nextPage: null };
+    mocks.internal.mockResolvedValue(value);
+    const response = await GET(new Request(`https://scrt.example?playlist=${encodeURIComponent(reference)}&page=1&actorUserId=foreign`), context);
+    expect(response.status).toBe(200); expect(await response.json()).toEqual(value);
+    expect(mocks.internal).toHaveBeenCalledExactlyOnceWith({ operation: 'playlist', guildId, actorUserId: userId, providerItemId: reference, page: 1 });
+    mocks.internal.mockClear();
+    for (const url of ['https://scrt.example?playlist=http://localhost/private', `https://scrt.example?playlist=${encodeURIComponent(reference)}&page=10`]) expect((await GET(new Request(url), context)).status).toBe(400);
+    expect(mocks.internal).not.toHaveBeenCalled();
+  });
   it('deletes an own history item using the signed-in actor after checking live guild access', async () => {
     mocks.deleteHistory.mockResolvedValue('deleted'); const id = command.commandId;
     const response = await DELETE(request({ type: 'DELETE_ITEM', id }), context);
@@ -40,7 +52,7 @@ describe('Media web identity and worker authorization boundary', () => {
   it('forwards bounded pagination using server identity and rejects invalid pages before the worker', async () => {
     mocks.internal.mockResolvedValue({ results: [], unavailable: [], nextPage: 2 });
     const response = await GET(new Request('https://scrt.example?q=track&page=1&actorUserId=forged'), context);
-    expect(await response.json()).toEqual({ results: [], unavailable: [], errors: [], nextPage: 2 });
+    expect(await response.json()).toEqual({ playlists: [], results: [], unavailable: [], errors: [], nextPage: 2 });
     expect(mocks.internal).toHaveBeenCalledExactlyOnceWith({ operation: 'search', guildId, actorUserId: userId, query: 'track', page: 1 });
     mocks.internal.mockClear();
     for (const page of ['-1', '10', '1.5', 'invalid']) expect((await GET(new Request(`https://scrt.example?q=track&page=${page}`), context)).status).toBe(400);
@@ -89,6 +101,6 @@ describe('Media web identity and worker authorization boundary', () => {
     expect(await (await POST(request(command), context)).json()).toEqual({ replayed: false, snapshot });
     mocks.internal.mockResolvedValue({ results: [], unavailable: ['YouTube'], errors: ['YouTube вимагає авторизації.'], privateStreamUrl: 'secret' });
     const response = await GET(new Request('https://scrt.example?q=track'), context);
-    expect(await response.json()).toEqual({ results: [], unavailable: ['YouTube'], errors: ['YouTube вимагає авторизації.'], nextPage: null });
+    expect(await response.json()).toEqual({ playlists: [], results: [], unavailable: ['YouTube'], errors: ['YouTube вимагає авторизації.'], nextPage: null });
   });
 });

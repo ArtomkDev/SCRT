@@ -1,3 +1,4 @@
+import { MetricCard, Panel } from '@/app/components/dashboard-screen';
 import { InlineAction } from '@/app/components/inline-action';
 import Image from 'next/image';
 import { Suspense } from 'react';
@@ -15,7 +16,7 @@ export { PeriodLinks } from './period-links';
 
 export const number = (value: number) => Math.floor(value).toLocaleString('uk-UA');
 export function MetricValues({ values, compact = false }: { values: Array<[string, string]>; compact?: boolean }) {
-  return <dl className={`voice-summary activity-summary${compact ? ' activity-game-metrics' : ''}`}>{values.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>;
+  return <dl className={`voice-summary activity-summary${compact ? ' activity-game-metrics' : ''}`}>{values.map(([label, value]) => <MetricCard key={label} label={label} value={value} />)}</dl>;
 }
 export function ActivityStats({ data }: { data: ActivityTotals & { activeMembers?: number } }) {
   const values: Array<[string, string]> = [['Повідомлення', number(data.messages)], ['Voice', formatActivityDuration(data.voiceSeconds)], ['Демонстрація екрана', formatActivityDuration(data.streamSeconds)]];
@@ -49,7 +50,7 @@ async function RankingValues({ guildId, metric, period, limit }: { guildId: stri
   return <MemberRows guildId={guildId} metric={metric} period={period} rows={await activityRanking(guildId, metric, activityMetrics[metric].periodAware ? period : 'all', limit)} />;
 }
 export function Ranking({ guildId, metric, period, title, limit = 25, more = false }: { guildId: string; metric: ActivityMetric; period: ActivityPeriod; title: string; limit?: number; more?: boolean }) {
-  return <section className="detail-panel"><h3>{title}</h3><DataBoundary key={`${metric}:${period}`} title="Рейтинг не завантажився"><Suspense fallback={<RowsLoading label="Завантаження рейтингу…" />}><RankingValues guildId={guildId} metric={metric} period={period} limit={limit} /></Suspense></DataBoundary>{more && <InlineAction className="activity-more" href={'/servers/' + guildId + '/activity/leaderboard?metric=' + metric + (activityMetrics[metric].periodAware ? '&period=' + period : '')}>Переглянути рейтинг</InlineAction>}</section>;
+  return <Panel className="detail-panel"><h3>{title}</h3><DataBoundary key={`${metric}:${period}`} title="Рейтинг не завантажився"><Suspense fallback={<RowsLoading label="Завантаження рейтингу…" />}><RankingValues guildId={guildId} metric={metric} period={period} limit={limit} /></Suspense></DataBoundary>{more && <InlineAction className="activity-more" href={'/servers/' + guildId + '/activity/leaderboard?metric=' + metric + (activityMetrics[metric].periodAware ? '&period=' + period : '')}>Переглянути рейтинг</InlineAction>}</Panel>;
 }
 async function GameListValues({ guildId, period, limit }: { guildId: string; period: ActivityPeriod; limit: number }) {
   return <GamesTable guildId={guildId} period={period} games={await activityGames(guildId, period, limit)} />;

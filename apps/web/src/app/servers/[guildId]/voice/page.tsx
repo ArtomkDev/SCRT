@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { MetricCard } from '@/app/components/dashboard-screen';
 import { Suspense } from 'react';
 import { MetricsLoading } from '@/app/components/data-loading';
 import { InlineAction } from '@/app/components/inline-action';
@@ -13,7 +14,7 @@ async function VoiceSummary({ guildId }: { guildId: string }) {
   const access = await requireGuildAccess(guildId, 'voice.view');
   const data = await voiceRecords(guildId);
   if (!data.settings.enabled) return <ModuleDisabledState title="Голосові канали вимкнено" description="SCRT не створює нові голосові кімнати. Наявні кімнати залишаються доступними для керування та автоматичного видалення.">{access.permissions.has('voice.manage') && <ActionForm action={enableVoice.bind(null, guildId)} trackChanges={false}><Button type="submit">Увімкнути голосові канали</Button></ActionForm>}<InlineAction href={`/servers/${guildId}/voice/settings#module-enabled`}>Налаштування модуля</InlineAction><InlineAction href={`/servers/${guildId}/voice/rooms`}>Активні кімнати</InlineAction></ModuleDisabledState>;
-  return <dl className="voice-summary voice-module-summary"><div><dt>Канали створення</dt><dd>{data.creators.length}</dd></div><div><dt>Активні кімнати</dt><dd>{data.rooms.length}</dd></div></dl>;
+  return <dl className="voice-summary voice-module-summary"><MetricCard label="Канали створення" value={data.creators.length} /><MetricCard label="Активні кімнати" value={data.rooms.length} /></dl>;
 }
 
 export default async function VoiceOverview({ params }: { params: Promise<{ guildId: string }> }) {

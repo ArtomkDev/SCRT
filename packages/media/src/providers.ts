@@ -1,16 +1,18 @@
 import { z } from 'zod';
 import type { IncomingMessage } from 'node:http';
 import { log, type MediaProviderHealth, type MediaProviderId, type MediaTrack } from '@scrt/shared';
-import { mediaTrackSchema } from '@scrt/validation';
+import { mediaTrackSchema, mediaPlaylistPageSchema, soundcloudPlaylistUrl, type MediaPlaylistPage } from '@scrt/validation';
 import { openAudioStream, validateMediaUrl } from './audio-http';
 import { MediaSourceError, OnlineAudioProvider, type OnlineAudioExtractor } from './online-audio';
+import { fallbackSearchQuery, normalizeSearchQuery, preferredSearchQuery, searchRelevance } from './search-query';
 
-interface MediaSearchResult { results: MediaTrack[]; unavailable: string[]; errors?: string[]; nextPage: number | null }
+interface MediaSearchResult { results: MediaTrack[]; playlists?: MediaPlaylistPage['playlist'][]; unavailable: string[]; errors?: string[]; nextPage: number | null; matchedQuery?: string }
 
 export interface MediaSourceProvider {
   id: MediaProviderId; health(): MediaProviderHealth;
   searchPageSize?: number;
   searchPageLimit?: number;
+  playlist?(reference: string, page?: number): Promise<MediaPlaylistPage>;
   search(query: string, page?: number): Promise<MediaTrack[]>;
   resolve(reference: string, signal?: AbortSignal): Promise<MediaTrack>;
   getPlayableResource(reference: string, signal: AbortSignal): Promise<IncomingMessage>;
@@ -67,15 +69,29 @@ export class YouTubeProvider implements MediaSourceProvider {
 export class MediaSourceRegistry {
   private readonly cache = new Map<string, { until: number; value: MediaSearchResult }>();
   private readonly inflight = new Map<string, Promise<MediaSearchResult>>();
+  private readonly searchPlans = new Map<string, { query: string; until: number }>();
   private readonly failures = new Map<MediaProviderId, number>();
   // Public metadata only. Audio URLs still expire in the provider's separate stream cache.
   private readonly searchedTracks = new Map<string, { track: MediaTrack; until: number }>();
-  constructor(private readonly providers: MediaSourceProvider[]) {}
-  health(): MediaProviderHealth[] { return this.providers.map((p) => ({ ...p.health(), ...((this.failures.get(p.id) ?? 0) > Date.now() ? { state: 'degraded' as const } : {}) })); }
+  constructor(private readonly providers: MediaSourceProvider[], private readonly youtubeSearchEnabled = true) {}
+  health(): MediaProviderHealth[] {
+    return this.providers.map((provider) => {
+      const health = provider.health();
+      return { ...health, capabilities: { ...health.capabilities, search: health.capabilities.search && (provider.id !== 'youtube' || this.youtubeSearchEnabled) }, ...((this.failures.get(provider.id) ?? 0) > Date.now() ? { state: 'degraded' as const } : {}) };
+    });
+  }
   get(id: MediaProviderId) { const provider = this.providers.find((p) => p.id === id); if (!provider) throw new Error('Джерело не підтримується.'); return provider; }
   searchedTrack(provider: MediaProviderId, reference: string): MediaTrack | null {
     const entry = this.searchedTracks.get(JSON.stringify([provider, reference]));
     return entry && entry.until > Date.now() ? { ...entry.track } : null;
+  }
+  async playlist(reference: string, page = 0): Promise<MediaPlaylistPage> {
+    const provider = this.get('soundcloud');
+    if (!provider.playlist || !provider.health().capabilities.playlists) throw new MediaSourceError('Перегляд плейлистів SoundCloud недоступний.');
+    const value = mediaPlaylistPageSchema.parse(await provider.playlist(reference, page));
+    if (value.playlist.providerItemId !== soundcloudPlaylistUrl(reference) || value.page !== page) throw new MediaSourceError('Джерело повернуло інший плейлист або сторінку.');
+    this.rememberSearch({ results: value.entries.map((entry) => entry.track), unavailable: [], nextPage: null });
+    return value;
   }
   private rememberSearch(value: MediaSearchResult) {
     for (const track of value.results) {
@@ -87,7 +103,8 @@ export class MediaSourceRegistry {
   }
   async search(query: string, page = 0) {
     z.number().int().min(0).max(9).parse(page);
-    const normalized = query.trim();
+    const normalized = /^https?:\/\//i.test(query.trim()) ? query.trim() : normalizeSearchQuery(query);
+    z.string().min(2).max(250).parse(normalized);
     const key = JSON.stringify([/^https?:\/\//i.test(normalized) ? normalized : normalized.toLowerCase(), page]);
     const cached = this.cache.get(key); if (cached && cached.until > Date.now()) return this.rememberSearch(cached.value);
     const pending = this.inflight.get(key); if (pending) return pending;
@@ -95,23 +112,71 @@ export class MediaSourceRegistry {
     try { const value = await task; if (this.cache.size >= 128) this.cache.delete(this.cache.keys().next().value!); this.cache.set(key, { until: Date.now() + (value.unavailable.length ? 5000 : 120000), value }); return this.rememberSearch(value); }
     finally { this.inflight.delete(key); }
   }
+  private async searchCatalogPage(provider: MediaSourceProvider, query: string, page: number): Promise<MediaTrack[]> {
+    const cached = this.cache.get(JSON.stringify([normalizeSearchQuery(query).toLowerCase(), page]));
+    if (cached && cached.until > Date.now() && !cached.value.unavailable.includes(provider.health().name) && !cached.value.matchedQuery) {
+      const tracks = cached.value.results.filter((track) => track.provider === provider.id);
+      if (tracks.length) return tracks;
+    }
+    return (await provider.search(query, page)).map((track) => mediaTrackSchema.parse(track));
+  }
+  private async catalogSearch(provider: MediaSourceProvider, query: string, page: number) {
+    const key = JSON.stringify([provider.id, query.toLowerCase()]);
+    const plan = this.searchPlans.get(key);
+    let effectiveQuery = plan && plan.until > Date.now() ? plan.query : preferredSearchQuery(query);
+    let tracks = await this.searchCatalogPage(provider, effectiveQuery, page);
+    const matchingQuery = preferredSearchQuery(query);
+    const relevance = (items: MediaTrack[]) => Math.max(0, ...items.map((track) => searchRelevance(matchingQuery, track)));
+    // One bounded fallback on the first page. Later pages keep the same upstream query.
+    if (page === 0 && (!plan || plan.until <= Date.now()) && relevance(tracks) < 0.82) {
+      const known = [...this.searchedTracks.values()].filter((entry) => entry.until > Date.now() && entry.track.provider === provider.id).map((entry) => entry.track);
+      const alternative = effectiveQuery !== query ? query : fallbackSearchQuery(query, tracks, known);
+      if (alternative && alternative.length <= 250 && alternative.toLowerCase() !== effectiveQuery.toLowerCase()) {
+        const startedAt = Date.now();
+        try {
+          const expanded = await this.searchCatalogPage(provider, alternative, 0);
+          const improved = relevance(expanded) > relevance(tracks) || (!tracks.length && expanded.length > 0);
+          log('info', 'media', 'source.search.expanded', { provider: provider.id, durationMs: Date.now() - startedAt, originalResults: tracks.length, expandedResults: expanded.length, improved });
+          if (improved) { tracks = expanded; effectiveQuery = alternative; }
+        } catch (error) {
+          // An optional correction cannot discard successful original results or mark the source offline.
+          log('warn', 'media', 'source.search.expansion.failed', { provider: provider.id, durationMs: Date.now() - startedAt }, error);
+          if (!tracks.length) throw error;
+        }
+      }
+    }
+    if (page === 0) {
+      this.searchPlans.delete(key);
+      if (this.searchPlans.size >= 128) this.searchPlans.delete(this.searchPlans.keys().next().value!);
+      this.searchPlans.set(key, { query: effectiveQuery, until: Date.now() + 120000 });
+    }
+    return { tracks, query: effectiveQuery };
+  }
   private async runSearch(query: string, page: number): Promise<MediaSearchResult> {
     let target: MediaProviderId | null = null;
     if (/^https?:\/\//i.test(query)) { const host = new URL(query).hostname; if (host === 'youtu.be' || host === 'youtube.com' || host.endsWith('.youtube.com')) target = 'youtube'; else if (host === 'soundcloud.com' || host.endsWith('.soundcloud.com')) target = 'soundcloud'; else target = 'direct'; }
+    if (target === 'youtube' && !this.youtubeSearchEnabled) return { results: [], unavailable: [], errors: ['Пошук YouTube тимчасово вимкнено на хостингу. Використайте SoundCloud або пряме аудіопосилання.'], nextPage: null };
     const targetProvider = this.providers.find((provider) => provider.id === target);
     if (targetProvider?.health().state === 'unconfigured') {
       log('warn', 'media', 'source.search.unconfigured', { provider: targetProvider.id, inputType: 'url' });
       return { results: [], unavailable: [targetProvider.health().name], nextPage: null };
     }
     if (target && page > 0) return { results: [], unavailable: [], nextPage: null };
-    const providers = this.providers.filter((p) => p.health().state !== 'unconfigured' && (!target || p.id === target));
+    if (target === 'soundcloud' && soundcloudPlaylistUrl(query)) {
+      try { const value = await this.playlist(query); return { results: [], playlists: [value.playlist], unavailable: [], nextPage: null }; }
+      catch (error) { return { results: [], unavailable: ['SoundCloud'], errors: [error instanceof MediaSourceError ? error.message : 'Не вдалося відкрити плейлист SoundCloud.'], nextPage: null }; }
+    }
+    const providers = this.providers.filter((p) => p.health().state !== 'unconfigured' && (p.id !== 'youtube' || this.youtubeSearchEnabled) && (!target || p.id === target));
+    const matchedQueries = new Set<string>();
     const values = await Promise.allSettled(providers.map(async (provider) => {
       if ((this.failures.get(provider.id) ?? 0) > Date.now()) throw new Error('Source cooling down');
       const startedAt = Date.now(); const diagnostic = { provider: provider.id, page, inputType: target ? 'url' : 'text' };
       log('info', 'media', 'source.search.started', diagnostic);
       try {
-        const results = page > 0 && !provider.searchPageSize ? [] : await provider.search(query, page);
-        const tracks = results.map((result) => mediaTrackSchema.parse(result));
+        const result = !target && provider.searchPageSize ? await this.catalogSearch(provider, query, page)
+          : { tracks: (page > 0 ? [] : await provider.search(query, page)).map((track) => mediaTrackSchema.parse(track)), query };
+        const tracks = result.tracks;
+        if (tracks.length && result.query.toLowerCase() !== query.toLowerCase()) matchedQueries.add(result.query);
         this.failures.delete(provider.id);
         log('info', 'media', 'source.search.completed', { ...diagnostic, durationMs: Date.now() - startedAt, results: tracks.length });
         return tracks;
@@ -122,12 +187,20 @@ export class MediaSourceRegistry {
         throw error;
       }
     }));
-    const results = values.flatMap((v) => v.status === 'fulfilled' ? v.value : []).sort((a, b) => Number(b.playable) - Number(a.playable) || Number(b.title.toLowerCase() === query.toLowerCase()) - Number(a.title.toLowerCase() === query.toLowerCase()));
+    const unique = new Map(values.flatMap((v) => v.status === 'fulfilled' ? v.value : []).map((track) => [JSON.stringify([track.provider, track.providerItemId]), track]));
+    const matchingQuery = target ? query : preferredSearchQuery(query);
+    if (!target && page === 0 && unique.size < 40) {
+      const available = new Set(providers.filter((provider, index) => provider.searchPageSize && values[index]?.status === 'fulfilled').map((provider) => provider.id));
+      const similar = [...this.searchedTracks.values()].filter((entry) => entry.until > Date.now() && available.has(entry.track.provider) && !unique.has(JSON.stringify([entry.track.provider, entry.track.providerItemId])) && searchRelevance(matchingQuery, entry.track) >= 0.82)
+        .map((entry) => entry.track).sort((a, b) => searchRelevance(matchingQuery, b) - searchRelevance(matchingQuery, a)).slice(0, Math.min(12, 40 - unique.size));
+      for (const track of similar) unique.set(JSON.stringify([track.provider, track.providerItemId]), track);
+    }
+    const results = [...unique.values()].sort((a, b) => Number(b.playable) - Number(a.playable) || (target ? 0 : searchRelevance(matchingQuery, b) - searchRelevance(matchingQuery, a)));
     const errors = values.flatMap((value) => value.status === 'rejected' && value.reason instanceof MediaSourceError ? [value.reason.message] : []);
     const more = !target && page < 9 && values.some((value, index) => value.status === 'fulfilled' && Boolean(providers[index]?.searchPageSize) && value.value.length >= providers[index]!.searchPageSize! && page + 1 < (providers[index]!.searchPageLimit ?? 10));
-    return { results: results.slice(0, 40), nextPage: more ? page + 1 : null, unavailable: providers.filter((_, i) => values[i]?.status === 'rejected').map((p) => p.health().name), ...(errors.length ? { errors } : {}) };
+    return { results: results.slice(0, 40), nextPage: more ? page + 1 : null, unavailable: providers.filter((_, i) => values[i]?.status === 'rejected').map((p) => p.health().name), ...(errors.length ? { errors } : {}), ...(matchedQueries.size === 1 ? { matchedQuery: [...matchedQueries][0]! } : {}) };
   }
 }
-export function createMediaSources(env: { YOUTUBE_API_KEY?: string; MEDIA_YOUTUBE_IP_FAMILY?: 'ipv4' | 'ipv6' }, extractor?: OnlineAudioExtractor) {
-  return new MediaSourceRegistry([new DirectAudioProvider(), extractor?.available() ? new OnlineAudioProvider('youtube', extractor, env.MEDIA_YOUTUBE_IP_FAMILY) : new YouTubeProvider(env.YOUTUBE_API_KEY), new OnlineAudioProvider('soundcloud', extractor)]);
+export function createMediaSources(env: { NODE_ENV?: string; YOUTUBE_API_KEY?: string; MEDIA_YOUTUBE_IP_FAMILY?: 'ipv4' | 'ipv6'; MEDIA_YOUTUBE_PROXY_URL?: string }, extractor?: OnlineAudioExtractor) {
+  return new MediaSourceRegistry([new DirectAudioProvider(), extractor?.available() ? new OnlineAudioProvider('youtube', extractor, env.MEDIA_YOUTUBE_IP_FAMILY, env.MEDIA_YOUTUBE_PROXY_URL) : new YouTubeProvider(env.YOUTUBE_API_KEY), new OnlineAudioProvider('soundcloud', extractor)], env.NODE_ENV !== 'production');
 }

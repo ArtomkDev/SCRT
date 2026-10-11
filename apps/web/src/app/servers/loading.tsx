@@ -1,4 +1,5 @@
 import { ServerGroupsLoading } from './loading-content';
+import { DashboardScreen, ScreenHeader } from '../components/dashboard-screen';
 export default function Loading() {
-  return <main className="content-page"><div className="page-heading"><h1>Сервери</h1><p>Виберіть сервер для налаштування SCRT.</p></div><ServerGroupsLoading /></main>;
+  return <DashboardScreen header={<ScreenHeader title="Сервери" description="Виберіть сервер для налаштування SCRT." />}><ServerGroupsLoading /></DashboardScreen>;
 }

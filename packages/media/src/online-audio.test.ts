@@ -7,6 +7,7 @@ vi.mock('node:fs', () => ({ existsSync: mocks.exists }));
 vi.mock('./audio-http', async (original) => ({ ...await original<typeof import('./audio-http')>(), openAudioStream: mocks.open }));
 import { createMediaSources, DirectAudioProvider, MediaSourceRegistry } from './providers';
 import { MediaSourceError, OnlineAudioProvider, YtDlpExtractor, soundcloudReference, youtubeReference, type OnlineAudioExtractor } from './online-audio';
+import { MediaAudioProxyError } from './audio-proxy';
 import { MediaAudioHttpError } from './audio-http';
 import { runtimeLogSnapshot } from '@scrt/shared';
 
@@ -21,6 +22,59 @@ function extractor() {
   return { available: () => true, inspect: vi.fn(async () => details()), search: vi.fn(async () => [details()]) } satisfies OnlineAudioExtractor;
 }
 describe('online audio providers', () => {
+  it('returns twenty flat entries with artwork, without caching catalog URLs as audio', async () => {
+    const entry = { ...details('soundcloud'), url: 'https://api.soundcloud.com/tracks/2363190935', protocol: undefined,
+      thumbnail: undefined, thumbnails: [{ url: 'https://i1.sndcdn.com/artwork.jpg' }], artists: ['Actual Artist'], uploader: 'Uploader' };
+    const entries = Array.from({ length: 20 }, (_, index) => ({ ...entry, id: String(index), webpage_url: `https://soundcloud.com/artist/track-${index}` }));
+    mocks.exec.mockImplementation((_file, _args, _options, callback) => callback(null, entries.map((value) => JSON.stringify(value)).join('\n'), ''));
+    const adapter = new YtDlpExtractor('/installed/yt-dlp');
+    const inspect = vi.spyOn(adapter, 'inspect').mockResolvedValue(details('soundcloud'));
+    const provider = new OnlineAudioProvider('soundcloud', adapter);
+    const results = await provider.search('Actual Artist');
+    expect(results).toHaveLength(20); expect(results[0]).toMatchObject({ playable: true, artist: 'Actual Artist', artworkUrl: 'https://i1.sndcdn.com/artwork.jpg' });
+    expect(inspect).not.toHaveBeenCalled(); expect(JSON.stringify(results)).not.toContain('api.soundcloud.com');
+    await provider.resolve(results[0]!.providerItemId); expect(inspect).toHaveBeenCalledOnce();
+    const args = mocks.exec.mock.calls[0]![1]; expect(args[args.indexOf('--cache-dir') + 1]).toContain('soundcloud-cache');
+  });
+  it('skips malformed flat entries and retains restricted metadata without enabling playback', async () => {
+    mocks.exec.mockImplementation((_file, _args, _options, callback) => callback(null, [null, { id: 'broken' }, { ...details(), availability: 'private' }].map((value) => JSON.stringify(value)).join('\n'), ''));
+    const provider = new OnlineAudioProvider('youtube', new YtDlpExtractor('/installed/yt-dlp'));
+    expect(await provider.search('Artist Track')).toEqual([expect.objectContaining({ playable: false, seekable: false })]);
+  });
+  it('reports invalid search output instead of falsely claiming no songs exist', async () => {
+    mocks.exec.mockImplementation((_file, _args, _options, callback) => callback(null, JSON.stringify({ id: 'broken' }), ''));
+    await expect(new YtDlpExtractor('/installed/yt-dlp').search('soundcloud', 'Artist')).rejects.toThrow('некоректні результати');
+    const adapter = extractor(); adapter.search.mockResolvedValue([{ ...details('soundcloud'), webpage_url: 'http://127.0.0.1/private' }]);
+    await expect(new OnlineAudioProvider('soundcloud', adapter).search('Artist')).rejects.toThrow('некоректні результати');
+    adapter.search.mockResolvedValue([{ ...details('soundcloud'), webpage_url: 'http://127.0.0.1/private' }, details('soundcloud')]);
+    expect(await new OnlineAudioProvider('soundcloud', adapter).search('Artist')).toHaveLength(1);
+  });
+  it('reserves extractor slots for playback while two searches are running', async () => {
+    const callbacks: Array<(error: null, stdout: string, stderr: string) => void> = [];
+    mocks.exec.mockImplementation((_file, _args, _options, callback) => { callbacks.push(callback); });
+    const adapter = new YtDlpExtractor('/installed/yt-dlp');
+    const first = adapter.search('soundcloud', 'First'), second = adapter.search('soundcloud', 'Second');
+    await expect(adapter.search('soundcloud', 'Third')).rejects.toThrow('Пошук зайнятий');
+    const playback = adapter.inspect('youtube', 'TwumA6YhQp4'); expect(mocks.exec).toHaveBeenCalledTimes(3);
+    callbacks[0]!(null, JSON.stringify(details('soundcloud')), ''); callbacks[1]!(null, JSON.stringify(details('soundcloud')), ''); callbacks[2]!(null, JSON.stringify(details()), '');
+    await Promise.all([first, second, playback]);
+  });
+  it('searches only SoundCloud in production and rejects YouTube links before extraction', async () => {
+    const adapter = extractor(); adapter.search.mockResolvedValue([details('soundcloud')]);
+    const registry = createMediaSources({ NODE_ENV: 'production' }, adapter);
+    expect((await registry.search('Artist Track')).results.map((track) => track.provider)).toEqual(['soundcloud']);
+    expect(adapter.search).toHaveBeenCalledTimes(1);
+    expect(adapter.search).toHaveBeenCalledWith('soundcloud', 'Artist Track', 0);
+    const youtube = await registry.search(details().webpage_url);
+    expect(youtube.results).toEqual([]); expect(youtube.errors?.[0]).toContain('вимкнено');
+    expect(adapter.inspect).not.toHaveBeenCalled();
+    expect(registry.health().find((provider) => provider.id === 'youtube')?.capabilities.search).toBe(false);
+    adapter.inspect.mockResolvedValue(details('soundcloud'));
+    expect((await registry.search(details('soundcloud').webpage_url)).results[0]?.provider).toBe('soundcloud');
+    const stream = new PassThrough() as unknown as IncomingMessage; stream.headers = {}; mocks.open.mockResolvedValue(stream);
+    expect((await registry.search('https://audio.example/track.mp3')).results[0]?.provider).toBe('direct');
+    expect(createMediaSources({ NODE_ENV: 'development' }, adapter).health().find((provider) => provider.id === 'youtube')?.capabilities.search).toBe(true);
+  });
   it.each(['youtube', 'soundcloud'] as const)('advertises seeking only for finite public %s audio', async (id) => {
     const adapter = extractor(); const provider = new OnlineAudioProvider(id, adapter);
     adapter.inspect.mockResolvedValue(details(id));
@@ -67,6 +121,22 @@ describe('online audio providers', () => {
     adapter.inspect.mockResolvedValue(details('soundcloud'));
     await registry.get('soundcloud').getPlayableResource(details('soundcloud').webpage_url, signal);
     expect(mocks.open).toHaveBeenLastCalledWith(details('soundcloud').url, signal, 0, undefined, expect.any(Object));
+  });
+  it('uses the same configured proxy for YouTube audio while SoundCloud stays direct', async () => {
+    const adapter = extractor(); const proxy = 'http://proxy-user:proxy-secret@proxy.example:8080';
+    const registry = createMediaSources({ MEDIA_YOUTUBE_IP_FAMILY: 'ipv6', MEDIA_YOUTUBE_PROXY_URL: proxy }, adapter);
+    const signal = new AbortController().signal; mocks.open.mockImplementation(async () => new PassThrough());
+    await registry.get('youtube').getPlayableResource('TwumA6YhQp4', signal);
+    expect(mocks.open).toHaveBeenLastCalledWith(details().url, signal, 0, undefined, expect.any(Object), 4, proxy);
+    adapter.inspect.mockResolvedValue(details('soundcloud'));
+    await registry.get('soundcloud').getPlayableResource(details('soundcloud').webpage_url, signal);
+    expect(mocks.open).toHaveBeenLastCalledWith(details('soundcloud').url, signal, 0, undefined, expect.any(Object));
+  });
+  it.each(['PROXY_AUTH_REQUIRED', 'PROXY_UNAVAILABLE'] as const)('preserves a typed provider failure when the audio tunnel reports %s', async (code) => {
+    const adapter = extractor(); mocks.open.mockRejectedValue(new MediaAudioProxyError(code));
+    const provider = new OnlineAudioProvider('youtube', adapter, 'ipv4', 'http://proxy.example:8080');
+    await expect(provider.getPlayableResource('TwumA6YhQp4', new AbortController().signal)).rejects.toMatchObject({ code: code === 'PROXY_AUTH_REQUIRED' ? code : 'NETWORK_UNREACHABLE' });
+    expect(mocks.open).toHaveBeenCalledOnce();
   });
   it('pauses new extraction for a blocked provider for one minute without extending the deadline on clicks', async () => {
     vi.useFakeTimers(); const adapter = extractor(); const provider = new OnlineAudioProvider('youtube', adapter);
@@ -197,12 +267,14 @@ describe('extractor process boundary', () => {
     expect(entries[0]?.context).toMatchObject({ installed: true, executable: true, version: '2026.09.27.232945' });
     expect(entries[1]?.context).toMatchObject({ installed: true, executable: false });
   });
-  it.each(['youtube', 'soundcloud'] as const)('extracts only the next three %s results and bounds the page before spawning', async (provider) => {
+  it.each(['youtube', 'soundcloud'] as const)('searches the next twenty %s entries without extracting audio and bounds the page before spawning', async (provider) => {
     mocks.exec.mockImplementation((_file, _args, _options, callback) => callback(null, `${JSON.stringify(details(provider))}\n${JSON.stringify(details(provider))}\n`, ''));
     const adapter = new YtDlpExtractor('/installed/yt-dlp'); await adapter.search(provider, 'Artist Track', 1);
     const args = mocks.exec.mock.calls[0]![1];
-    expect(args.at(-1)).toBe(`${provider === 'youtube' ? 'ytsearch' : 'scsearch'}6:Artist Track`);
-    expect(args[args.indexOf('--playlist-items') + 1]).toBe('4:6');
+    expect(args.at(-1)).toBe(`${provider === 'youtube' ? 'ytsearch' : 'scsearch'}40:Artist Track`);
+    expect(args[args.indexOf('--playlist-items') + 1]).toBe('21:40');
+    expect(args).toContain('--flat-playlist'); expect(args).not.toContain('-f');
+    expect(mocks.exec.mock.calls[0]![2].timeout).toBeLessThanOrEqual(8000);
     expect(args).toContain('--print'); expect(args).not.toContain('--dump-single-json');
     for (const page of [-1, 10, 1.5]) await expect(adapter.search(provider, 'Track', page)).rejects.toThrow();
     expect(mocks.exec).toHaveBeenCalledOnce();
@@ -231,11 +303,42 @@ describe('extractor process boundary', () => {
     const entries = runtimeLogSnapshot({ runId: before.runId, after }).entries.filter((entry) => entry.action === 'extractor.started');
     expect(entries.map((entry) => entry.context.family)).toEqual([6, 4]);
   });
+  it('routes YouTube searches and inspections through its configured proxy, without forwarding it to SoundCloud or logs', async () => {
+    const proxy = 'https://proxy-user:proxy-secret@proxy.example:8443';
+    const before = runtimeLogSnapshot(); const after = before.entries.at(-1)?.sequence ?? 0;
+    mocks.exec.mockImplementation((_file, _args, _options, callback) => callback(null, JSON.stringify(details()), `WARNING: ${proxy} proxy-user proxy-secret ${Buffer.from('proxy-user:proxy-secret').toString('base64')}`));
+    const adapter = new YtDlpExtractor('/installed/yt-dlp', 'ipv6', proxy);
+    await adapter.inspect('youtube', 'TwumA6YhQp4'); await adapter.search('youtube', 'song');
+    for (const call of mocks.exec.mock.calls.slice(0, 2)) { expect(call[1][call[1].indexOf('--proxy') + 1]).toBe(proxy); expect(call[1]).toContain('--force-ipv4'); }
+    const output = JSON.stringify(runtimeLogSnapshot({ runId: before.runId, after }).entries);
+    expect(output).toContain('"route":"proxy"'); expect(output).not.toMatch(/proxy-user|proxy-secret|proxy\.example|cHJveHktdXNlcjpwcm94eS1zZWNyZXQ=/);
+    mocks.exec.mockImplementation((_file, _args, _options, callback) => callback(null, JSON.stringify(details('soundcloud')), ''));
+    await adapter.inspect('soundcloud', details('soundcloud').webpage_url);
+    const args = mocks.exec.mock.calls[2]![1]; expect(args[args.indexOf('--proxy') + 1]).toBe(''); expect(args).not.toContain(proxy);
+  });
+  it('classifies proxy authentication separately without retrying or exposing credentials', async () => {
+    mocks.exec.mockImplementation((_file, _args, _options, callback) => callback(new Error('failed'), '', 'ERROR: Unable to download webpage: Tunnel connection failed: 407 Proxy Authentication Required'));
+    await expect(new YtDlpExtractor('/installed/yt-dlp', 'ipv4', 'http://proxy.example').inspect('youtube', 'TwumA6YhQp4')).rejects.toMatchObject({ code: 'PROXY_AUTH_REQUIRED' });
+    expect(mocks.exec).toHaveBeenCalledOnce();
+  });
+  it('redacts credentials before truncating stderr so a secret spanning the limit cannot leak', async () => {
+    const password = 'SENSITIVE-PROXY-PASSWORD-123456789';
+    const before = runtimeLogSnapshot(); const after = before.entries.at(-1)?.sequence ?? 0;
+    mocks.exec.mockImplementation((_file, _args, _options, callback) => callback(null, JSON.stringify(details()), `${'x'.repeat(3990)}${password}`));
+    await new YtDlpExtractor('/installed/yt-dlp', 'ipv4', `http://user:${password}@proxy.example`).inspect('youtube', 'TwumA6YhQp4');
+    const output = JSON.stringify(runtimeLogSnapshot({ runId: before.runId, after }).entries);
+    expect(output).not.toContain('SENSITIVE');
+  });
+  it('does not treat an unavailable proxy as an unavailable song or retry its refused connection', async () => {
+    mocks.exec.mockImplementation((_file, _args, _options, callback) => callback(new Error('failed'), '', 'ERROR: Unable to download webpage: [Errno 111] Connection refused'));
+    await expect(new YtDlpExtractor('/installed/yt-dlp', 'ipv4', 'http://proxy.example').inspect('youtube', 'TwumA6YhQp4')).rejects.toMatchObject({ code: 'NETWORK_UNREACHABLE' });
+    expect(mocks.exec).toHaveBeenCalledOnce();
+  });
   it('uses bounded provider searches and rejects arbitrary URL inputs before spawning', async () => {
     mocks.exec.mockImplementation((_file, _args, _options, callback) => callback(null, JSON.stringify(details()), ''));
     const adapter = new YtDlpExtractor('/installed/yt-dlp');
     expect(await adapter.search('youtube', 'Artist Track')).toHaveLength(1);
-    expect(mocks.exec.mock.calls[0]![1].at(-1)).toBe('ytsearch3:Artist Track');
+    expect(mocks.exec.mock.calls[0]![1].at(-1)).toBe('ytsearch20:Artist Track');
     await expect(adapter.inspect('youtube', 'http://169.254.169.254/')).rejects.toThrow(); expect(mocks.exec).toHaveBeenCalledOnce();
   });
   it('translates authorization failures without exposing stderr or signed URLs', async () => {

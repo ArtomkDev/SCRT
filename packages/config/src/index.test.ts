@@ -14,6 +14,13 @@ describe('environment', () => {
     expect(schema.parse({ MEDIA_YOUTUBE_IP_FAMILY: 'ipv6' }).MEDIA_YOUTUBE_IP_FAMILY).toBe('ipv6');
     for (const value of ['auto', '6', '', '--proxy unsafe']) expect(() => schema.parse({ MEDIA_YOUTUBE_IP_FAMILY: value })).toThrow();
   });
+  it('validates a server-only HTTP(S) proxy origin with optional credentials', () => {
+    const schema = botEnvSchema.pick({ MEDIA_YOUTUBE_PROXY_URL: true });
+    expect(schema.parse({ MEDIA_YOUTUBE_PROXY_URL: ' ' }).MEDIA_YOUTUBE_PROXY_URL).toBeUndefined();
+    for (const value of ['http://proxy.example:8080', 'https://user:secret@proxy.example:8443']) expect(schema.parse({ MEDIA_YOUTUBE_PROXY_URL: value }).MEDIA_YOUTUBE_PROXY_URL).toBe(value);
+    for (const value of ['socks5://proxy.example', 'https://proxy.example/path', 'http://proxy.example?flag=1', 'http://proxy.example#flag', 'http://user%0a:secret@proxy.example', 'http://user:secret%0d@proxy.example', 'http://user%ZZ:secret@proxy.example', 'http://proxy.example:65536']) expect(() => schema.parse({ MEDIA_YOUTUBE_PROXY_URL: value })).toThrow();
+    expect(webEnvSchema.shape).not.toHaveProperty('MEDIA_YOUTUBE_PROXY_URL');
+  });
   it('rejects weak session secrets', () => expect(() => parseEnvironment(webEnvSchema, { SESSION_SECRET: 'short' })).toThrow(/SESSION_SECRET/));
   const web = { FIREBASE_PROJECT_ID: 'project', FIREBASE_CLIENT_EMAIL: 'service@example.com', FIREBASE_PRIVATE_KEY: 'key', DISCORD_BOT_TOKEN: 'token', DISCORD_CLIENT_ID: 'id', DISCORD_CLIENT_SECRET: 'secret', SESSION_SECRET: 's'.repeat(32) };
   it('keeps Media optional but requires a separate strong secret and secure public transport', () => {

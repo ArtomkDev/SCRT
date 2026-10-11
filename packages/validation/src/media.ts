@@ -1,4 +1,15 @@
 import { z } from 'zod';
+// Canonical public set links only; sharing parameters never become stored identities.
+export function soundcloudPlaylistUrl(value: string): string | null {
+  try {
+    const url = new URL(value);
+    if (!['http:', 'https:'].includes(url.protocol) || !['soundcloud.com', 'www.soundcloud.com', 'm.soundcloud.com'].includes(url.hostname)
+      || url.username || url.password || url.port || url.hash || url.searchParams.has('secret_token')
+      || !/^\/[A-Za-z0-9_-]+\/sets\/[A-Za-z0-9_:-]+\/?$/.test(url.pathname)
+      || /^\/(?:discover|search|you|charts)\//.test(url.pathname)) return null;
+    return `https://soundcloud.com${url.pathname.replace(/\/$/, '')}`;
+  } catch { return null; }
+}
 
 // Kept local to avoid an index <-> media initialization cycle.
 const snowflake = z.string().regex(/^\d{17,20}$/);
@@ -34,6 +45,31 @@ export const mediaTrackSchema = z.object({
   playable: z.boolean(), seekable: z.boolean(), explicit: z.boolean().nullable(),
 });
 export const mediaQueueItemSchema = mediaTrackSchema.extend({ queueItemId: z.uuid(), requestedByUserId: snowflake, requestedByName: z.string().max(100), requestedAt: z.number().int().nonnegative() });
+export const mediaPlaylistReferenceSchema = z.string().min(1).max(2048).refine((value) => soundcloudPlaylistUrl(value) !== null, 'Вставте публічне посилання SoundCloud /sets/ на плейлист.').transform((value) => soundcloudPlaylistUrl(value)!);
+export const mediaPlaylistSchema = z.object({
+  provider: z.literal('soundcloud'), providerItemId: mediaPlaylistReferenceSchema,
+  title: z.string().min(1).max(300), artist: z.string().max(200), artworkUrl: httpUrl.nullable(),
+  externalUrl: mediaPlaylistReferenceSchema, trackCount: z.number().int().min(0).max(500),
+}).refine((value) => value.providerItemId === value.externalUrl, 'Playlist reference mismatch');
+export const mediaPlaylistPageSchema = z.object({
+  playlist: mediaPlaylistSchema, page: z.number().int().min(0).max(9),
+  entries: z.array(z.object({ position: z.number().int().min(1).max(500), track: mediaTrackSchema.refine((track) => track.provider === 'soundcloud') })).max(50),
+  unavailableCount: z.number().int().min(0).max(50), nextPage: z.number().int().min(1).max(9).nullable(),
+});
+export type MediaPlaylistPage = z.infer<typeof mediaPlaylistPageSchema>;
+export const mediaFavoriteIdSchema = z.string().regex(/^[a-f0-9]{64}$/);
+export const mediaFavoriteSchema = z.object({
+  id: mediaFavoriteIdSchema, track: mediaTrackSchema,
+  likedBy: z.array(z.object({ userId: snowflake, name: z.string().min(1).max(100), likedAt: z.number().int().nonnegative() })).min(1).max(500),
+  updatedAt: z.number().int().nonnegative(),
+});
+export type MediaFavorite = z.infer<typeof mediaFavoriteSchema>;
+export const mediaFavoritePlaylistSchema = mediaFavoriteSchema.omit({ track: true }).extend({ playlist: mediaPlaylistSchema });
+export type MediaFavoritePlaylist = z.infer<typeof mediaFavoritePlaylistSchema>;
+export const mediaFavoritePlaylistsPageSchema = z.object({ items: z.array(mediaFavoritePlaylistSchema).max(50), next: mediaFavoriteIdSchema.nullable() });
+export const mediaFavoritePlaylistRequestSchema = z.object({ providerItemId: mediaPlaylistReferenceSchema, liked: z.boolean() }).strict();
+export const mediaFavoritesPageSchema = z.object({ items: z.array(mediaFavoriteSchema).max(50), next: mediaFavoriteIdSchema.nullable() });
+export const mediaFavoriteRequestSchema = z.object({ provider: mediaTrackSchema.shape.provider, providerItemId: mediaTrackSchema.shape.providerItemId, liked: z.boolean() }).strict();
 export const mediaHistoryItemSchema = z.object({
   id: z.uuid(), track: mediaQueueItemSchema, playedAt: z.number().int().nonnegative(), endedAt: z.number().int().nonnegative(),
   result: z.enum(['finished', 'skipped', 'failed']), reason: z.string().max(400).nullable(),
@@ -51,8 +87,10 @@ export type MediaHistoryDelete = z.infer<typeof mediaHistoryDeleteSchema>;
 export const mediaHistoryDeleteResultSchema = z.object({ deleted: z.number().int().min(0).max(100), more: z.boolean() });
 export const mediaSearchResultSchema = z.object({
   results: z.array(mediaTrackSchema).max(40), unavailable: z.array(z.string().max(100)).max(10),
+  playlists: z.array(mediaPlaylistSchema).max(1).default([]),
   errors: z.array(z.string().max(400)).max(10).default([]),
   nextPage: z.number().int().min(1).max(9).nullable().default(null),
+  matchedQuery: z.string().min(2).max(250).optional(),
 });
 export const mediaSessionSchema = z.object({
   sessionId: z.uuid(), guildId: snowflake, voiceChannelId: snowflake, voiceChannelName: z.string().max(100),
@@ -69,6 +107,8 @@ export const mediaSessionSchema = z.object({
 const queueReference = { queueItemId: z.uuid(), expectedQueueVersion: z.number().int().nonnegative() };
 const sourceReference = { provider: z.enum(['direct', 'youtube', 'soundcloud']), providerItemId: z.string().min(1).max(2048) };
 export const mediaActionSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('PLAY_PLAYLIST'), providerItemId: mediaPlaylistReferenceSchema, shuffle: z.boolean().default(false) }).strict(),
+  z.object({ type: z.literal('PLAY_FAVORITES'), favoriteIds: z.array(mediaFavoriteIdSchema).min(1).max(100).refine((ids) => new Set(ids).size === ids.length) }).strict(),
   z.object({ type: z.literal('ADD_TRACK'), ...sourceReference }).strict(),
   z.object({ type: z.literal('PLAY_TRACK'), ...sourceReference, following: z.array(z.object(sourceReference).strict()).max(99).optional() }).strict(),
   z.object({ type: z.literal('SEEK'), queueItemId: z.uuid(), positionMs: z.number().int().min(0).max(10800000) }).strict(),
@@ -85,6 +125,8 @@ export const mediaRequestSchema = z.object({ commandId: z.uuid(), sessionId: z.u
 export const mediaCommandSchema = mediaRequestSchema.extend({ guildId: snowflake, actorUserId: snowflake }).strict();
 export type MediaCommand = z.infer<typeof mediaCommandSchema>;
 export const mediaInternalRequestSchema = z.discriminatedUnion('operation', [
+  z.object({ operation: z.literal('playlist'), guildId: snowflake, actorUserId: snowflake, providerItemId: mediaPlaylistReferenceSchema, page: z.number().int().min(0).max(9).optional() }).strict(),
+  z.object({ operation: z.literal('track'), guildId: snowflake, actorUserId: snowflake, ...sourceReference }).strict(),
   z.object({ operation: z.literal('state'), guildId: snowflake, actorUserId: snowflake }).strict(),
   z.object({ operation: z.literal('search'), guildId: snowflake, actorUserId: snowflake, query: z.string().trim().min(2).max(250), page: z.number().int().min(0).max(9).optional() }).strict(),
   z.object({ operation: z.literal('command'), command: mediaCommandSchema }).strict(),

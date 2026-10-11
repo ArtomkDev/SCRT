@@ -4,6 +4,10 @@ export type MediaTrack = {
   title: string; artist: string; durationMs: number | null; artworkUrl: string | null;
   externalUrl: string; playable: boolean; seekable: boolean; explicit: boolean | null;
 };
+export type MediaPlaylist = {
+  provider: 'soundcloud'; providerItemId: string; title: string; artist: string;
+  artworkUrl: string | null; externalUrl: string; trackCount: number;
+};
 export type MediaQueueItem = MediaTrack & {
   queueItemId: string; requestedByUserId: string; requestedByName: string; requestedAt: number;
 };

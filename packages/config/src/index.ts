@@ -8,8 +8,18 @@ const optionalCredential = z.string().trim().max(512).optional().transform((valu
 const artwork = { STEAMGRIDDB_API_KEY: optionalCredential, IGDB_TWITCH_CLIENT_ID: optionalCredential, IGDB_TWITCH_CLIENT_SECRET: optionalCredential };
 const mediaSecret = z.string().max(512).optional().transform((v) => v || undefined).pipe(z.string().min(32).optional());
 const mediaShared = { MEDIA_INTERNAL_SECRET: mediaSecret };
+const mediaProxy = z.string().max(2048).optional().transform((value) => value?.trim() || undefined).refine((value) => {
+  if (!value) return true;
+  try {
+    const url = new URL(value);
+    return ['http:', 'https:'].includes(url.protocol) && Boolean(url.hostname) && url.pathname === '/' && !url.search && !url.hash
+      && !/\s/.test(value) && [...value].every((character) => character.charCodeAt(0) > 31 && character.charCodeAt(0) !== 127)
+      && !/[:\r\n]/.test(decodeURIComponent(url.username)) && !/[\r\n]/.test(decodeURIComponent(url.password));
+  } catch { return false; }
+}, 'Expected an HTTP(S) proxy origin with optional credentials, without path, query or fragment');
 const mediaProviders = { YOUTUBE_API_KEY: optionalCredential,
   MEDIA_YOUTUBE_IP_FAMILY: z.enum(['ipv4', 'ipv6']).default('ipv4'),
+  MEDIA_YOUTUBE_PROXY_URL: mediaProxy,
   MEDIA_FFMPEG_PATH: z.string().max(1024).optional() };
 const appOrigin = z.url().refine((value) => {
   try {

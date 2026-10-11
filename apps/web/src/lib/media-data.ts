@@ -13,7 +13,7 @@ export async function mediaInternal(input: MediaInternalRequest): Promise<unknow
   const config = env(); const configurationError = mediaConfigurationError();
   if (configurationError || !config.MEDIA_BOT_URL || !config.MEDIA_INTERNAL_SECRET) throw new MediaTransportError(configurationError ?? 'Канал web ↔ bot не налаштовано.', 503);
   let response: Response;
-  const timeoutMs = input.operation === 'state' ? 8000 : input.operation === 'search' ? 25000 : input.operation === 'settings' ? 15000 : 55000;
+  const timeoutMs = input.operation === 'state' ? 8000 : input.operation === 'search' || input.operation === 'track' || input.operation === 'playlist' ? 25000 : input.operation === 'settings' ? 15000 : 55000;
   const parsed = mediaInternalRequestSchema.parse(input); const startedAt = Date.now();
   const diagnostic = { requestId: globalThis.crypto.randomUUID(), operation: input.operation, guildId: input.operation === 'command' ? input.command.guildId : input.guildId, timeoutMs };
   if (input.operation !== 'state') log('info', 'media', 'worker.request.started', diagnostic);

@@ -1,3 +1,4 @@
+import { Panel } from '@/app/components/dashboard-screen';
 import { Switch, Button } from '@/app/components/controls';
 import { ResourceMultiSelect } from '@/app/components/resource-multiselect';
 import { Select } from '@/app/components/select';
@@ -34,7 +35,7 @@ function CreatorEditor({ guildId, creator, resources, regions, roomChannelIds }:
   const roles = resources.roles.filter((role) => role.id !== guildId);
   const channelName = resources.channels.find((channel) => channel.id === creator?.channelId)?.name;
   return <ActionForm action={saveVoiceCreator.bind(null, guildId)} className="voice-form creator-form">
-    <fieldset className="settings-card">
+    <Panel as="fieldset" className="settings-card">
       <legend>Канал створення</legend>
       <p className="field-help">Вхід у цей канал створює окрему голосову кімнату для учасника.</p>
       {creator
@@ -46,9 +47,9 @@ function CreatorEditor({ guildId, creator, resources, regions, roomChannelIds }:
         <label>Розташування кімнати<Select aria-label="Розташування кімнати" name="roomPlacement" defaultValue={creator?.roomPlacement ?? 'bottom'}><option value="above">Над каналом створення</option><option value="below">Під каналом створення</option><option value="top">На початку категорії</option><option value="bottom">У кінці категорії</option></Select><small>Якщо кімнати в іншій категорії, «над» означає початок, а «під» — кінець тієї категорії.</small></label>
         <label>Порядок кімнат<Select aria-label="Порядок кімнат" name="roomOrder" defaultValue={creator?.roomOrder ?? 'oldest_first'}><option value="oldest_first">Старіші зверху</option><option value="newest_first">Новіші зверху</option></Select><small>Порядок розміщення нових кімнат. Розташування наявних кімнат не змінюється.</small></label>
       </div>
-    </fieldset>
+    </Panel>
 
-    <fieldset className="settings-card">
+    <Panel as="fieldset" className="settings-card">
       <legend>Налаштування нової кімнати</legend>
       <p className="field-help">Початкові налаштування кімнати. Доступні власнику дії визначаються нижче.</p>
       <div className="form-grid">
@@ -62,28 +63,28 @@ function CreatorEditor({ guildId, creator, resources, regions, roomChannelIds }:
         <Switch label="Приховувати нові кімнати" help="Канал не видно іншим учасникам." name="defaultHidden" defaultChecked={creator?.defaultHidden ?? false}  />
         <Switch label="Закритий чат" help="Повідомлення в чаті кімнати вимкнено." name="defaultChatClosed" defaultChecked={creator?.defaultChatClosed ?? false}  />
       </div>
-    </fieldset>
+    </Panel>
 
-    <fieldset className="settings-card settings-card-wide">
+    <Panel as="fieldset" className="settings-card settings-card-wide">
       <legend>Доступ за ролями</legend>
       <p className="field-help">Обмежте вхід до кімнати ролями або надайте окремим ролям право обходити її обмеження.</p>
       <div className="role-columns">
         <div><h3>Дозволені ролі</h3><p className="field-help">Якщо нічого не вибрано, діють звичайні дозволи Discord.</p><ResourceMultiSelect name="allowedRoleIds" label="Дозволені ролі" options={roles} defaultSelected={creator?.allowedRoleIds ?? []} /></div>
         <div><h3>Вхід без обмежень</h3><p className="field-help">Ці ролі можуть входити попри обмеження кімнати.</p><ResourceMultiSelect name="bypassRoleIds" label="Ролі без обмежень" options={roles} defaultSelected={creator?.bypassRoleIds ?? []} /></div>
       </div>
-    </fieldset>
+    </Panel>
 
-    <fieldset className="settings-card settings-card-wide">
+    <Panel as="fieldset" className="settings-card settings-card-wide">
       <legend>Можливості власника</legend>
       <p className="field-help">Дії, доступні власнику кімнати в панелі та командах Discord.</p>
       <div className="feature-grid">{features.map(({ key, label, help }) => <label key={key} className="voice-check feature-option"><input type="checkbox" name={'feature_' + key} defaultChecked={creator?.enabledFeatures[key] ?? true} /><span><strong>{label}</strong><small>{help}</small></span></label>)}</div>
-    </fieldset>
+    </Panel>
 
-    <fieldset className="settings-card settings-card-wide">
+    <Panel as="fieldset" className="settings-card settings-card-wide">
       <legend>Панель керування</legend>
       <p className="field-help">Де показувати кнопки керування кімнатою.</p>
       <label>Розташування<Select aria-label="Розташування" name="interfaceMode" defaultValue={creator?.interfaceMode ?? 'inherit'}><option value="inherit">За налаштуваннями модуля</option><option value="room">У кімнаті</option><option value="global">У спільному каналі</option><option value="both">В обох місцях</option><option value="none">Без панелі</option></Select></label>
-    </fieldset>
+    </Panel>
     <div className="form-actions"><Button type="submit">Зберегти зміни</Button></div>
   </ActionForm>;
 }
@@ -110,11 +111,11 @@ async function CreatorsContent({ params }: { params: Promise<{ guildId: string }
     {creators.map((creator) => {
       const channelName = resources.channels.find((channel) => channel.id === creator.channelId)?.name ?? 'Канал не знайдено';
       const roomCount = rooms.filter((room) => room.creatorId === creator.id).length;
-      return <details key={creator.id} className="voice-item creator-card"><summary><span className="creator-summary"><strong>{channelName}</strong><span>{creator.nameTemplate} · Активних кімнат: {roomCount}</span></span><span className={'status-pill ' + (creator.enabled ? 'status-active' : '')}>{creator.enabled ? 'Активний' : 'Вимкнений'}</span></summary>
+      return <Panel as="details" key={creator.id} className="voice-item creator-card"><summary><span className="creator-summary"><strong>{channelName}</strong><span>{creator.nameTemplate} · Активних кімнат: {roomCount}</span></span><span className={'status-pill ' + (creator.enabled ? 'status-active' : '')}>{creator.enabled ? 'Активний' : 'Вимкнений'}</span></summary>
         {canManage ? <><CreatorEditor guildId={guildId} creator={creator} resources={resources} regions={regions} roomChannelIds={roomChannelIds} /><CreatorDelete guildId={guildId} creatorId={creator.id} channelName={channelName} /></> : <p className="field-help">Для зміни налаштувань потрібен дозвіл на керування голосовими каналами.</p>}
-      </details>;
+      </Panel>;
     })}
-    {canManage && <details className="voice-item creator-card add-creator"><summary><span className="creator-summary"><strong>+ Додати канал створення</strong><span>Підключіть наявний голосовий канал або створіть новий.</span></span></summary><CreatorEditor guildId={guildId} resources={resources} regions={regions} roomChannelIds={roomChannelIds} /></details>}
+    {canManage && <Panel as="details" className="voice-item creator-card add-creator"><summary><span className="creator-summary"><strong>+ Додати канал створення</strong><span>Підключіть наявний голосовий канал або створіть новий.</span></span></summary><CreatorEditor guildId={guildId} resources={resources} regions={regions} roomChannelIds={roomChannelIds} /></Panel>}
   </section>;
 }
 

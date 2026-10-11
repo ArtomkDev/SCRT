@@ -1,3 +1,4 @@
+import { Panel } from '@/app/components/dashboard-screen';
 import { ActivityModuleContent } from '../../module-content';
 import { ActivityPageLoading, GameContentLoading, contributorColumns } from '../../loading-content';
 import { notFound } from 'next/navigation';
@@ -42,7 +43,7 @@ async function GameContent({ guildId, gameKey, period }: { guildId: string; game
   if (activityArtworkNeedsRefresh(cachedArtwork)) await activityArtworks(guildId, [game]);
   const settings = await activitySettings(guildId);
   const path = '/servers/' + guildId + '/activity/games/' + encodeURIComponent(gameKey);
-  return <><ActivityHero gameKey={gameKey} name={game.displayName} artwork={cachedArtwork} actions={<ActivityActionsMenu guildId={guildId} identity={game} artwork={cachedArtwork} href={path + '?period=' + period} canManage={access.permissions.has('activity.manage')} ignored={settings.games.ignoredGameKeys.includes(gameKey)} detail />} /><PeriodLinks path={path} period={period} /><GameSummary guildId={guildId} game={game} /><section className="detail-panel activity-contributors" id="contributors"><h3>Внесок учасників</h3><DataBoundary key={period} title="Внесок учасників не завантажився"><Suspense fallback={<TableLoading label="Завантаження учасників…" columns={contributorColumns} className="activity-table activity-contributors-table" />}><GameContributors guildId={guildId} gameKey={gameKey} period={period} /></Suspense></DataBoundary></section></>;
+  return <><ActivityHero gameKey={gameKey} name={game.displayName} artwork={cachedArtwork} actions={<ActivityActionsMenu guildId={guildId} identity={game} artwork={cachedArtwork} href={path + '?period=' + period} canManage={access.permissions.has('activity.manage')} ignored={settings.games.ignoredGameKeys.includes(gameKey)} detail />} /><PeriodLinks path={path} period={period} /><GameSummary guildId={guildId} game={game} /><Panel className="detail-panel activity-contributors" id="contributors"><h3>Внесок учасників</h3><DataBoundary key={period} title="Внесок учасників не завантажився"><Suspense fallback={<TableLoading label="Завантаження учасників…" columns={contributorColumns} className="activity-table activity-contributors-table" />}><GameContributors guildId={guildId} gameKey={gameKey} period={period} /></Suspense></DataBoundary></Panel></>;
 }
 export default async function GamePage({ params, searchParams }: { params: Promise<{ guildId: string; gameKey: string }>; searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const { guildId, gameKey: segment } = await params;

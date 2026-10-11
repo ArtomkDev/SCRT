@@ -1,4 +1,4 @@
-import { randomUUID, createHash } from 'node:crypto';
+import { randomUUID, randomInt, createHash } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 import { ChannelType, PermissionFlagsBits, type Client, type Guild, type GuildMember, type VoiceState } from 'discord.js';
 import { PermissionService, mediaPolicy, type MediaActor } from '@scrt/permissions';
@@ -194,6 +194,8 @@ export class MediaSessionService {
       const session = runtime.session; const listeners = this.listeners(actor.guild, session);
       const controls = Object.fromEntries(['ADD_TRACK', 'PLAY_TRACK', 'SEEK', 'PAUSE', 'RESUME', 'SKIP', 'VOTE_SKIP', 'STOP', 'RESTORE', 'MOVE_SESSION', 'SET_VOLUME', 'SET_REPEAT', 'SET_SHUFFLE', 'SET_LOCK'].map((type) => [type, mediaPolicy(settings, actor, type === 'ADD_TRACK' || type === 'PLAY_TRACK' ? this.activeSession(session) : session, type) === null]));
       controls.SEEK = Boolean(controls.SEEK && session?.currentTrack?.seekable && session.currentTrack.type === 'track' && session.currentTrack.durationMs && ['playing', 'paused'].includes(session.state));
+      controls.PLAY_FAVORITES = Boolean(controls.PLAY_TRACK);
+      controls.PLAY_PLAYLIST = Boolean(controls.PLAY_TRACK);
       const queueControls = Object.fromEntries([...(session?.played ?? []), ...(session?.queue ?? [])].map((item) => [item.queueItemId, { remove: !mediaPolicy(settings, actor, session, 'REMOVE_QUEUE_ITEM', item.requestedByUserId), move: Boolean(session?.queue.some((entry) => entry.queueItemId === item.queueItemId)) && !mediaPolicy(settings, actor, session, 'MOVE_QUEUE_ITEM', item.requestedByUserId) }]));
       const displaySession = session ? { ...session, queue: scheduledQueue(session.queue, session.queueMode, session.lastRequesterId) } : null;
       return { session: displaySession, settings, controls, queueControls, actorVoice: { id: actor.voiceChannelId, name: actor.member.voice.channel?.name ?? null }, remoteControl: Boolean(session && actor.voiceChannelId !== session.voiceChannelId && actor.permissions.has('media.manage') && settings.allowRemoteAdminControl), listenerCount: listeners.length, votes: { count: countedVotes(runtime.votes, listeners), required: voteThreshold(listeners, settings.skipVoteRatio) }, providers: this.sources.health(), engine: this.engineHealth, serverTimestamp: Date.now(), canManage: actor.permissions.has('media.manage') };
@@ -205,11 +207,25 @@ export class MediaSessionService {
     log('info', 'media', 'search.started', diagnostic);
     try {
       const result = await this.sources.search(query, page);
-      log(result.unavailable.length ? 'warn' : 'info', 'media', 'search.completed', { ...diagnostic, durationMs: Date.now() - startedAt, results: result.results.length, unavailable: result.unavailable.join(', '), reasons: result.errors?.join('; ') });
+      log(result.unavailable.length ? 'warn' : 'info', 'media', 'search.completed', { ...diagnostic, durationMs: Date.now() - startedAt, results: result.results.length, playlists: result.playlists?.length ?? 0, unavailable: result.unavailable.join(', '), reasons: result.errors?.join('; ') });
       return result;
     } catch (error) {
       log('error', 'media', 'search.failed', { ...diagnostic, durationMs: Date.now() - startedAt }, error); throw error;
     }
+  }
+  async favoriteTrack(guildId: string, userId: string, provider: MediaTrack['provider'], reference: string): Promise<MediaTrack> {
+    return this.exclusive(guildId, async () => {
+      const actor = await this.actor(guildId, userId);
+      if (!actor.permissions.has('media.view')) throw new MediaError('Потрібен дозвіл media.view.', 403);
+      const session = (await this.runtime(guildId)).session;
+      const known = this.sources.searchedTrack(provider, reference) ?? [session?.currentTrack, ...(session?.queue ?? []), ...(session?.played ?? [])].find((track) => track?.provider === provider && track.providerItemId === reference);
+      return known ?? this.sources.get(provider).resolve(reference, AbortSignal.timeout(15000));
+    });
+  }
+  async playlist(guildId: string, userId: string, reference: string, page = 0) {
+    const actor = await this.actor(guildId, userId);
+    if (!actor.permissions.has('media.view')) throw new MediaError('Потрібен дозвіл media.view.', 403);
+    return this.sources.playlist(reference, page);
   }
   async settings(guildId: string, userId: string, input: MediaSettings) {
     return this.exclusive(guildId, async () => {
@@ -243,12 +259,63 @@ export class MediaSessionService {
   }
   private async executeLocked(command: MediaCommand) {
     const [actor, settings, priorReceipt] = await Promise.all([this.actor(command.guildId, command.actorUserId), this.store.getSettings(command.guildId), this.store.receipt(command.guildId, command.commandId)]);
-    const runtime = await this.runtime(command.guildId); const action = command.action; const session = runtime.session;
+    const runtime = await this.runtime(command.guildId); let action = command.action; const session = runtime.session;
     const fingerprint = createHash('sha256').update(JSON.stringify(command)).digest('hex');
     const reply = (replayed = false, warning?: string) => ({ replayed, snapshot: this.snapshot(actor, runtime, settings), ...(warning ? { warning } : {}) });
     if (priorReceipt) { if (priorReceipt.fingerprint !== fingerprint) throw new MediaError('Command ID already used'); return reply(true); }
     if ((session?.sessionId ?? null) !== command.sessionId) throw new MediaError('Сесія змінилася. Оновіть плеєр.');
     if ((session?.queueVersion ?? null) !== command.expectedQueueVersion) throw new MediaError('Черга або поточний трек змінилися. Оновіть плеєр.');
+    let selectionTracks: MediaTrack[] | null = null;
+    const playlistMode = action.type === 'PLAY_PLAYLIST' ? action.shuffle ? 'shuffled' : 'ordered' : null;
+    const playlistSelection = playlistMode !== null;
+    let playlistWarning: string | undefined;
+    if (action.type === 'PLAY_PLAYLIST') {
+      this.requirePolicy(settings, actor, this.activeSession(session), 'PLAY_TRACK');
+      let firstPage;
+      try { firstPage = await this.sources.playlist(action.providerItemId); }
+      catch (error) { throw new MediaError(error instanceof MediaSourceError ? error.message : 'Не вдалося завантажити плейлист.', 422); }
+      const limit = Math.min(settings.maxQueueItems, settings.maxTracksPerUser);
+      if (firstPage.playlist.trackCount > limit) throw new MediaError(`У плейлисті ${firstPage.playlist.trackCount} треків, а поточний ліміт — ${limit}. Збільште ліміти в налаштуваннях або виберіть окрему пісню.`, 422);
+      const entries = [...firstPage.entries]; let skipped = firstPage.unavailableCount; let next = firstPage.nextPage;
+      while (next !== null) {
+        let page;
+        try { page = await this.sources.playlist(action.providerItemId, next); }
+        catch (error) { throw new MediaError(error instanceof MediaSourceError ? error.message : 'Не вдалося завантажити весь плейлист. Поточна черга збережена.', 422); }
+        if (page.playlist.trackCount !== firstPage.playlist.trackCount || page.nextPage !== null && page.nextPage <= next) throw new MediaError('Плейлист змінився. Відкрийте його знову.', 422);
+        entries.push(...page.entries); skipped += page.unavailableCount; next = page.nextPage;
+      }
+      const identities = new Set<string>();
+      selectionTracks = entries.flatMap(({ track }) => {
+        try { this.validateTrack(track, settings); } catch (error) { if (!(error instanceof MediaError)) throw error; skipped++; return []; }
+        const key = JSON.stringify([track.provider, track.providerItemId]);
+        if (settings.duplicatePolicy !== 'allow' && identities.has(key)) { skipped++; return []; }
+        identities.add(key); return [track];
+      });
+      if (!selectionTracks.length) throw new MediaError('У плейлисті немає доступних треків для відтворення.', 422);
+      if (action.shuffle) for (let i = selectionTracks.length - 1; i > 0; i--) {
+        const j = randomInt(i + 1); [selectionTracks[i], selectionTracks[j]] = [selectionTracks[j]!, selectionTracks[i]!];
+      }
+      if (skipped) playlistWarning = `Плейлист запущено. Пропущено недоступних або заборонених налаштуваннями треків: ${skipped}.`;
+      log('info', 'media', 'playlist.play_requested', { guildId: command.guildId, actorId: actor.userId, total: firstPage.playlist.trackCount, playable: selectionTracks.length, skipped, shuffled: action.shuffle });
+      const first = selectionTracks[0]!;
+      action = { type: 'PLAY_TRACK', provider: first.provider, providerItemId: first.providerItemId };
+    }
+    if (action.type === 'PLAY_FAVORITES') {
+      this.requirePolicy(settings, actor, this.activeSession(session), 'PLAY_TRACK');
+      const favorites = await this.store.favoriteTracks(command.guildId, action.favoriteIds).catch((error: unknown) => {
+        log('error', 'media', 'favorites.read_failed', { guildId: command.guildId }, error);
+        throw new MediaError('Не вдалося завантажити добірку. Спробуйте ще раз.', 503);
+      });
+      const ordered = action.favoriteIds.map((id) => favorites.find((favorite) => favorite.id === id));
+      if (ordered.some((favorite) => !favorite)) throw new MediaError('Добірка змінилася. Оновіть улюблені треки.', 422);
+      selectionTracks = ordered.map((favorite) => favorite!.track);
+      for (const track of selectionTracks) {
+        if (track.provider === 'youtube' && !this.sources.health().find((provider) => provider.id === 'youtube')?.capabilities.search) throw new MediaError('YouTube тимчасово вимкнено на хостингу.', 422);
+        this.validateTrack(track, settings);
+      }
+      const first = selectionTracks[0]!;
+      action = { type: 'PLAY_TRACK', provider: first.provider, providerItemId: first.providerItemId };
+    }
     const candidates = action.type === 'SEEK' ? session?.currentTrack ? [session.currentTrack] : [] : [...(session?.queue ?? []), ...(action.type === 'REMOVE_QUEUE_ITEM' ? session?.played ?? [] : [])];
     const item = 'queueItemId' in action ? candidates.find((entry) => entry.queueItemId === action.queueItemId) : undefined;
     this.requirePolicy(settings, actor, action.type === 'ADD_TRACK' || action.type === 'PLAY_TRACK' ? this.activeSession(session) : session, action.type, item?.requestedByUserId);
@@ -264,9 +331,9 @@ export class MediaSessionService {
       this.validateTrack(track, settings);
       // Resolution can take seconds: re-read actual Gateway location before any join/control.
       actor.voiceChannelId = actor.guild.voiceStates.cache.get(actor.userId)?.channelId ?? null; this.requirePolicy(settings, actor, this.activeSession(session), action.type);
-      const active = session?.currentTrack ? [session.currentTrack, ...session.queue] : session?.queue ?? [];
+      const active = playlistSelection || selectionTracks && !this.activeSession(session) ? [] : session?.currentTrack ? [session.currentTrack, ...session.queue] : session?.queue ?? [];
       const duplicate = active.find((entry) => entry.provider === track.provider && entry.providerItemId === track.providerItemId);
-      if (playNow && duplicate?.queueItemId === session?.currentTrack?.queueItemId && duplicate) throw new MediaError('Цей трек уже грає.');
+      if (playNow && duplicate?.queueItemId === session?.currentTrack?.queueItemId && duplicate && !selectionTracks) throw new MediaError('Цей трек уже грає.');
       if (!playNow && duplicate && settings.duplicatePolicy === 'reject') throw new MediaError('Цей трек уже в черзі.');
       if (!playNow && duplicate && settings.duplicatePolicy === 'allow' && duplicate.requestedByUserId === actor.userId) throw new MediaError('Ви вже додали цей трек.');
       if (!playNow && duplicate && settings.duplicatePolicy === 'move_existing') {
@@ -274,18 +341,22 @@ export class MediaSessionService {
         if (session?.currentTrack?.queueItemId === duplicate.queueItemId) throw new MediaError('Цей трек уже грає.');
         this.reorder(session!, settings, actor, duplicate, 0);
       } else {
-        const replacing = playNow ? session?.currentTrack : null;
+        const replacing = !playlistSelection && playNow && (!selectionTracks || this.activeSession(session)) ? session?.currentTrack : null;
         const count = active.length - Number(Boolean(replacing));
         const ownCount = active.filter((entry) => entry.requestedByUserId === actor.userId).length - Number(replacing?.requestedByUserId === actor.userId);
         if (!(playNow && duplicate) && (count >= settings.maxQueueItems || ownCount >= settings.maxTracksPerUser)) throw new MediaError('Досягнуто ліміту черги або треків на учасника.');
-        const added = Number(!(playNow && duplicate));
+        const added = Number(!(playNow && duplicate && duplicate.queueItemId !== replacing?.queueItemId));
+        const ownAdded = playNow && duplicate && duplicate.requestedByUserId !== actor.userId ? 0 : added;
+        const continuation = selectionTracks?.slice(1).filter((track) => !active.some((queued) => queued.queueItemId !== replacing?.queueItemId && queued.provider === track.provider && queued.providerItemId === track.providerItemId)) ?? null;
+        const capacity = Math.min(settings.maxQueueItems - count - added, settings.maxTracksPerUser - ownCount - ownAdded);
+        if (continuation && continuation.length > capacity) throw new MediaError('Уся добірка не вміщується в поточні ліміти черги або треків на учасника. Змініть ліміти в налаштуваннях або фільтр добірки.', 422);
         const targetId = this.activeSession(session)?.voiceChannelId ?? actor.voiceChannelId!;
         const channel = playNow || !this.activeSession(session) ? await this.eligibleVoice(actor, targetId, settings) : null;
         // Open the replacement source while the current track is still playing.
         // A provider/HTTP failure must not tear down the active session.
         const prepared = playNow ? await this.preparePlayback(track) : undefined;
         try {
-          const following = action.type === 'PLAY_TRACK' ? await this.prepareSearch(action.following ?? [], session, track, Math.min(settings.maxQueueItems - count - added, settings.maxTracksPerUser - ownCount - added), settings) : { tracks: [], incomplete: false };
+          const following = continuation ? { tracks: continuation, incomplete: false } : action.type === 'PLAY_TRACK' ? await this.prepareSearch(action.following ?? [], session, track, capacity, settings) : { tracks: [], incomplete: false };
           actor.voiceChannelId = actor.guild.voiceStates.cache.get(actor.userId)?.channelId ?? null;
           this.requirePolicy(settings, actor, this.activeSession(session), action.type);
           if (channel && !this.activeSession(session) && actor.voiceChannelId !== targetId) throw new MediaError('Голосовий канал змінився. Оновіть плеєр і повторіть відтворення.', 403);
@@ -294,9 +365,9 @@ export class MediaSessionService {
           const current = runtime.session!;
           const selected = playNow && duplicate ? { ...duplicate, ...track } : { ...track, queueItemId: randomUUID(), requestedByUserId: actor.userId, requestedByName: actor.member.displayName.slice(0, 100), requestedAt: Date.now() };
           if (playNow && prepared) {
-            try { await this.switchSelected(runtime, actor, settings, selected, following.tracks, prepared, priorRevision, { commandId: command.commandId, fingerprint }); }
+            try { await this.switchSelected(runtime, actor, settings, selected, following.tracks, prepared, priorRevision, { commandId: command.commandId, fingerprint }, playlistMode); }
             catch (error) { if (error instanceof MediaError) runtime.session = session; throw error; }
-            return reply(false, following.incomplete ? 'Вибраний трек запущено. Частину добірки не додано; повторіть пошук, щоб оновити її.' : undefined);
+            return reply(false, playlistWarning ?? (following.incomplete ? 'Вибраний трек запущено. Частину добірки не додано; повторіть пошук, щоб оновити її.' : undefined));
           }
           current.queue.push(selected);
           current.queueVersion++;
@@ -378,7 +449,7 @@ export class MediaSessionService {
     }
     finally { clearTimeout(timeout); }
   }
-  private async switchSelected(runtime: Runtime, actor: Actor, settings: MediaSettings, selected: MediaQueueItem, following: MediaTrack[], prepared: PreparedPlayback, priorRevision: number | null, receipt: { commandId: string; fingerprint: string }) {
+  private async switchSelected(runtime: Runtime, actor: Actor, settings: MediaSettings, selected: MediaQueueItem, following: MediaTrack[], prepared: PreparedPlayback, priorRevision: number | null, receipt: { commandId: string; fingerprint: string }, playlistMode: 'ordered' | 'shuffled' | null = null) {
     const session = runtime.session!; let intentStarted = false;
     const beforeCommit = async () => {
       await this.eligibleVoice(actor, session.voiceChannelId, settings);
@@ -393,7 +464,10 @@ export class MediaSessionService {
       session.queue = session.queue.filter((entry) => entry.queueItemId !== selected.queueItemId);
       session.played = session.played.filter((entry) => entry.provider !== selected.provider || entry.providerItemId !== selected.providerItemId);
       session.currentTrack = selected; session.state = 'buffering'; session.recoverable = false; session.lastError = null; session.queueVersion++;
-      this.appendSearch(session, actor, settings, following);
+      if (playlistMode) {
+        session.queue = following.map((track) => ({ ...track, queueItemId: randomUUID(), requestedByUserId: actor.userId, requestedByName: actor.member.displayName.slice(0, 100), requestedAt: Date.now() }));
+        session.shuffle = playlistMode === 'shuffled'; session.repeatMode = 'off';
+      } else this.appendSearch(session, actor, settings, following);
       await this.save(runtime, priorRevision, history, 'track.selected', actor.userId, receipt);
     };
     // A failed Voice connection has an unknown audio outcome; let the outer
@@ -465,6 +539,12 @@ export class MediaSessionService {
       catch (error) {
         log('error', 'media', 'playback.start.failed', { guildId: guild.id, queueItemId: next.queueItemId, title: next.title, provider: next.provider, attempt: attempts }, error);
         if (this.stopping || !this.ownsGuild(guild.id) || !this.listeners(guild, session).length) { this.interrupt(runtime, 'Media worker недоступний або Voice порожній. Чергу збережено.'); return; }
+        if (error instanceof MediaSourceError && error.code) {
+          // A provider-wide network failure does not mean the selected track is broken.
+          // Retain it and the rest of the queue for explicit recovery after routing is fixed.
+          log('warn', 'media', 'playback.network.interrupted', { guildId: guild.id, queueItemId: next.queueItemId, provider: next.provider, sourceErrorCode: error.code, queuePreserved: true });
+          this.interrupt(runtime, error.message); return;
+        }
         session.lastError = error instanceof MediaError || error instanceof MediaSourceError ? error.message : 'Не вдалося відтворити трек. Перехід до наступного.';
         this.finish(runtime, 'failed', history, session.lastError);
       }

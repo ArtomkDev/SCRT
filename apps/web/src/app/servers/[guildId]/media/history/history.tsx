@@ -1,25 +1,35 @@
 'use client';
+import { Panel } from '@/app/components/dashboard-screen';
+import { MediaControllerBoundary, useMediaPlayerWorkspace, useWorkspaceMediaController } from '@/app/components/media-player/media-player-context';
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import type { MediaHistoryItem } from '@scrt/shared';
 import { mediaHistoryDeleteResultSchema, mediaHistoryPageSchema, type MediaHistoryDelete, type MediaHistoryPage, type MediaSnapshot } from '@scrt/validation';
-import { Button } from '@/app/components/controls';
+import { Button, Input } from '@/app/components/controls';
+import { Select } from '@/app/components/select';
 import { Dialog } from '@/app/components/dialog';
 import { MediaIcon } from '../media-icon';
+import { FavoriteButton } from '../favorites-context';
 import { MediaArtwork, mediaTime, providerNames } from '../media-track';
-import { mediaResponse, useMediaController } from '../player-controller';
+import { mediaResponse } from '../player-controller';
 
 const resultNames = { finished: 'Завершено', skipped: 'Пропущено', failed: 'Помилка' };
 const dateFormat = new Intl.DateTimeFormat('uk-UA', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Europe/Kyiv' });
 const timeFormat = new Intl.DateTimeFormat('uk-UA', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Kyiv' });
 
-export function MediaHistoryClient({ guildId, userId, history, initial, initialError }: { guildId: string; userId: string; history: MediaHistoryPage; initial: MediaSnapshot; initialError: string | null }) {
-  const { snapshot, pending, send, unavailable, message, setMessage } = useMediaController(guildId, initial, initialError);
+type ViewProps = { guildId: string; userId: string; history: MediaHistoryPage; initial: MediaSnapshot; initialError: string | null };
+export function MediaHistoryClient(props: ViewProps) { return <MediaControllerBoundary {...props}><MediaHistoryClientView {...props} /></MediaControllerBoundary>; }
+function MediaHistoryClientView({ guildId, userId, history, initial, initialError }: { guildId: string; userId: string; history: MediaHistoryPage; initial: MediaSnapshot; initialError: string | null }) {
+  const { snapshot, pending, send, unavailable, message, setMessage } = useWorkspaceMediaController(guildId, initial, initialError);
+  const workspace = useMediaPlayerWorkspace();
   const endpoint = `/api/guilds/${guildId}/media`;
   const [items, setItems] = useState(history.items);
   const [next, setNext] = useState(history.next);
   const [loading, setLoading] = useState(false);
   const [historyError, setHistoryError] = useState('');
+  const [query, setQuery] = useState('');
+  const [requester, setRequester] = useState('all');
+  const [result, setResult] = useState('all');
   const [notice, setNotice] = useState('');
   const [confirm, setConfirm] = useState<MediaHistoryItem | 'all' | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -83,8 +93,11 @@ export function MediaHistoryClient({ guildId, userId, history, initial, initialE
   function requestDelete(item: MediaHistoryItem | 'all') { setDeleteError(''); setDeletedCount(0); setConfirm(item); }
   const current = snapshot.session?.currentTrack;
   const pendingTrack = pending.filter((job) => job.action.type === 'PLAY_TRACK').at(-1)?.track;
+  const searchQuery = query.trim().toLocaleLowerCase();
+  const requesters = [...new Map(items.map((item) => [item.track.requestedByUserId, item.track.requestedByName || 'Учасник'])).entries()].sort((a, b) => a[1].localeCompare(b[1], 'uk'));
+  const filtered = items.filter((item) => (requester === 'all' || item.track.requestedByUserId === (requester === 'me' ? userId : requester)) && (result === 'all' || item.result === result) && `${item.track.title} ${item.track.artist} ${item.track.requestedByName}`.toLocaleLowerCase().includes(searchQuery));
   const groups = new Map<string, MediaHistoryItem[]>();
-  for (const item of items) { const date = dateFormat.format(item.playedAt); groups.set(date, [...(groups.get(date) ?? []), item]); }
+  for (const item of filtered) { const date = dateFormat.format(item.playedAt); groups.set(date, [...(groups.get(date) ?? []), item]); }
 
   return <section className="media-history" aria-label="Історія відтворення">
     <header className="media-history-header">
@@ -93,13 +106,19 @@ export function MediaHistoryClient({ guildId, userId, history, initial, initialE
     </header>
     <div className="media-history-toolbar">
       <span>{items.length ? `Завантажено ${items.length} записів` : 'Поки немає записів'} · Зберігаються {snapshot.settings.historyRetentionDays} днів</span>
-      <Link href={`/servers/${guildId}/media`} className="media-history-now" aria-live="polite"><MediaIcon name={pendingTrack || current ? 'volume' : 'headphones'} width="15" height="15" /><span>{pendingTrack ? `Запускаємо: ${pendingTrack.title}` : current ? `${snapshot.session?.state === 'paused' ? 'На паузі' : 'У плеєрі'}: ${current.title}` : 'Перейти до плеєра'}</span></Link>
+      <button type="button" onClick={() => workspace?.show()} className="media-history-now" aria-live="polite"><MediaIcon name={pendingTrack || current ? 'volume' : 'headphones'} width="15" height="15" /><span>{pendingTrack ? `Запускаємо: ${pendingTrack.title}` : current ? `${snapshot.session?.state === 'paused' ? 'На паузі' : 'У плеєрі'}: ${current.title}` : 'Відкрити плеєр'}</span></button>
     </div>
+    <div className="media-history-filters">
+      <label>Пошук в історії<Input type="search" aria-label="Пошук в історії" placeholder="Трек, виконавець або учасник" value={query} onChange={(event) => setQuery(event.target.value)} /></label>
+      <label>Хто увімкнув<Select aria-label="Хто увімкнув" value={requester} onChange={(event) => setRequester(event.target.value)}><option value="all">Усі учасники</option><option value="me">Мої треки</option>{requesters.filter(([id]) => id !== userId).map(([id, name]) => <option key={id} value={id}>{name}</option>)}</Select></label>
+      <label>Результат<Select aria-label="Результат відтворення" value={result} onChange={(event) => setResult(event.target.value)}><option value="all">Усі результати</option><option value="finished">Завершено</option><option value="skipped">Пропущено</option><option value="failed">Помилка</option></Select></label>
+    </div>
+    {(searchQuery || requester !== 'all' || result !== 'all') && <p className="field-help" role="status">Знайдено: {filtered.length} із {items.length} завантажених записів. Фільтри застосовуються також до наступних завантажених сторінок.</p>}
     {unavailable && <p className="media-feedback is-error" role="status">{unavailable} Історія та її очищення доступні.</p>}
-    {!unavailable && !snapshot.actorVoice.id && !snapshot.remoteControl && <p className="media-history-hint"><MediaIcon name="headphones" width="16" height="16" />Приєднайтеся до голосового каналу, щоб увімкнути трек з історії.</p>}
+    {!unavailable && !snapshot.actorVoice.id && !snapshot.remoteControl && <p className="media-history-hint"><MediaIcon name="headphones" width="16" height="16" />Приєднайтеся до голосового каналу, щоб увімкнути трек або додати його до черги.</p>}
     {(message || historyError) && <p className="media-feedback is-error" role="alert">{message || historyError}<button aria-label="Закрити повідомлення" onClick={() => { setMessage(''); setHistoryError(''); }}><MediaIcon name="remove" width="16" height="16" /></button></p>}
-    <div className="media-history-list">
-      {items.length > 0 && <div className="media-history-columns" aria-hidden="true"><span>Трек</span><span>Додав</span><span>Час</span><span>Результат</span><span /></div>}
+    <Panel as="div" className="media-history-list">
+      {filtered.length > 0 && <div className="media-history-columns" aria-hidden="true"><span>Трек</span><span>Увімкнув</span><span>Час</span><span>Результат</span><span /></div>}
       {[...groups].map(([date, entries]) => <section className="media-history-day" key={date} aria-label={date}>
         <h3>{date}</h3><ul>{entries.map((item) => {
           const track = item.track;
@@ -107,6 +126,8 @@ export function MediaHistoryClient({ guildId, userId, history, initial, initialE
           const paused = same && snapshot.session?.state === 'paused';
           const playing = same && snapshot.session?.state === 'playing';
           const busy = pending.some((job) => job.action.type === 'PLAY_TRACK' && job.action.provider === track.provider && job.action.providerItemId === track.providerItemId);
+          const adding = pending.some((job) => job.action.type === 'ADD_TRACK' && job.action.provider === track.provider && job.action.providerItemId === track.providerItemId);
+          const canAdd = track.playable && snapshot.settings.enabled && snapshot.engine.available && snapshot.controls.ADD_TRACK && !unavailable;
           const action = paused ? 'RESUME' : 'PLAY_TRACK';
           const allowed = track.playable && snapshot.settings.enabled && snapshot.engine.available && snapshot.controls[action] && !unavailable;
           const own = track.requestedByUserId === userId;
@@ -117,16 +138,17 @@ export function MediaHistoryClient({ guildId, userId, history, initial, initialE
               </button>
               <div className="media-track-info"><strong title={track.title}>{track.title}</strong><span title={track.artist}>{track.artist || 'Невідомий виконавець'}</span><small>{busy ? 'Запускаємо…' : `${providerNames[track.provider]} · ${track.type === 'live' ? 'LIVE' : mediaTime(track.durationMs)}`}</small></div>
             </div>
-            <div className="media-history-requester"><span title={track.requestedByName}>{track.requestedByName || 'Учасник'}</span>{own && <small>Ви</small>}</div>
+            <div className="media-history-requester"><MediaIcon name="user" width="15" height="15" /><span title={track.requestedByName}>{track.requestedByName || 'Учасник'}</span>{own && <small>Ви</small>}</div>
             <time className="media-history-time" dateTime={new Date(item.playedAt).toISOString()} title={`${date} о ${timeFormat.format(item.playedAt)}`}>{timeFormat.format(item.playedAt)}</time>
             <span className={`media-history-result is-${item.result}`} title={item.reason ?? undefined}><i />{resultNames[item.result]}</span>
-            <div className="media-history-actions">{own && <Button variant="icon" aria-label={`Видалити запис: ${track.title}`} title="Видалити мій запис з історії" disabled={deleting} onClick={() => requestDelete(item)}><MediaIcon name="trash" width="17" height="17" /></Button>}</div>
+            <div className="media-history-actions"><Button variant="icon" aria-label={`Додати до черги: ${track.title}`} title={!track.playable ? 'Джерело не підтримує відтворення' : canAdd ? 'Додати до черги' : 'Потрібне підключення до Voice та дозвіл на додавання треків'} disabled={!canAdd || adding} onClick={() => send({ type: 'ADD_TRACK', provider: track.provider, providerItemId: track.providerItemId }, track)}><MediaIcon name={adding ? 'queue' : 'plus'} width="17" height="17" /></Button><FavoriteButton track={track} />{own && <Button variant="icon" className="media-history-delete" aria-label={`Видалити запис: ${track.title}`} title="Видалити мій запис з історії" disabled={deleting} onClick={() => requestDelete(item)}><MediaIcon name="trash" width="17" height="17" /></Button>}</div>
           </li>;
         })}</ul>
       </section>)}
-      {!items.length && <div className="media-empty media-history-empty"><MediaIcon name="history" width="40" height="40" /><strong>Тут з’явиться ваша музика</strong><p>Зіграні та пропущені треки зберігаються тут. Натисніть ▶ на обкладинці, щоб слухати їх знову.</p><Link className="ui-button ui-button-secondary" href={`/servers/${guildId}/media`}>Знайти музику</Link></div>}
+      {items.length > 0 && !filtered.length && <div className="media-empty"><MediaIcon name="search" width="32" height="32" /><strong>Немає збігів серед завантажених записів</strong><Button variant="secondary" onClick={() => { setQuery(''); setRequester('all'); setResult('all'); }}>Скинути фільтри</Button></div>}
+      {!items.length && <div className="media-empty media-history-empty"><MediaIcon name="history" width="40" height="40" /><strong>Тут з’явиться ваша музика</strong><p>Зіграні та пропущені треки зберігаються тут. Натисніть ▶ на обкладинці, щоб слухати знову, або +, щоб додати до черги.</p><Link className="ui-button ui-button-secondary" href={`/servers/${guildId}/media`}>Знайти музику</Link></div>}
       {next && <div className="media-load-more"><Button variant="secondary" disabled={loading || deleting} onClick={() => { void loadMore(); }}>{loading ? 'Завантаження…' : 'Завантажити ще'}</Button></div>}
-    </div>
+    </Panel>
     {notice && <p className="media-feedback media-toast" role="status">{notice}<button aria-label="Закрити повідомлення" onClick={() => setNotice('')}><MediaIcon name="remove" width="16" height="16" /></button></p>}
     <Dialog open={confirm !== null} onClose={() => { if (!deleting) setConfirm(null); }} title={confirm === 'all' ? 'Очистити мою історію?' : 'Видалити запис?'} description={confirm === 'all' ? 'Усі записи про додані вами треки буде видалено з історії цього сервера. Записи інших учасників залишаться. Цю дію неможливо скасувати.' : 'Цей запис буде видалено з історії цього сервера. Цю дію неможливо скасувати.'} footer={<><Button variant="secondary" disabled={deleting} onClick={() => setConfirm(null)}>Скасувати</Button><Button variant="danger" disabled={deleting} onClick={() => { void remove(); }}>{deleting ? 'Видалення…' : confirm === 'all' ? 'Очистити мою історію' : 'Видалити запис'}</Button></>}>
       {confirm && confirm !== 'all' && <div className="media-history-confirm-track"><MediaArtwork track={confirm.track} /><div className="media-track-info"><strong>{confirm.track.title}</strong><span>{confirm.track.artist}</span></div></div>}

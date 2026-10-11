@@ -1,0 +1,119 @@
+.topbar-tools { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.media-player-toggle { display: flex; align-items: center; gap: 6px; }
+.media-player-toggle[aria-expanded="true"] { background: var(--surface-hover); color: var(--text); }
+.media-player-toggle i { width: 5px; height: 5px; border-radius: 50%; background: var(--success); }
+.media-player-toggle i[data-status="pending"] { background: var(--warning); }
+.media-player-toggle i[data-status="connecting"] { background: var(--subtle); }
+.media-player-toggle i[data-status="offline"] { background: var(--danger); }
+.topbar { isolation: isolate; overflow: clip; }
+@property --media-ambient-offset { syntax: '<length>'; inherits: true; initial-value: 0px; }
+@property --media-field-a-x { syntax: '<number>'; inherits: true; initial-value: .22; }
+@property --media-field-a-y { syntax: '<number>'; inherits: true; initial-value: .2; }
+@property --media-field-a-width { syntax: '<number>'; inherits: true; initial-value: 1.05; }
+@property --media-field-a-height { syntax: '<number>'; inherits: true; initial-value: .4; }
+@property --media-field-b-x { syntax: '<number>'; inherits: true; initial-value: .92; }
+@property --media-field-b-y { syntax: '<number>'; inherits: true; initial-value: .64; }
+@property --media-field-b-width { syntax: '<number>'; inherits: true; initial-value: .9; }
+@property --media-field-b-height { syntax: '<number>'; inherits: true; initial-value: .42; }
+@property --media-field-c-x { syntax: '<number>'; inherits: true; initial-value: .08; }
+@property --media-field-c-y { syntax: '<number>'; inherits: true; initial-value: .92; }
+@property --media-field-c-width { syntax: '<number>'; inherits: true; initial-value: 1.1; }
+@property --media-field-c-height { syntax: '<number>'; inherits: true; initial-value: .38; }
+.app-shell { --media-ambient-offset: 0px; --player-panel-width: clamp(340px, 23vw, 400px); }
+@media (min-width: 801px) and (max-width: 1700px) { .app-shell { --player-panel-width: clamp(340px, 28vw, 400px); } }
+.media-player-header-glow, .media-player-dock-background, .runtime-logs-corner {
+ /* Retain the cover's chroma; keep luminance low for readable controls. */
+ --media-glow: hsl(from var(--media-accent) h calc(s * .94) 46%);
+ --media-glow-secondary: hsl(from var(--media-accent-secondary) h calc(s * .88) 44%);
+ --media-glow-tertiary: hsl(from var(--media-accent-tertiary) h calc(s * .82) 40%);
+ --media-mesh-right: 100%;
+ --media-morph-duration: 1.6s;
+ --media-morph-easing: cubic-bezier(.22, .61, .36, 1);
+ /* Registered numbers retarget from their interpolated values on rapid skips.
+    There are always three fields: no outgoing layers or animation queue. */
+ --media-ambient-transitions:
+  --media-ambient-offset 240ms cubic-bezier(.22, 1, .36, 1),
+  --media-accent var(--media-morph-duration) ease,
+  --media-accent-secondary var(--media-morph-duration) ease,
+  --media-accent-tertiary var(--media-morph-duration) ease,
+  --media-field-a-x var(--media-morph-duration) var(--media-morph-easing),
+  --media-field-a-y var(--media-morph-duration) var(--media-morph-easing),
+  --media-field-a-width var(--media-morph-duration) var(--media-morph-easing),
+  --media-field-a-height var(--media-morph-duration) var(--media-morph-easing),
+  --media-field-b-x var(--media-morph-duration) var(--media-morph-easing),
+  --media-field-b-y var(--media-morph-duration) var(--media-morph-easing),
+  --media-field-b-width var(--media-morph-duration) var(--media-morph-easing),
+  --media-field-b-height var(--media-morph-duration) var(--media-morph-easing),
+  --media-field-c-x var(--media-morph-duration) var(--media-morph-easing),
+  --media-field-c-y var(--media-morph-duration) var(--media-morph-easing),
+  --media-field-c-width var(--media-morph-duration) var(--media-morph-easing),
+  --media-field-c-height var(--media-morph-duration) var(--media-morph-easing);
+ /* Each surface samples the same full-size mesh from the player's right edge.
+    Use local positioning: fixed backgrounds inside contained, fading docks can
+    retain a stale paint after the dock collapses and reopens. */
+ --media-ambient-mesh:
+  radial-gradient(ellipse calc(var(--player-panel-width) * var(--media-field-a-width)) calc(100dvh * var(--media-field-a-height)) at calc(var(--media-mesh-right) - var(--player-panel-width) * var(--media-field-a-x)) calc(100dvh * var(--media-field-a-y)), color-mix(in srgb, var(--media-glow) 52%, transparent), color-mix(in srgb, var(--media-glow) 22%, transparent) 48%, transparent 100%),
+  radial-gradient(ellipse calc(var(--player-panel-width) * var(--media-field-b-width)) calc(100dvh * var(--media-field-b-height)) at calc(var(--media-mesh-right) - var(--player-panel-width) * var(--media-field-b-x)) calc(100dvh * var(--media-field-b-y)), color-mix(in srgb, var(--media-glow-secondary) 40%, transparent), color-mix(in srgb, var(--media-glow-secondary) 17%, transparent) 48%, transparent 100%),
+  radial-gradient(ellipse calc(var(--player-panel-width) * var(--media-field-c-width)) calc(100dvh * var(--media-field-c-height)) at calc(var(--media-mesh-right) - var(--player-panel-width) * var(--media-field-c-x)) calc(100dvh * var(--media-field-c-y)), color-mix(in srgb, var(--media-glow-tertiary) 30%, transparent), color-mix(in srgb, var(--media-glow-tertiary) 10%, transparent) 48%, transparent 100%);
+}
+.media-player-header-glow {
+ position: absolute; inset: 0 var(--media-ambient-offset) 0 auto; z-index: -1; width: min(100%, calc(var(--player-panel-width) + 420px)); pointer-events: none;
+ background-image: var(--media-ambient-mesh); background-color: var(--header); background-size: 100vw 100dvh; background-position: right top; background-repeat: no-repeat;
+ mask-image: linear-gradient(90deg, transparent, #000 34%);
+ opacity: 0; transition: opacity 240ms ease, var(--media-ambient-transitions);
+}
+.media-player-header-glow[data-open="true"] { opacity: 1; }
+@media (min-width: 1701px) { .app-shell:has(.runtime-logs-workspace[data-logs-open="true"]) { --media-ambient-offset: clamp(340px, 27vw, 480px); } }
+.media-player-dock { flex: 0 0 auto; width: 0; min-width: 0; overflow: clip; background: var(--header); scroll-margin-top: var(--topbar-height); transition: width 240ms cubic-bezier(.22, 1, .36, 1); }
+.runtime-logs-workspace[data-player-open="true"] .media-player-dock { width: var(--player-panel-width); }
+.media-player-dock-panel {
+ --accent: var(--media-accent);
+ --muted: color-mix(in srgb, var(--text) 84%, var(--header));
+ --subtle: color-mix(in srgb, var(--text) 74%, var(--header));
+ position: relative; isolation: isolate; overflow: hidden;
+ display: flex; flex-direction: column; width: var(--player-panel-width); height: calc(100dvh - var(--topbar-height));
+ background: var(--header); contain: layout paint;
+ opacity: 0;
+ transition: opacity 240ms ease;
+}
+.runtime-logs-workspace[data-player-open="true"] .media-player-dock-panel { opacity: 1; }
+.media-player-dock-background { position: absolute; inset: 0; z-index: -1; pointer-events: none; contain: paint; background-image: var(--media-ambient-mesh); background-size: 100vw 100dvh; background-position: right 0px top calc(-1 * var(--topbar-height)); background-repeat: no-repeat; transition: var(--media-ambient-transitions); }
+.media-player-dock-header { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 12px; min-height: 64px; padding: 16px 20px; }
+.media-player-dock-header h2 { grid-column: 2; margin: 0; font-size: 16px; font-weight: 650; text-align: center; }
+.media-player-dock-header .media-sync { grid-column: 3; justify-self: end; margin: 0; font-size: 9px; text-align: right; min-width: 0; }
+.media-player-dock-body { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+.media-playback-panel { --accent: var(--media-accent); display: grid; gap: 16px; min-width: 0; transition: --media-accent 1.6s ease, --media-accent-secondary 1.6s ease, --media-accent-tertiary 1.6s ease; }
+.media-player-dock .media-playback-panel { padding: 20px; }
+.media-player-dock .media-player-card { display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; gap: 22px; padding: 0; max-height: none; border: 0; border-radius: 0; overflow: visible; background: transparent; }
+.media-player-dock .media-cover-main { justify-self: stretch; width: 100%; }
+.media-player-dock .media-cover-main::before { content: none; }
+.media-player-dock .media-artwork-large { width: 100%; height: auto; aspect-ratio: 1; border-radius: 14px; box-shadow: 0 16px 36px #0003; }
+.media-player-dock .media-cover-toggle { border-radius: 14px; }
+.media-player-dock .media-current h2 { font-size: 23px; min-height: 0; }
+.media-player-dock .media-eyebrow { flex-wrap: wrap; }.media-player-dock .media-artist { font-size: 13px; }
+.media-player-dock .media-artist-row { display: block; }.media-player-dock .media-discovery-tools { margin-top: 10px; }
+.media-player-dock .media-transport { gap: 16px; }.media-player-dock .media-controls { width: 100%; justify-content: space-between; gap: 4px; }
+.media-player-dock .media-volume { width: 100%; }.media-player-dock .media-volume input[type=range] { flex: 1; width: auto; min-width: 0; }
+.media-player-dock .media-current .media-progress, .media-player-dock .media-current .media-transport, .media-player-dock .media-current .media-player-footer, .media-player-dock .media-current .media-recovery, .media-player-dock .media-current .media-next-up { margin-left: 0; }
+.media-player-dock .media-player-footer { align-items: flex-start; }.media-player-dock .media-listeners { flex: 1; flex-wrap: wrap; line-height: 1.7; }
+.media-player-dock .media-options[open] { width: 100%; flex-basis: 100%; }.media-player-dock .media-options > div { position: static; width: 100%; margin-top: 10px; background: var(--input); box-shadow: none; }
+.media-player-dock .media-next-up { display: block; margin-top: 20px; }.media-player-dock .media-next-label { margin-bottom: 12px; }
+.media-player-dock .media-voice-notice, .media-player-dock .media-recovery { flex-wrap: wrap; padding: 12px; }.media-player-dock .media-recovery .ui-button { width: 100%; }
+.media-player-dock .media-feedback { overflow-wrap: anywhere; }
+.media-player-dock-links { display: flex; gap: 4px; justify-content: space-around; padding: 12px 10px; border-top: 1px solid rgb(255 255 255 / .08); background: transparent; }
+.media-player-dock-links a { display: flex; align-items: center; gap: 5px; padding: 6px; border-radius: 6px; font-size: 11px; color: var(--muted); }.media-player-dock-links a:hover { background: var(--surface); color: var(--text); }
+@media (max-width: 800px) { .media-player-dock-header { padding: 12px 16px; }.media-player-dock .media-playback-panel { padding: 16px; }.media-player-dock .media-player-card { gap: 16px; }.topbar-tools { gap: 6px; }.media-player-toggle span { display: none; } }
+@media (prefers-reduced-motion: reduce) { .app-shell, .runtime-logs-workspace, .media-player-header-glow, .media-player-dock, .media-player-dock-panel, .media-player-dock-background, .media-playback-panel { transition: none; } }
+
+@media (min-width: 801px) and (max-width: 1700px) {
+ .runtime-logs-workspace[data-player-open="true"][data-logs-open="true"] .media-cover-main { display: none; }
+ .runtime-logs-workspace[data-player-open="true"][data-logs-open="true"] .media-player-dock-header { padding: 12px 16px; }
+ .runtime-logs-workspace[data-player-open="true"][data-logs-open="true"] .media-player-dock .media-playback-panel { padding: 16px; }
+ .runtime-logs-workspace[data-player-open="true"][data-logs-open="true"] .media-current h2 { font-size: 20px; margin: 8px 0 5px; }
+ .runtime-logs-workspace[data-player-open="true"][data-logs-open="true"] .media-artist-row { display: flex; }
+ .runtime-logs-workspace[data-player-open="true"][data-logs-open="true"] .media-discovery-tools { margin-top: 0; }
+ .runtime-logs-workspace[data-player-open="true"][data-logs-open="true"] .media-discovery-tools > a { display: none; }
+ .runtime-logs-workspace[data-player-open="true"][data-logs-open="true"] .media-progress { margin: 10px 0; }
+ .runtime-logs-workspace[data-player-open="true"][data-logs-open="true"] .media-next-up, .runtime-logs-workspace[data-player-open="true"][data-logs-open="true"] .media-shortcut-hint { display: none; }
+}
+@media (max-width: 800px) { .media-player-dock .media-cover-main { display: none; }.media-player-dock .media-next-up, .media-player-dock .media-shortcut-hint { display: none; }.media-player-dock .media-progress { margin-top: 16px; } }

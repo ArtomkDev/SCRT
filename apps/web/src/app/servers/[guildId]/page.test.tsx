@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as React from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 
 vi.stubGlobal('React', React);
 
@@ -34,7 +35,12 @@ describe('server entry', () => {
 
   it('shows an honest empty state when no module is available', async () => {
     mocks.requireGuildAccess.mockResolvedValue({ permissions: new Set() });
-    await expect(GuildHome({ params: Promise.resolve({ guildId }) })).resolves.toMatchObject({ type: 'main' });
+    const html = renderToStaticMarkup(await GuildHome({ params: Promise.resolve({ guildId }) }));
+    expect(html).toContain('<main');
+    expect(html).toContain('Немає доступних модулів');
+    expect(html).toContain('href="/servers"');
+    expect(html).not.toContain(`/servers/${guildId}/voice`);
+    expect(html).not.toContain(`/servers/${guildId}/activity`);
   });
 
   it('keeps an existing game and selected period using the target guild history', async () => {

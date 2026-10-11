@@ -1,6 +1,8 @@
 import type { SVGProps } from 'react';
 const paths = {
-  play: 'M8 5v14l11-7Z', pause: 'M9 5v14M15 5v14', next: 'm5 5 10 7-10 7ZM19 5v14', stop: 'M6 6h12v12H6Z',
+  user: 'M20 21v-2a7 7 0 0 0-14 0v2M16 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0',
+  heart: 'M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8L12 21l8.8-8.6a5.5 5.5 0 0 0 0-7.8Z',
+  play: 'M8 5v14l11-7Z', pause: 'M9 5v14M15 5v14', previous: 'm19 5-10 7 10 7ZM5 5v14', next: 'm5 5 10 7-10 7ZM19 5v14', stop: 'M6 6h12v12H6Z',
   shuffle: 'M3 6h3c5 0 7 12 12 12h3m-4-4 4 4-4 4M3 18h3c2 0 4-3 6-6m3-4c1-1 2-2 3-2h3m-4-4 4 4-4 4',
   repeat: 'm17 2 4 4-4 4M3 11V9a3 3 0 0 1 3-3h15M7 22l-4-4 4-4m14-1v2a3 3 0 0 1-3 3H3',
   volume: 'm11 5-6 4H2v6h3l6 4ZM15 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14',

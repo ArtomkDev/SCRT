@@ -1,28 +1,34 @@
 'use client';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { z } from 'zod';
-import { mediaSearchResultSchema, mediaTrackSchema, type MediaSnapshot } from '@scrt/validation';
+import { mediaSearchResultSchema, mediaTrackSchema, mediaPlaylistSchema, type MediaSnapshot } from '@scrt/validation';
 import { mediaResponse } from './player-controller';
 
 const searchStateSchema = z.object({
   version: z.literal(1), savedAt: z.number(), query: z.string().max(250), submittedQuery: z.string().max(250),
   results: z.array(mediaTrackSchema).max(200), searched: z.boolean(),
+  playlists: z.array(mediaPlaylistSchema).max(1).default([]),
   source: z.enum(['all', 'playable', 'direct', 'youtube', 'soundcloud']),
   mobileTab: z.enum(['search', 'queue']), nextPage: z.number().int().min(1).max(9).nullable(),
+  matchedQuery: z.string().max(250).optional(),
 });
 type SearchState = z.infer<typeof searchStateSchema>;
-const empty: SearchState = { version: 1, savedAt: 0, query: '', submittedQuery: '', results: [], searched: false, source: 'all', mobileTab: 'search', nextPage: null };
+const empty: SearchState = { version: 1, savedAt: 0, query: '', submittedQuery: '', results: [], playlists: [], searched: false, source: 'all', mobileTab: 'search', nextPage: null };
 const lifetime = 24 * 60 * 60 * 1000;
 
-export function usePlayerSearch(guildId: string, userId: string, providers: MediaSnapshot['providers'], setMessage: (value: string) => void) {
+export function usePlayerSearch(guildId: string, userId: string, providers: MediaSnapshot['providers'], setMessage: (value: string) => void, allowYoutube = true) {
   // Only public catalog data and UI preferences are restored. Permissions and live audio state always come from the worker.
   const key = `scrt:media-search:v1:${userId}:${guildId}`;
   const [state, setState] = useState(empty);
   const [scope, setScope] = useState('');
   const ready = scope === key;
   const [searchPending, setSearchPending] = useState(false);
+  const [searchingQuery, setSearchingQuery] = useState('');
   const request = useRef<AbortController | null>(null);
+  const activeQuery = useRef('');
+  const cache = useRef(new Map<string, { until: number; value: z.infer<typeof mediaSearchResultSchema> }>());
   useLayoutEffect(() => {
+    cache.current.clear(); activeQuery.current = ''; setSearchingQuery('');
     let restored = empty;
     try {
       const raw = sessionStorage.getItem(key);
@@ -31,9 +37,9 @@ export function usePlayerSearch(guildId: string, userId: string, providers: Medi
         if (parsed.success && Date.now() - parsed.data.savedAt < lifetime && parsed.data.savedAt <= Date.now()) restored = parsed.data;
       }
     } catch { /* Storage may be disabled; the current page still works. */ }
-    setState(restored); setScope(key);
+    setState({ ...restored, results: restored.results.filter((track) => allowYoutube || track.provider !== 'youtube'), source: !allowYoutube && restored.source === 'youtube' ? 'all' : restored.source }); setScope(key); setSearchPending(false);
     return () => { request.current?.abort(); request.current = null; };
-  }, [key]);
+  }, [key, allowYoutube]);
   useEffect(() => {
     if (!ready) return;
     try { sessionStorage.setItem(key, JSON.stringify({ ...state, savedAt: Date.now() })); }
@@ -41,36 +47,47 @@ export function usePlayerSearch(guildId: string, userId: string, providers: Medi
   }, [key, state, ready]);
 
   async function search(more = false, queryOverride?: string) {
-    if (request.current || !ready || more && state.nextPage === null) return;
+    if (!ready || more && state.nextPage === null) return;
     const query = (more ? state.submittedQuery : queryOverride ?? state.query).trim();
     if (query.length < 2) return;
+    if (request.current) {
+      if (more || activeQuery.current === query) return;
+      request.current.abort();
+    }
     const page = more ? state.nextPage! : 0;
     const controller = new AbortController(); request.current = controller;
+    activeQuery.current = query; setSearchingQuery(query);
     if (queryOverride !== undefined && !more) setState((previous) => ({ ...previous, query }));
     setSearchPending(true); setMessage('');
     try {
       const params = new URLSearchParams({ q: query, page: String(page) });
-      const value = mediaSearchResultSchema.parse(await mediaResponse(await fetch(`/api/guilds/${guildId}/media?${params}`, { cache: 'no-store', signal: controller.signal })));
+      const cacheKey = JSON.stringify([/^https?:\/\//i.test(query) ? query : query.normalize('NFKC').replace(/\s+/g, ' ').toLowerCase(), page]);
+      const cached = cache.current.get(cacheKey);
+      const value = cached && cached.until > Date.now() ? cached.value : mediaSearchResultSchema.parse(await mediaResponse(await fetch(`/api/guilds/${guildId}/media?${params}`, { cache: 'no-store', signal: controller.signal })));
       if (controller.signal.aborted) return;
+      if (!value.unavailable.length && !value.errors.length) {
+        if (cache.current.size >= 20) cache.current.delete(cache.current.keys().next().value!);
+        cache.current.set(cacheKey, { until: cached && cached.until > Date.now() ? cached.until : Date.now() + 120000, value });
+      }
       setState((previous) => {
         const unique = new Map((more ? previous.results : []).map((track) => [`${track.provider}:${track.providerItemId}`, track]));
-        for (const track of value.results) unique.set(`${track.provider}:${track.providerItemId}`, track);
+        for (const track of value.results) if (allowYoutube || track.provider !== 'youtube') unique.set(`${track.provider}:${track.providerItemId}`, track);
         const results = [...unique.values()].slice(0, 200);
-        return { ...previous, results, searched: true, submittedQuery: query, nextPage: results.length < 200 && value.nextPage !== null && value.nextPage > page ? value.nextPage : null };
+        return { ...previous, results, playlists: value.playlists, searched: true, submittedQuery: query, matchedQuery: value.matchedQuery, nextPage: results.length < 200 && value.nextPage !== null && value.nextPage > page ? value.nextPage : null };
       });
       const missing = providers.filter((provider) => provider.state === 'unconfigured' && value.unavailable.includes(provider.name));
       if (value.errors.length) setMessage(value.errors.join(' '));
       else if (missing.length) setMessage(`Не налаштовано пошук: ${missing.map((provider) => provider.name).join(', ')}. Спробуйте інше джерело.`);
       else if (value.unavailable.length) setMessage(`Тимчасово недоступні джерела: ${value.unavailable.join(', ')}.`);
-      else if (!value.results.length) setMessage(more ? 'Усі результати завантажено.' : 'Нічого не знайдено. Спробуйте інший запит або посилання.');
+      else if (!value.results.length && !value.playlists.length) setMessage(more ? 'Усі результати завантажено.' : 'Нічого не знайдено. Спробуйте інший запит або посилання.');
     } catch (error) {
       if (!controller.signal.aborted) setMessage(error instanceof Error ? error.message : 'Пошук недоступний.');
     } finally {
-      if (request.current === controller) { request.current = null; setSearchPending(false); }
+      if (request.current === controller) { request.current = null; activeQuery.current = ''; setSearchPending(false); setSearchingQuery(''); }
     }
   }
   return {
-    ...state, searchPending, search,
+    ...state, searchPending, searchingQuery, search,
     setQuery: (query: string) => setState((value) => ({ ...value, query })),
     setSource: (source: SearchState['source']) => setState((value) => ({ ...value, source })),
     setMobileTab: (mobileTab: SearchState['mobileTab']) => setState((value) => ({ ...value, mobileTab })),

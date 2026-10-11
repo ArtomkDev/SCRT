@@ -22,6 +22,31 @@ function ack(value: MediaSnapshot) { return Response.json({ replayed: false, sna
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe('Immediate player controls and ordered worker acknowledgments', () => {
+  it('retries a favorites selection once after an automatic advance, even when its first track is now current', async () => {
+    const initial = snapshot(), fresh = structuredClone(initial); fresh.session!.currentTrack = fresh.session!.queue.shift()!; fresh.session!.queueVersion++;
+    let get = 0, post = 0;
+    const fetch = vi.fn(async (_url: string, init?: RequestInit) => init?.method === 'POST'
+      ? ++post === 1 ? Response.json({ error: 'Черга змінилася.' }, { status: 409 }) : ack(fresh)
+      : Response.json(++get === 1 ? initial : fresh)); vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useMediaController(guildId, initial, null)); await act(async () => {});
+    const action = { type: 'PLAY_FAVORITES' as const, favoriteIds: ['a'.repeat(64), 'b'.repeat(64)] };
+    act(() => result.current.send(action, initial.session!.queue[0]!));
+    await waitFor(() => expect(result.current.pending).toHaveLength(0));
+    const posts = fetch.mock.calls.filter(([, init]) => init?.method === 'POST').map(([, init]) => JSON.parse(String(init!.body)));
+    expect(posts).toHaveLength(2); expect(posts.map((command) => command.expectedQueueVersion)).toEqual([2, 3]);
+    expect(posts[0].commandId).toBe(posts[1].commandId); expect(posts[1].action).toEqual(action);
+    expect(result.current.message).toBe(''); expect(result.current.snapshot.session?.currentTrack?.title).toBe('second');
+  });
+  it('does not retry a favorites selection indefinitely when the queue changes again', async () => {
+    const initial = snapshot(), fresh = structuredClone(initial); fresh.session!.queueVersion++;
+    let get = 0; const fetch = vi.fn(async (_url: string, init?: RequestInit) => init?.method === 'POST'
+      ? Response.json({ error: 'Черга змінилася.' }, { status: 409 }) : Response.json(++get === 1 ? initial : fresh)); vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useMediaController(guildId, initial, null)); await act(async () => {});
+    act(() => result.current.send({ type: 'PLAY_FAVORITES', favoriteIds: ['a'.repeat(64)] }));
+    await waitFor(() => expect(result.current.pending).toHaveLength(0));
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(2);
+    expect(result.current.message).toBe('Черга змінилася.'); expect(result.current.snapshot.session?.currentTrack?.title).toBe('current');
+  });
   it('keeps partial continuation feedback while confirming successful playback', async () => {
     const initial = snapshot(); const changed = structuredClone(initial); changed.session!.currentTrack = changed.session!.queue[0]!; changed.session!.queueVersion++;
     const warning = 'Вибраний трек запущено. Частину добірки не додано; повторіть пошук, щоб оновити її.';

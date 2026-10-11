@@ -1,3 +1,4 @@
+import { Panel } from '@/app/components/dashboard-screen';
 import { LoadingValue, MetricsLoading, SettingsLoading, TableLoading } from '@/app/components/data-loading';
 
 export const roomColumns = ['Кімната', 'Власник', 'Канал створення', 'Учасники', 'Стан', 'Оновлено', 'Дії'];
@@ -16,8 +17,8 @@ export function VoicePageLoading({ view = 'overview' }: { view?: 'overview' | 'r
   const title = { overview: 'Огляд', rooms: 'Активні кімнати', creators: 'Канали створення', interfaces: 'Панелі керування', permissions: 'Дозволи SCRT' }[view];
   return <section className={view === 'creators' ? 'creators-page' : undefined} aria-label="Завантаження голосового модуля…" aria-busy="true"><h2 className="subheading">{title}</h2>
     {view === 'overview' && <MetricsLoading labels={['Канали створення', 'Активні кімнати']} className="voice-module-summary" label="Завантаження стану голосового модуля…" />}
-    {view === 'rooms' && <TableLoading columns={roomColumns} label="Завантаження кімнат…" className="voice-table" wrapperClassName="voice-table-wrap" />}
-    {(view === 'creators' || view === 'interfaces') && <div className="voice-item"><h3><LoadingValue width="18ch" /></h3><p><LoadingValue width="24ch" /></p></div>}
-    {view === 'permissions' && <section className="voice-item"><h3>Дозволи ролі бота</h3><ul className="voice-permission-list">{permissionNames.map((name) => <li key={name}><LoadingValue width="2ch" /> {name}</li>)}</ul></section>}
+    {view === 'rooms' && <Panel as="div"><TableLoading columns={roomColumns} label="Завантаження кімнат…" className="voice-table" wrapperClassName="voice-table-wrap" /></Panel>}
+    {(view === 'creators' || view === 'interfaces') && <Panel as="div" className="voice-item"><h3><LoadingValue width="18ch" /></h3><p><LoadingValue width="24ch" /></p></Panel>}
+    {view === 'permissions' && <Panel className="voice-item"><h3>Дозволи ролі бота</h3><ul className="voice-permission-list">{permissionNames.map((name) => <li key={name}><LoadingValue width="2ch" /> {name}</li>)}</ul></Panel>}
   </section>;
 }

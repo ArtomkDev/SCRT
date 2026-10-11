@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { mediaRequestSchema, mediaSettingsSchema, mediaActionSchema } from './media';
+import { mediaRequestSchema, mediaSettingsSchema, mediaActionSchema, mediaFavoriteRequestSchema } from './media';
 describe('Media validation', () => {
+  it('accepts only bounded unique favorites and never accepts client-owned liker data', () => {
+    const id = 'a'.repeat(64); const action = { type: 'PLAY_FAVORITES', favoriteIds: [id] };
+    expect(mediaActionSchema.safeParse(action).success).toBe(true);
+    for (const ids of [[], [id, id], ['../foreign'], Array.from({ length: 101 }, (_, i) => i.toString(16).padStart(64, '0'))]) expect(mediaActionSchema.safeParse({ ...action, favoriteIds: ids }).success).toBe(false);
+    expect(mediaActionSchema.safeParse({ ...action, guildId: '12345678901234567' }).success).toBe(false);
+    const like = { provider: 'soundcloud', providerItemId: 'https://soundcloud.com/artist/song', liked: true };
+    expect(mediaFavoriteRequestSchema.safeParse(like).success).toBe(true);
+    expect(mediaFavoriteRequestSchema.safeParse({ ...like, userId: '12345678901234567' }).success).toBe(false);
+    expect(mediaFavoriteRequestSchema.safeParse({ ...like, track: {} }).success).toBe(false);
+  });
   it('defaults legacy settings to five minutes and validates inactivity disconnect', () => {
     expect(mediaSettingsSchema.parse({}).inactivityDisconnectSeconds).toBe(300);
     for (const value of [0, 1, 300, 3600]) expect(mediaSettingsSchema.safeParse({ inactivityDisconnectSeconds: value }).success).toBe(true);

@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation';
 import { requireGuildAccess } from '@/lib/guards';
 import { activityGame, activityMemberIdentity, activityProfiles } from '@/lib/activity-data';
 import { guildScreenSearch, parseGuildScreen } from '@/lib/guild-screen';
+import { DashboardScreen, ScreenHeader } from '@/app/components/dashboard-screen';
 
 export default async function GuildHome({ params, searchParams }: { params: Promise<{ guildId: string }>; searchParams?: Promise<Record<string, string | string[] | undefined>> }) {
   const { guildId } = await params;
@@ -22,5 +23,5 @@ export default async function GuildHome({ params, searchParams }: { params: Prom
   if (permissions.has('activity.view')) redirect(`/servers/${guildId}/activity`);
   if (permissions.has('voice.view')) redirect(`/servers/${guildId}/voice`);
   if (permissions.has('settings.view')) redirect(`/servers/${guildId}/settings/access-control`);
-  return <main className="content-page"><div className="page-heading"><h1>Немає доступних модулів</h1><p>У вас немає доступу до розділів панелі. Зверніться до адміністратора сервера.</p></div><Link href="/servers" className="primary-link">До списку серверів</Link></main>;
+  return <DashboardScreen header={<ScreenHeader title="Немає доступних модулів" description="У вас немає доступу до розділів панелі. Зверніться до адміністратора сервера." />}><Link href="/servers" className="primary-link">До списку серверів</Link></DashboardScreen>;
 }

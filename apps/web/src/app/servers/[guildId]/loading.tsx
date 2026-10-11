@@ -1,2 +1,3 @@
 import { LoadingValue } from '@/app/components/data-loading';
-export default function Loading() { return <main className="content-page" aria-label="Завантаження сервера…" aria-busy="true"><div className="page-heading"><h1>Сервер</h1></div><section className="detail-panel"><LoadingValue width="18ch" /></section></main>; }
+import { Panel, DashboardScreen, ScreenHeader } from '@/app/components/dashboard-screen';
+export default function Loading() { return <DashboardScreen aria-label="Завантаження сервера…" aria-busy="true" header={<ScreenHeader title="Сервер" />}><Panel className="detail-panel"><LoadingValue width="18ch" /></Panel></DashboardScreen>; }

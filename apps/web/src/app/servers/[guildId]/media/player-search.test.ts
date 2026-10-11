@@ -9,6 +9,53 @@ const hook = (guild = 'guild', user = 'user') => renderHook(() => usePlayerSearc
 beforeEach(() => { sessionStorage.clear(); message.mockClear(); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 describe('persistent paginated Media search', () => {
+  it('reuses successful searches instantly and expires the cache', async () => {
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1000000);
+    const fetch = vi.fn().mockResolvedValue(Response.json({ results: [track('A')], unavailable: [], nextPage: 1, matchedQuery: 'Artist' })); vi.stubGlobal('fetch', fetch);
+    const { result } = hook();
+    act(() => result.current.setQuery('Artst')); await act(() => result.current.search());
+    expect(result.current.matchedQuery).toBe('Artist');
+    await act(() => result.current.search()); expect(fetch).toHaveBeenCalledOnce();
+    clock.mockReturnValue(1120001); await act(() => result.current.search()); expect(fetch).toHaveBeenCalledTimes(2);
+  });
+  it('cancels a previous query immediately and ignores its late result', async () => {
+    let resolve!: (response: Response) => void;
+    const fetch = vi.fn().mockImplementationOnce(() => new Promise<Response>((done) => { resolve = done; })).mockResolvedValueOnce(Response.json({ results: [track('B')], unavailable: [] })); vi.stubGlobal('fetch', fetch);
+    const { result } = hook(); act(() => result.current.setQuery('First'));
+    let pending!: Promise<void>; act(() => { pending = result.current.search(); });
+    expect(result.current.searchingQuery).toBe('First');
+    act(() => result.current.setQuery('Second')); await act(() => result.current.search());
+    expect(fetch.mock.calls[0]![1].signal.aborted).toBe(true); expect(result.current.results[0]?.title).toBe('B');
+    await act(async () => { resolve(Response.json({ results: [track('A')], unavailable: [] })); await pending; });
+    expect(result.current.results[0]?.title).toBe('B'); expect(result.current.searchPending).toBe(false);
+  });
+  it('does not cache unavailable sources and clears the cache across guilds', async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(Response.json({ results: [track('A')], unavailable: ['YouTube'] })).mockResolvedValue(Response.json({ results: [track('B')], unavailable: [] })); vi.stubGlobal('fetch', fetch);
+    const { result, rerender } = renderHook(({ guild }) => usePlayerSearch(guild, 'user', [], message), { initialProps: { guild: 'first' } });
+    act(() => result.current.setQuery('Artist')); await act(() => result.current.search()); await act(() => result.current.search()); expect(fetch).toHaveBeenCalledTimes(2);
+    rerender({ guild: 'second' }); act(() => result.current.setQuery('Artist')); await act(() => result.current.search()); expect(fetch).toHaveBeenCalledTimes(3);
+  });
+  it('removes cached YouTube results and their active filter when production search is enabled', async () => {
+    const soundcloud = { ...track('SC'), provider: 'soundcloud', providerItemId: 'https://soundcloud.com/artist/song', externalUrl: 'https://soundcloud.com/artist/song' };
+    sessionStorage.setItem('scrt:media-search:v1:user:guild', JSON.stringify({ version: 1, savedAt: Date.now(), query: 'Artist', submittedQuery: 'Artist', results: [track('YT'), soundcloud], searched: true, source: 'youtube', mobileTab: 'search', nextPage: null }));
+    const fetch = vi.fn().mockResolvedValue(Response.json({ results: [track('YT'), soundcloud], unavailable: [] })); vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => usePlayerSearch('guild', 'user', [], message, false));
+    expect(result.current.source).toBe('all'); expect(result.current.results).toEqual([soundcloud]);
+    await act(() => result.current.search()); expect(result.current.results).toEqual([soundcloud]);
+  });
+  it('aborts an old search and clears its pending state when YouTube becomes disabled', async () => {
+    let resolve!: (value: Response) => void;
+    const soundcloud = { ...track('SC'), provider: 'soundcloud', providerItemId: 'https://soundcloud.com/artist/song', externalUrl: 'https://soundcloud.com/artist/song' };
+    const fetch = vi.fn().mockImplementationOnce(() => new Promise<Response>((done) => { resolve = done; })).mockResolvedValueOnce(Response.json({ results: [soundcloud], unavailable: [] })); vi.stubGlobal('fetch', fetch);
+    const { result, rerender } = renderHook(({ allowed }) => usePlayerSearch('guild', 'user', [], message, allowed), { initialProps: { allowed: true } });
+    act(() => result.current.setQuery('Artist')); let pending!: Promise<void>;
+    act(() => { pending = result.current.search(); }); expect(result.current.searchPending).toBe(true);
+    rerender({ allowed: false });
+    expect(fetch.mock.calls[0]![1].signal.aborted).toBe(true); expect(result.current.searchPending).toBe(false);
+    await act(() => result.current.search()); expect(result.current.results).toEqual([soundcloud]);
+    await act(async () => { resolve(Response.json({ results: [track('late')], unavailable: [] })); await pending; });
+    expect(result.current.results).toEqual([soundcloud]);
+  });
   it('starts artist discovery immediately without using the previous query draft', async () => {
     const fetch = vi.fn().mockResolvedValue(Response.json({ results: [track('A')], unavailable: [], nextPage: 1 }));
     vi.stubGlobal('fetch', fetch); const { result } = hook();

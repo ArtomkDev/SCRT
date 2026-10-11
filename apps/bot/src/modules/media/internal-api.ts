@@ -49,9 +49,11 @@ export function startMediaInternalApi(commands: MediaCommandService, config: { s
       const key = `${guildId}:${userId}:${input.operation}`; const now = Date.now(); const previous = windows.get(key); const window = previous && now - previous.since < 60000 ? previous : { since: now, count: 0 };
       window.count++; if (windows.size >= 5000) for (const [id, entry] of windows) if (now - entry.since >= 60000) windows.delete(id);
       if (!windows.has(key) && windows.size >= 5000) throw new MediaError('Media worker зайнятий.', 429);
-      windows.set(key, window); if (window.count > (input.operation === 'search' ? 12 : 120)) throw new MediaError('Забагато запитів. Зачекайте хвилину.', 429);
+      windows.set(key, window); if (window.count > (input.operation === 'search' ? 12 : input.operation === 'track' || input.operation === 'playlist' ? 30 : 120)) throw new MediaError('Забагато запитів. Зачекайте хвилину.', 429);
       const sessions = commands.sessions;
       const result = input.operation === 'state' ? await sessions.state(guildId, userId)
+        : input.operation === 'playlist' ? await sessions.playlist(guildId, userId, input.providerItemId, input.page)
+        : input.operation === 'track' ? await sessions.favoriteTrack(guildId, userId, input.provider, input.providerItemId)
         : input.operation === 'search' ? await sessions.search(guildId, userId, input.query, input.page)
         : input.operation === 'settings' ? await sessions.settings(guildId, userId, input.settings)
         : await commands.execute(input.command);

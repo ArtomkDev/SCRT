@@ -1,3 +1,4 @@
+import { Panel } from '@/app/components/dashboard-screen';
 import { activityMetrics, type ActivityMetric, type ActivityPeriod } from '@scrt/shared';
 import { LoadingValue, MetricsLoading, RowsLoading, SettingsLoading, TableLoading } from '@/app/components/data-loading';
 import { InlineAction } from '@/app/components/inline-action';
@@ -18,7 +19,7 @@ export function GamesLoading({ member = false }: { member?: boolean }) {
 }
 
 export function RankingLoading({ title }: { title: string }) {
-  return <section className="detail-panel"><h3>{title}</h3><RowsLoading label="Завантаження рейтингу…" /></section>;
+  return <Panel className="detail-panel"><h3>{title}</h3><RowsLoading label="Завантаження рейтингу…" /></Panel>;
 }
 
 export function MemberStatsLoading() {
@@ -33,7 +34,7 @@ export function VoiceRunNoteLoading() {
 }
 
 export function GameContentLoading({ path, period }: { path?: string; period?: ActivityPeriod }) {
-  return <><div className="activity-artwork-hero" aria-label="Завантаження профілю активності…" aria-busy="true"><div className="activity-artwork-heading"><span className="activity-avatar" style={{ width: 64, height: 64 }} aria-hidden="true" /><div><h2><LoadingValue width="18ch" /></h2><LoadingValue width="10ch" /></div></div></div><PeriodLinks path={path} period={period} /><MetricsLoading labels={gameSummaryLabels} className="activity-summary activity-game-metrics" /><section className="detail-panel activity-contributors"><h3>Внесок учасників</h3><TableLoading label="Завантаження учасників…" columns={contributorColumns} className="activity-table activity-contributors-table" /></section></>;
+  return <><div className="activity-artwork-hero" aria-label="Завантаження профілю активності…" aria-busy="true"><div className="activity-artwork-heading"><span className="activity-avatar" style={{ width: 64, height: 64 }} aria-hidden="true" /><div><h2><LoadingValue width="18ch" /></h2><LoadingValue width="10ch" /></div></div></div><PeriodLinks path={path} period={period} /><MetricsLoading labels={gameSummaryLabels} className="activity-summary activity-game-metrics" /><Panel className="detail-panel activity-contributors"><h3>Внесок учасників</h3><TableLoading label="Завантаження учасників…" columns={contributorColumns} className="activity-table activity-contributors-table" /></Panel></>;
 }
 
 export function ActivitySettingsLoading() {
@@ -64,13 +65,13 @@ export function ActivityPageLoading({ view = 'overview', guildId, period = 'all'
     {view === 'member' && <div className="section-intro"><div><h2><LoadingValue width="18ch" /></h2><p><LoadingValue width="12ch" /></p></div></div>}
     {view === 'leaderboard' && <MetricLinks path={path} period={period} metric={metric} />}
     {view !== 'members' && view !== 'game' && (view !== 'leaderboard' || !metric || activityMetrics[metric].periodAware) && <PeriodLinks path={path} period={period} metric={metric} />}
-    {view === 'overview' && <><MetricsLoading labels={summaryLabels.overview} /><div className="voice-columns"><RankingLoading title="Найактивніші в чаті" /><RankingLoading title="Найактивніші у Voice" /></div><section className="detail-panel"><h3>Найпопулярніші ігри та застосунки</h3><GamesLoading /></section><div className="voice-columns"><div><RankingLoading title="Поточні Voice-серії" /><StreakNoteLoading /></div><div><RankingLoading title="Топ безперервного Voice" /><VoiceRunNoteLoading /></div></div></>}
+    {view === 'overview' && <><MetricsLoading labels={summaryLabels.overview} /><div className="voice-columns"><RankingLoading title="Найактивніші в чаті" /><RankingLoading title="Найактивніші у Voice" /></div><Panel className="detail-panel"><h3>Найпопулярніші ігри та застосунки</h3><GamesLoading /></Panel><div className="voice-columns"><div><RankingLoading title="Поточні Voice-серії" /><StreakNoteLoading /></div><div><RankingLoading title="Топ безперервного Voice" /><VoiceRunNoteLoading /></div></div></>}
     {view === 'messages' && <><MetricsLoading labels={summaryLabels.messages} /><RankingLoading title="Топ повідомлень" /></>}
     {view === 'voice' && <><MetricsLoading labels={summaryLabels.voice} /><div className="voice-columns"><RankingLoading title="Топ Voice" /><RankingLoading title="Топ демонстрації екрана" /></div><VoiceRunNoteLoading /><RankingLoading title="Топ безперервного Voice" /><h2 className="subheading">Voice-серії</h2><StreakNoteLoading /><div className="voice-columns"><RankingLoading title="Поточні серії" /><RankingLoading title="Найдовші серії" /></div></>}
     {view === 'games' && <><div className="activity-games-total"><MetricsLoading labels={[gamesTimeLabel]} /></div><GamesLoading /></>}
     {view === 'leaderboard' && <>{metric && !activityMetrics[metric].periodAware && (metric === 'longestVoiceRunSeconds' ? <VoiceRunNoteLoading /> : <StreakNoteLoading />)}<RankingLoading title={metric ? activityMetrics[metric].label : 'Рейтинг учасників'} /></>}
     {view === 'members' && <><div className="activity-search"><div className="loading-field"><span>Пошук</span><div className="loading-control"><LoadingValue width="18ch" /></div></div></div><RowsLoading label="Завантаження учасників…" /></>}
-    {view === 'member' && <><MemberStatsLoading /><section className="detail-panel"><h3>Найпопулярніші ігри та застосунки</h3><GamesLoading member /></section></>}
+    {view === 'member' && <><MemberStatsLoading /><Panel className="detail-panel"><h3>Найпопулярніші ігри та застосунки</h3><GamesLoading member /></Panel></>}
     {view === 'game' && <GameContentLoading path={path} period={period} />}
   </section>;
 }

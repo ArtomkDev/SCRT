@@ -38,7 +38,7 @@ it('keeps a nonblocking dock inside the shell and retains logs and filters acros
   expect(fetch).not.toHaveBeenCalled();
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Логи' })); });
   const dock = screen.getByRole('complementary', { name: 'Логи поточного запуску' });
-  expect(dock.parentElement?.className).toBe('runtime-logs-workspace');
+  expect(dock.parentElement?.className).toBe('dashboard-tools');
   expect(container.querySelector('.runtime-logs-workspace')?.getAttribute('data-logs-open')).toBe('true');
   expect(screen.queryByRole('dialog')).toBeNull();
   fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'track' } });

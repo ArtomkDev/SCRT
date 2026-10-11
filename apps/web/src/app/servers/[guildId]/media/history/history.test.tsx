@@ -25,6 +25,34 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe('Media history interactions', () => {
+  it('filters loaded history by song, requester and playback result without mutating playback', async () => {
+    const mine = item('First song'); const other = { ...item('Other song', otherId), result: 'failed' as const };
+    const fetch = vi.fn(async () => Response.json(initial()));
+    mount({ items: [mine, other], next: null }, fetch);
+    fireEvent.change(screen.getByLabelText('Хто увімкнув', { selector: 'select' }), { target: { value: 'me' } });
+    expect(screen.queryByText('Other song')).toBeNull(); expect(screen.getByText('First song')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Хто увімкнув', { selector: 'select' }), { target: { value: 'all' } });
+    fireEvent.change(screen.getByLabelText('Результат відтворення', { selector: 'select' }), { target: { value: 'failed' } });
+    expect(screen.queryByText('First song')).toBeNull(); expect(screen.getByText('Other song')).toBeTruthy();
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Пошук в історії' }), { target: { value: 'missing' } });
+    expect(screen.getByText('Немає збігів серед завантажених записів')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Скинути фільтри' }));
+    expect(screen.getByText('First song')).toBeTruthy(); expect(screen.getByText('Other song')).toBeTruthy();
+    expect(vi.mocked(global.fetch).mock.calls.every(([, request]) => !request?.method || request.method === 'GET')).toBe(true);
+  });
+  it('adds a history track to the queue using canonical identity and shows a requester icon', async () => {
+    const song = item('Queued song'); const state = initial(); state.controls.ADD_TRACK = true;
+    const posts: unknown[] = [];
+    mount({ items: [song], next: null }, async (_url, request) => {
+      if (request?.method === 'POST') { posts.push(JSON.parse(String(request.body))); return Response.json({ replayed: false, snapshot: state }); }
+      return Response.json(state);
+    });
+    const add = screen.getByRole('button', { name: 'Додати до черги: Queued song' });
+    await waitFor(() => expect(add.hasAttribute('disabled')).toBe(false)); fireEvent.click(add);
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0]).toMatchObject({ action: { type: 'ADD_TRACK', provider: 'youtube', providerItemId: song.track.providerItemId } });
+    const row = add.closest('li'); expect(row?.querySelector('.media-history-requester svg')).toBeTruthy();
+  });
   it('plays immediately through the existing authorized command stream with canonical references only', async () => {
     const own = item('Own song'); const mutations: unknown[] = []; const snapshot = initial();
     mount({ items: [own], next: null }, async (_url, request) => {

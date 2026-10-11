@@ -1,5 +1,5 @@
 'use client';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { mediaCommandResultSchema, mediaSnapshotSchema, type MediaAction, type MediaSnapshot } from '@scrt/validation';
 import type { MediaTrack } from '@scrt/shared';
 
@@ -87,7 +87,7 @@ export function useMediaController(guildId: string, initial: MediaSnapshot, init
     return () => { disposed.current = true; jobs.current = []; clearTimeout(timer); abort.abort(); };
   }, [sync]);
 
-  async function drain() {
+  const drain = useCallback(async () => {
     if (running.current) return;
     running.current = true;
     try {
@@ -108,7 +108,7 @@ export function useMediaController(guildId: string, initial: MediaSnapshot, init
           }
         } catch (error) {
           active.current = null;
-          if (error instanceof MediaResponseError && error.status === 422 && action.type === 'PLAY_TRACK') {
+          if (error instanceof MediaResponseError && error.status === 422 && (action.type === 'PLAY_TRACK' || action.type === 'PLAY_FAVORITES' || action.type === 'PLAY_PLAYLIST')) {
             // A preparation rejection has no audible effects. Keep the user's
             // newer selection, reconcile, then run it against confirmed state.
             jobs.current.shift(); epoch.current++;
@@ -122,12 +122,12 @@ export function useMediaController(guildId: string, initial: MediaSnapshot, init
           }
           // A rejected selection has no effects. If an automatic advance changed
           // only the queue version, reconcile and retry that selection once.
-          if (error instanceof MediaResponseError && error.status === 409 && action.type === 'PLAY_TRACK' && session && !job.rebased) {
+          if (error instanceof MediaResponseError && error.status === 409 && (action.type === 'PLAY_TRACK' || action.type === 'PLAY_FAVORITES' || action.type === 'PLAY_PLAYLIST') && session && !job.rebased) {
             try {
               const fresh = await readSnapshot();
               if (!disposed.current && fresh.session?.sessionId === session.sessionId && fresh.session.queueVersion !== session.queueVersion) {
                 confirmed.current = fresh; job.rebased = true;
-                if (fresh.session.currentTrack?.provider === action.provider && fresh.session.currentTrack.providerItemId === action.providerItemId) jobs.current = jobs.current.filter((pending) => pending.id !== job.id);
+                if (action.type === 'PLAY_TRACK' && fresh.session.currentTrack?.provider === action.provider && fresh.session.currentTrack.providerItemId === action.providerItemId) jobs.current = jobs.current.filter((pending) => pending.id !== job.id);
                 setUnavailable(null); publish(); continue;
               }
             } catch { /* Fall through to cancellation if the state is unknown. */ }
@@ -149,8 +149,8 @@ export function useMediaController(guildId: string, initial: MediaSnapshot, init
         }
       }
     } finally { active.current = null; running.current = false; }
-  }
-  function send(action: MediaAction, track?: MediaTrack) {
+  }, [endpoint, guildId, publish, readSnapshot, setMessage]);
+  const send = useCallback((action: MediaAction, track?: MediaTrack) => {
     if (disposed.current) return;
     if (jobs.current.length >= 20) { setMessage('Забагато дій поспіль. Дочекайтеся синхронізації.'); return; }
     const last = jobs.current.at(-1);
@@ -172,6 +172,6 @@ export function useMediaController(guildId: string, initial: MediaSnapshot, init
     else if (action.type === 'SET_VOLUME' && last?.action.type === 'SET_VOLUME' && last !== active.current) last.action = action;
     else jobs.current.push({ id: crypto.randomUUID(), action, track, at: Date.now() });
     epoch.current++; setMessage(''); publish(); void drain();
-  }
-  return { ...view, unavailable, ...feedback, setMessage, send };
+  }, [drain, publish, setMessage]);
+  return useMemo(() => ({ ...view, unavailable, ...feedback, setMessage, send }), [view, unavailable, feedback, setMessage, send]);
 }

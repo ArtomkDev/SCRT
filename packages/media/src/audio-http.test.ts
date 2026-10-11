@@ -4,9 +4,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { IncomingMessage } from 'node:http';
 const mocks = vi.hoisted(() => ({ request: vi.fn() }));
 vi.mock('node:https', () => ({ request: mocks.request }));
-import { audioStreamRequestId, mediaDestination, openAudioStream } from './audio-http';
+import { audioStreamRequestId, mediaDestination, openAudioStream, readMediaDocument } from './audio-http';
 afterEach(() => { vi.clearAllMocks(); vi.useRealTimers(); });
 describe('audio HTTP redirect transport', () => {
+  it('rejects documents outside the provider allowlist before opening a connection', async () => {
+    await expect(readMediaDocument('https://evil.example/data', { hosts: ['soundcloud.com'], contentTypes: ['text/html'], maxBytes: 100 })).rejects.toThrow('Недозволена');
+    await expect(readMediaDocument('http://soundcloud.com/data', { hosts: ['soundcloud.com'], contentTypes: ['text/html'], maxBytes: 100 })).rejects.toThrow('Недозволена');
+    expect(mocks.request).not.toHaveBeenCalled();
+  });
   it('clears the DNS deadline after success and reports a stalled resolution without opening a request', async () => {
     vi.useFakeTimers();
     await mediaDestination('https://audio.example/a', async () => [{ address: '8.8.8.8', family: 4 }]);

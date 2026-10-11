@@ -1,0 +1,3 @@
+.ui-button.media-module-player-toggle { flex: none; min-height: 34px; padding: 7px 10px; color: var(--muted); font-size: 11px; white-space: nowrap; }
+.media-module-player-toggle[aria-expanded="true"] { border-color: var(--border-strong); background: var(--surface-hover); color: var(--text); }
+@container dashboard-screen (max-width: 540px) { .ui-button.media-module-player-toggle { padding-inline: 8px; font-size: 10px; } }

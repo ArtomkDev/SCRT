@@ -15,6 +15,8 @@ import { MediaCommandService } from './command-service';
 const guildId = '12345678901234567', room = '22345678901234567', otherRoom = '32345678901234567';
 const userId = '42345678901234567', otherId = '52345678901234567', botId = '62345678901234567', ownerId = '72345678901234567';
 class Store implements MediaStore {
+  favorites: import('@scrt/validation').MediaFavorite[] = [];
+  async favoriteTracks(_guildId: string, ids: string[]) { return this.favorites.filter((favorite) => ids.includes(favorite.id)); }
   settings = mediaSettingsSchema.parse({ enabled: true }); session: MediaSession | null = null; histories: MediaHistoryItem[] = []; receipts = new Map<string, { fingerprint: string }>(); writes = 0;
   async getSettings() { return structuredClone(this.settings); }
   async saveSettings(_guild: string, settings: MediaSettings) { this.settings = settings; }
@@ -25,7 +27,7 @@ class Store implements MediaStore {
     if (receipt) this.receipts.set(receipt.commandId, { fingerprint: receipt.fingerprint });
   }
 }
-function fixture() {
+function fixture(soundcloud?: MediaSourceProvider) {
   const store = new Store(); const members = new Map([userId, otherId, ownerId].map((id) => [id, { id, user: { bot: false }, displayName: id, roles: { cache: new Map<string, unknown>() }, voice: { channel: { name: 'Gaming' } } }]));
   const states = new Map([userId, otherId, ownerId].map((id) => [id, { id, channelId: room, member: members.get(id) }]));
   const channels = new Map([room, otherRoom].map((id) => [id, { id, type: ChannelType.GuildVoice, name: id === room ? 'Gaming' : 'General', parentId: null, permissionsFor: () => ({ has: () => true as boolean }) }]));
@@ -36,7 +38,7 @@ function fixture() {
   const engine = { connect: vi.fn(async () => undefined), play: vi.fn<PlaybackEngine['play']>(async (...args) => { await args[5]?.(); }), seek: vi.fn<PlaybackEngine['seek']>(async () => undefined), pause: vi.fn(), resume: vi.fn(), volume: vi.fn(), stop: vi.fn(), destroy: vi.fn() };
   let event: (event: EngineEvent) => void = () => undefined;
   const mappings = { accessMappings: async () => ({ roles: [{ discordRoleId: guildId, appRole: 'VIEWER' as const }], members: [] }) };
-  const createService = () => new MediaSessionService(client, store, mappings, new MediaSourceRegistry([provider]), (_id, next) => { event = next; return engine; }, { available: true, ffmpeg: true, opus: true, dave: true });
+  const createService = () => new MediaSessionService(client, store, mappings, new MediaSourceRegistry([provider, ...(soundcloud ? [soundcloud] : [])]), (_id, next) => { event = next; return engine; }, { available: true, ffmpeg: true, opus: true, dave: true });
   const service = createService();
   const command = (action: MediaAction, actorUserId = userId): MediaCommand => ({ commandId: randomUUID(), guildId, actorUserId, sessionId: store.session?.sessionId ?? null, expectedQueueVersion: store.session?.queueVersion ?? null, action });
   const add = (id: string, actor = userId) => service.execute(command({ type: 'ADD_TRACK', provider: 'direct', providerItemId: id }, actor));
@@ -44,7 +46,111 @@ function fixture() {
   return { store, members, states, channels, guild, client, engine, service, provider, command, add, voice, createService, event: (value: EngineEvent) => event(value) };
 }
 afterEach(() => vi.useRealTimers());
+function playlistFixture(total = 3) {
+  const reference = 'https://soundcloud.com/artist/sets/list';
+  const songs = Array.from({ length: total }, (_, index): MediaTrack => ({ provider: 'soundcloud', providerItemId: `https://soundcloud.com/artist/song-${index}`, externalUrl: `https://soundcloud.com/artist/song-${index}`, title: `Song ${index}`, artist: 'Artist', type: 'track', durationMs: 60000, artworkUrl: null, playable: true, seekable: true, explicit: null }));
+  const soundcloud: MediaSourceProvider = { id: 'soundcloud', health: () => ({ id: 'soundcloud', name: 'SoundCloud', state: 'available', capabilities: { search: true, metadata: true, playback: true, seek: true, playlists: true, live: false } }), search: async () => [],
+    playlist: vi.fn<NonNullable<MediaSourceProvider['playlist']>>(async (_reference, page = 0) => ({ playlist: { provider: 'soundcloud', providerItemId: reference, externalUrl: reference, title: 'List', artist: 'Artist', artworkUrl: null, trackCount: total }, page, entries: songs.slice(page * 50, (page + 1) * 50).map((track, index) => ({ position: page * 50 + index + 1, track })), unavailableCount: 0, nextPage: (page + 1) * 50 < total ? page + 1 : null })),
+    resolve: vi.fn(async (id) => songs.find((track) => track.providerItemId === id)!), getPlayableResource: vi.fn(async () => new PassThrough() as unknown as IncomingMessage) };
+  return { ...fixture(soundcloud), reference, songs, soundcloud };
+}
+describe('SoundCloud playlist playback', () => {
+  it('browses without joining Voice, then atomically replaces the queue in original order and replays receipts', async () => {
+    const f = playlistFixture(); f.states.delete(userId);
+    expect((await f.service.playlist(guildId, userId, f.reference)).entries).toHaveLength(3);
+    expect(f.engine.connect).not.toHaveBeenCalled(); expect(f.engine.play).not.toHaveBeenCalled(); expect(f.store.writes).toBe(0);
+    f.states.set(userId, { id: userId, channelId: room, member: f.members.get(userId) });
+    await f.add('old-current'); await f.add('old-next');
+    const command = f.command({ type: 'PLAY_PLAYLIST', providerItemId: f.reference, shuffle: false }, ownerId);
+    await f.service.execute(command);
+    expect(f.store.session?.currentTrack?.title).toBe('Song 0'); expect(f.store.session?.queue.map((item) => item.title)).toEqual(['Song 1', 'Song 2']);
+    expect(f.store.session).toMatchObject({ shuffle: false, repeatMode: 'off' });
+    const plays = f.engine.play.mock.calls.length;
+    expect((await f.service.execute(command)).replayed).toBe(true); expect(f.engine.play).toHaveBeenCalledTimes(plays);
+    f.event({ type: 'ended', queueItemId: f.store.session!.currentTrack!.queueItemId, playedMs: 60000 }); await f.service.state(guildId, ownerId);
+    expect(f.store.session?.currentTrack?.title).toBe('Song 1'); await f.service.shutdown();
+  });
+  it('checks Voice, limits and every page before changing existing playback', async () => {
+    const f = playlistFixture(51); await f.add('old'); const before = structuredClone(f.store.session);
+    f.states.delete(userId);
+    await expect(f.service.execute(f.command({ type: 'PLAY_PLAYLIST', providerItemId: f.reference, shuffle: false }))).rejects.toMatchObject({ status: 403 });
+    expect(f.soundcloud.playlist).not.toHaveBeenCalled();
+    await expect(f.service.execute(f.command({ type: 'PLAY_PLAYLIST', providerItemId: f.reference, shuffle: false }, ownerId))).rejects.toMatchObject({ status: 422 });
+    expect(f.store.session).toEqual(before);
+    f.store.settings.maxTracksPerUser = 100;
+    vi.mocked(f.soundcloud.playlist!).mockRejectedValueOnce(new MediaSourceError('Failed page'));
+    await expect(f.service.execute(f.command({ type: 'PLAY_PLAYLIST', providerItemId: f.reference, shuffle: false }, ownerId))).rejects.toMatchObject({ status: 422 });
+    expect(f.store.session).toEqual(before); await f.service.shutdown();
+  });
+  it('loads all pages, shuffles the full list and keeps each requested track exactly once', async () => {
+    const f = playlistFixture(51); f.store.settings.maxTracksPerUser = 100;
+    await f.service.execute(f.command({ type: 'PLAY_PLAYLIST', providerItemId: f.reference, shuffle: true }, ownerId));
+    const actual = [f.store.session!.currentTrack!, ...f.store.session!.queue].map((item) => item.providerItemId);
+    expect(actual).toHaveLength(51); expect(new Set(actual)).toEqual(new Set(f.songs.map((track) => track.providerItemId)));
+    expect(f.store.session).toMatchObject({ shuffle: true, repeatMode: 'off' });
+    expect(f.soundcloud.playlist).toHaveBeenCalledWith(f.reference, 1);
+    expect(f.soundcloud.resolve).toHaveBeenCalledTimes(1); await f.service.shutdown();
+  });
+  it('skips metadata-unavailable tracks with an explicit warning and preserves current audio on source failure', async () => {
+    const f = playlistFixture(); f.songs[1]!.playable = false;
+    const result = await f.service.execute(f.command({ type: 'PLAY_PLAYLIST', providerItemId: f.reference, shuffle: false }, ownerId));
+    expect(result.warning).toContain('1'); expect(f.store.session?.queue.map((item) => item.title)).toEqual(['Song 2']);
+    const before = structuredClone(f.store.session); const destroyed = f.engine.destroy.mock.calls.length;
+    vi.mocked(f.soundcloud.getPlayableResource).mockRejectedValueOnce(new MediaSourceError('SoundCloud blocked'));
+    await expect(f.service.execute(f.command({ type: 'PLAY_PLAYLIST', providerItemId: f.reference, shuffle: true }, ownerId))).rejects.toMatchObject({ status: 422 });
+    expect(f.store.session).toEqual(before); expect(f.engine.destroy).toHaveBeenCalledTimes(destroyed); await f.service.shutdown();
+  });
+});
 describe('Media session commands', () => {
+  it('plays every requested favorite once in order using trusted guild metadata and an idempotent receipt', async () => {
+    const f = fixture();
+    for (const [index, id] of ['first', 'second', 'third'].entries()) f.store.favorites.push({ id: String(index + 1).repeat(64), track: await f.provider.resolve(id), likedBy: [{ userId, name: 'Listener', likedAt: 1 }], updatedAt: 1 });
+    vi.mocked(f.provider.resolve).mockClear();
+    const command = f.command({ type: 'PLAY_FAVORITES', favoriteIds: f.store.favorites.map((item) => item.id) }, ownerId);
+    await f.service.execute(command);
+    expect(f.store.session?.currentTrack?.title).toBe('first');
+    expect(f.store.session?.queue.map((track) => track.title)).toEqual(['second', 'third']);
+    expect(f.provider.resolve).toHaveBeenCalledTimes(1);
+    expect((await f.service.execute(command)).replayed).toBe(true);
+    expect(f.engine.play).toHaveBeenCalledTimes(1);
+    await f.service.shutdown();
+  });
+  it('rejects missing or oversized favorite collections before interrupting current playback', async () => {
+    const f = fixture(); await f.add('current');
+    for (const [index, id] of ['first', 'second', 'third'].entries()) f.store.favorites.push({ id: String(index + 1).repeat(64), track: await f.provider.resolve(id), likedBy: [{ userId, name: 'Listener', likedAt: 1 }], updatedAt: 1 });
+    const saved = structuredClone(f.store.session); f.engine.play.mockClear(); f.engine.stop.mockClear(); f.engine.destroy.mockClear();
+    await expect(f.service.execute(f.command({ type: 'PLAY_FAVORITES', favoriteIds: ['f'.repeat(64)] }, ownerId))).rejects.toMatchObject({ status: 422 });
+    f.store.settings.maxTracksPerUser = 2;
+    await expect(f.service.execute(f.command({ type: 'PLAY_FAVORITES', favoriteIds: f.store.favorites.map((item) => item.id) }, ownerId))).rejects.toMatchObject({ status: 422 });
+    expect(f.store.session).toEqual(saved); expect(f.engine.play).not.toHaveBeenCalled(); expect(f.engine.stop).not.toHaveBeenCalled(); expect(f.engine.destroy).not.toHaveBeenCalled();
+    await f.service.shutdown();
+  });
+  it('restores the entire favorite collection after a stopped session with a saved queue', async () => {
+    const f = fixture(); await f.add('first'); await f.add('second');
+    for (const [index, id] of ['first', 'second', 'third'].entries()) f.store.favorites.push({ id: String(index + 1).repeat(64), track: await f.provider.resolve(id), likedBy: [{ userId, name: 'Listener', likedAt: 1 }], updatedAt: 1 });
+    await f.service.execute(f.command({ type: 'STOP' }, ownerId));
+    expect(f.store.session?.recoverable).toBe(true);
+    await f.service.execute(f.command({ type: 'PLAY_FAVORITES', favoriteIds: f.store.favorites.map((item) => item.id) }, ownerId));
+    expect(f.store.session?.currentTrack?.title).toBe('first');
+    expect(f.store.session?.queue.map((track) => track.title)).toEqual(['second', 'third']);
+    await f.service.shutdown();
+  });
+  it('counts the restarted current favorite towards total collection capacity', async () => {
+    const f = fixture(); await f.add('first'); f.store.settings.maxQueueItems = 3;
+    for (const [index, id] of ['first', 'second', 'third', 'fourth'].entries()) f.store.favorites.push({ id: String(index + 1).repeat(64), track: await f.provider.resolve(id), likedBy: [{ userId, name: 'Listener', likedAt: 1 }], updatedAt: 1 });
+    const saved = structuredClone(f.store.session);
+    await expect(f.service.execute(f.command({ type: 'PLAY_FAVORITES', favoriteIds: f.store.favorites.map((item) => item.id) }, ownerId))).rejects.toMatchObject({ status: 422 });
+    expect(f.store.session).toEqual(saved); await f.service.shutdown();
+  });
+  it('keeps the current track on favorite read failure and requires voice policy for bulk playback', async () => {
+    const f = fixture(); await f.add('current'); const saved = structuredClone(f.store.session); f.engine.destroy.mockClear();
+    const read = vi.spyOn(f.store, 'favoriteTracks').mockRejectedValue(new Error('Database unavailable'));
+    await expect(f.service.execute(f.command({ type: 'PLAY_FAVORITES', favoriteIds: ['a'.repeat(64)] }, ownerId))).rejects.toMatchObject({ status: 503 });
+    expect(f.store.session).toEqual(saved); expect(f.engine.destroy).not.toHaveBeenCalled();
+    read.mockClear(); f.states.delete(userId);
+    await expect(f.service.execute(f.command({ type: 'PLAY_FAVORITES', favoriteIds: ['a'.repeat(64)] }))).rejects.toMatchObject({ status: 403 });
+    expect(read).not.toHaveBeenCalled(); await f.service.shutdown();
+  });
   it('leaves after the configured paused time without extending it on polls or unrelated commands', async () => {
     vi.useFakeTimers(); const f = fixture(); f.store.settings.inactivityDisconnectSeconds = 10;
     await f.add('first'); await f.add('second'); await f.service.execute(f.command({ type: 'PAUSE' }));
@@ -318,6 +424,20 @@ describe('Media session commands', () => {
     const resolve = f.provider.resolve; f.provider.resolve = async (id) => ({ ...await resolve(id), playable: id !== 'next' });
     f.event({ type: 'ended', queueItemId: f.store.session!.currentTrack!.queueItemId }); await f.service.state(guildId, ownerId);
     expect(f.store.session?.currentTrack?.title).toBe('last'); expect(f.store.histories).toContainEqual(expect.objectContaining({ result: 'failed', track: expect.objectContaining({ title: 'next' }) }));
+  });
+  it.each(['NETWORK_BLOCKED', 'NETWORK_UNREACHABLE', 'PROXY_AUTH_REQUIRED'] as const)('preserves the next track and queue on provider-wide %s instead of switching songs', async (code) => {
+    const f = fixture(); await f.add('first'); await f.add('next'); await f.add('last', otherId);
+    const queue = structuredClone(f.store.session!.queue); const first = f.store.session!.currentTrack!;
+    const reason = 'YouTube відхиляє запити з мережі бота.';
+    vi.mocked(f.provider.resolve).mockRejectedValueOnce(new MediaSourceError(reason, code));
+    f.engine.play.mockClear();
+    f.event({ type: 'ended', queueItemId: first.queueItemId, playedMs: 60000 }); await f.service.state(guildId, ownerId);
+    expect(f.store.session).toMatchObject({ state: 'idle', currentTrack: null, recoverable: true, lastError: reason, queue });
+    expect(f.store.histories).toEqual([expect.objectContaining({ result: 'finished', track: first })]);
+    expect(f.engine.play).not.toHaveBeenCalled();
+    await f.service.execute(f.command({ type: 'RESTORE' }, ownerId));
+    expect(f.store.session?.currentTrack?.queueItemId).toBe(queue[0]?.queueItemId);
+    expect(f.store.session?.queue).toEqual(queue.slice(1));
   });
   it('revalidates restored browser search references after the worker search cache is lost', async () => {
     const f = fixture(); f.store.settings.maxTracksPerUser = 2;

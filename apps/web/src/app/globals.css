@@ -5,6 +5,7 @@
 @import "./shell.css";
 @import "./dashboard-ui.css";
 @import "./components/auth/auth-screen.css";
+@import "./components/dashboard-screen.css";
 
 :root {
   color-scheme: dark;
@@ -62,10 +63,8 @@ h1, h2, h3, p { margin-top: 0; }
 
 .content-page { width: 100%; max-width: 1440px; margin: 0 auto 0 0; padding: 34px var(--space-page) 100px; }
 .guild-content .content-page { margin-inline: 0 auto; }
-.page-heading { margin-bottom: 26px; padding-bottom: 20px; border-bottom: 1px solid var(--border); }
-.page-heading h1, .content-page > h1 { margin-bottom: 4px; font-size: clamp(25px, 2.5vw, 32px); font-weight: 760; letter-spacing: -.035em; line-height: 1.2; }
-.page-heading p, .muted { color: var(--muted); }
-.page-heading p { margin-bottom: 0; }
+.content-page > h1 { margin-bottom: 4px; font-size: clamp(25px, 2.5vw, 32px); font-weight: 760; letter-spacing: -.035em; line-height: 1.2; }
+.muted { color: var(--muted); }
 .subheading { margin: 30px 0 14px; font-size: 19px; font-weight: 720; letter-spacing: -.02em; }
 .empty-state { margin: 0; padding: 16px 0; color: var(--muted); }
 .action-link, .primary-link { display: inline-flex; align-items: center; justify-content: center; min-height: 38px; padding: 8px 16px; border: 1px solid var(--accent); border-radius: 5px; background: var(--accent); color: white; font-size: 13px; font-weight: 700; white-space: nowrap; }
@@ -82,11 +81,10 @@ form[aria-busy="true"] button[type="submit"] { opacity: .6; cursor: progress; }
 .section-heading h2 { margin: 0; font-size: 16px; font-weight: 720; }
 .section-heading span, .count-badge { display: inline-grid; place-items: center; min-width: 24px; height: 23px; padding: 0 7px; border-radius: 12px; background: var(--surface-hover); color: var(--muted); font-size: 12px; font-weight: 700; }
 .server-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-.server-card { display: flex; align-items: center; min-width: 0; min-height: 92px; gap: 16px; padding: 18px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.server-card { display: flex; align-items: center; min-height: 92px; gap: 16px; }
 .server-card-copy { flex: 1; min-width: 0; }
 .server-card-copy h3 { margin: 0 0 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; font-weight: 720; }
 .server-card-copy p { margin: 0; color: var(--muted); font-size: 12px; }
-.detail-panel, .voice-item { padding: 20px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
 .detail-panel { margin-top: 16px; }
 .mono-line { margin: 8px 0; overflow-wrap: anywhere; font-family: ui-monospace, monospace; font-size: 12px; }
 .mapping-list { margin: 0; padding: 0; list-style: none; }
@@ -183,12 +181,7 @@ form[aria-busy="true"] button[type="submit"] { opacity: .6; cursor: progress; }
 .activity-exclusions { list-style: none; padding: 0; }
 .activity-exclusions li { display: flex; gap: 16px; align-items: center; margin: 8px 0; }
 .activity-exclusions button { cursor: pointer; padding: 4px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface); color: var(--text); }
-.voice-tabs { display: flex; gap: 4px; overflow-x: auto; padding: 0 0 12px; border-bottom: 1px solid var(--border); scrollbar-width: thin; }
-.voice-tabs a { flex: none; padding: 9px 13px; border-radius: 5px; color: var(--muted); font-size: 13px; }
-.voice-tabs a:hover { background: var(--surface-hover); color: var(--text); }
-.voice-tabs a[aria-current="page"] { background: #404249; color: white; font-weight: 700; }
 .voice-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 0 0 24px; }
-.voice-summary div { padding: 20px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
 .voice-summary dt { color: var(--muted); font-size: 12px; }
 .voice-summary dd { margin: 6px 0 0; font-size: 25px; font-weight: 750; line-height: 1.2; }
 .voice-item { margin: 12px 0; }
@@ -239,7 +232,7 @@ form[aria-busy="true"] button[type="submit"] { opacity: .6; cursor: progress; }
 .voice-form fieldset:not(.settings-card) { display: grid; gap: 12px; min-width: 0; padding: 20px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
 .voice-form fieldset:not(.settings-card) legend { padding: 0 7px; font-weight: 720; }
 .voice-form fieldset:not(.settings-card) label:not(.voice-check) { display: grid; gap: 6px; }
-.settings-card { display: grid; align-content: start; gap: 16px; min-width: 0; margin: 0; padding: 22px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.settings-card { display: grid; align-content: start; gap: 16px; margin: 0; }
 #module-enabled { scroll-margin-top: 24px; }
 #module-enabled:target { border-color: #ff8b92; box-shadow: 0 0 0 3px #da373c55; }
 .settings-card-wide { grid-column: 1 / -1; }
@@ -363,13 +356,11 @@ form[aria-busy="true"] button[type="submit"] { opacity: .6; cursor: progress; }
   .unsaved-banner { right: 12px; bottom: 12px; left: 12px; align-items: stretch; flex-direction: column; gap: 12px; padding: 14px; }
   .unsaved-actions { justify-content: flex-end; }
   .content-page { padding: 22px 16px 48px; }
-  .page-heading { margin-bottom: 20px; }
   .voice-summary { grid-template-columns: 1fr 1fr; }
   .creator-card > summary { padding: 14px; }
   .creator-card .status-pill { display: none; }
   .voice-form { padding: 14px; }
   .settings-form { padding: 0; }
-  .settings-card { padding: 16px; }
   .danger-zone { margin: 0 14px 14px; padding: 15px; }
   .danger-actions { width: 100%; }
   .danger-actions form, .danger-actions button { width: 100%; }
@@ -411,7 +402,6 @@ form[aria-busy="true"] button[type="submit"] { opacity: .6; cursor: progress; }
 
 .activity-content .activity-summary { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
 @media (max-width: 640px) {
-  .activity-content > .voice-tabs { flex-wrap: wrap; overflow-x: visible; }
   .activity-content .activity-table { min-width: 0; display: block; }
   .activity-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
   .activity-table tbody { display: block; }

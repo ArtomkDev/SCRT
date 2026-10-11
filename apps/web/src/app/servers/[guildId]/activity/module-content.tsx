@@ -1,7 +1,8 @@
 import { Suspense, type ReactNode } from 'react';
 import { requireGuildAccess } from '@/lib/guards';
 import { activitySettings } from '@/lib/activity-data';
-import { ModuleDisabledState, ModuleStatus } from '@/app/components/module-status';
+import { ModuleDisabledState } from '@/app/components/module-status';
+import { GuildModuleStatus } from '@/app/components/guild-module-status';
 import { ActionForm } from '@/app/components/action-form';
 import { Button } from '@/app/components/controls';
 import { ActivityPageLoading } from './loading-content';
@@ -11,7 +12,7 @@ import { DataBoundary } from '@/app/components/data-boundary';
 
 export async function ActivityStatus({ guildId }: { guildId: string }) {
   const settings = await activitySettings(guildId);
-  return <ModuleStatus state={settings.enabled ? 'enabled' : 'disabled'} />;
+  return <GuildModuleStatus guildId={guildId} module="activity" state={settings.enabled ? 'enabled' : 'disabled'} />;
 }
 
 async function ActivityState({ guildId, children }: { guildId: string; children: ReactNode }) {

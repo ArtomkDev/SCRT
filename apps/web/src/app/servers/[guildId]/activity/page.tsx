@@ -1,3 +1,4 @@
+import { Panel } from '@/app/components/dashboard-screen';
 import { ActivityModuleContent } from './module-content';
 import { ActivityPageLoading } from './loading-content';
 import { Suspense } from 'react';
@@ -18,11 +19,11 @@ export default async function ActivityOverviewPage({ params, searchParams }: { p
         <Ranking guildId={guildId} metric="messages" period={period} title="Найактивніші в чаті" limit={3} more />
         <Ranking guildId={guildId} metric="voiceSeconds" period={period} title="Найактивніші у Voice" limit={3} more />
       </div>
-      <section className="detail-panel">
+      <Panel className="detail-panel">
         <h3>Найпопулярніші ігри та застосунки</h3>
         <GameList guildId={guildId} period={period} limit={3} />
         <InlineAction className="activity-more" href={root + '/games?period=' + period}>Усі ігри та застосунки</InlineAction>
-      </section>
+      </Panel>
       <div className="voice-columns">
         <div>
           <Ranking guildId={guildId} metric="currentVoiceStreak" period="all" title="Поточні Voice-серії" limit={3} more />

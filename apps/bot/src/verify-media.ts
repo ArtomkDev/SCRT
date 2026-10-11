@@ -7,12 +7,13 @@ if (process.env.NODE_ENV !== 'production' && !process.env.RAILWAY_ENVIRONMENT_ID
 try {
   const { playbackDependencies } = await import('./modules/media/playback-engine');
   const engine = playbackDependencies(process.env.MEDIA_FFMPEG_PATH);
-  const control = botEnvSchema.pick({ MEDIA_INTERNAL_SECRET: true, MEDIA_INTERNAL_HOST: true, MEDIA_INTERNAL_PORT: true, MEDIA_YOUTUBE_IP_FAMILY: true }).safeParse(process.env);
+  const control = botEnvSchema.pick({ MEDIA_INTERNAL_SECRET: true, MEDIA_INTERNAL_HOST: true, MEDIA_INTERNAL_PORT: true, MEDIA_YOUTUBE_IP_FAMILY: true, MEDIA_YOUTUBE_PROXY_URL: true }).safeParse(process.env);
   const internalSecretConfigured = control.success && Boolean(control.data.MEDIA_INTERNAL_SECRET) && process.env.MEDIA_INTERNAL_SECRET !== process.env.SESSION_SECRET;
   const youtubeIpFamily = control.success ? control.data.MEDIA_YOUTUBE_IP_FAMILY : 'ipv4';
-  const extractor = new YtDlpExtractor(undefined, youtubeIpFamily);
+  const youtubeProxyUrl = control.success ? control.data.MEDIA_YOUTUBE_PROXY_URL : undefined;
+  const extractor = new YtDlpExtractor(undefined, youtubeIpFamily, youtubeProxyUrl);
   const extractorAvailable = extractor.available() && spawnSync(extractorExecutable(), ['--version'], { timeout: 5000, windowsHide: true, stdio: 'ignore' }).status === 0;
   const ready = engine.available && extractorAvailable && internalSecretConfigured;
-  console.info(JSON.stringify({ ready, engine, extractorAvailable, youtubeIpFamily, slashCommand: mediaCommandData.name, providers: createMediaSources({ YOUTUBE_API_KEY: process.env.YOUTUBE_API_KEY, MEDIA_YOUTUBE_IP_FAMILY: youtubeIpFamily }, extractor).health(), internalSecretConfigured, controlConfigurationValid: control.success, liveDiscord: 'BLOCKED: no Gateway login or human Voice interaction in this diagnostic' }));
+  console.info(JSON.stringify({ ready, engine, extractorAvailable, youtubeIpFamily, youtubeRoute: youtubeProxyUrl ? 'proxy' : 'direct', slashCommand: mediaCommandData.name, providers: createMediaSources({ NODE_ENV: process.env.NODE_ENV, YOUTUBE_API_KEY: process.env.YOUTUBE_API_KEY, MEDIA_YOUTUBE_IP_FAMILY: youtubeIpFamily, MEDIA_YOUTUBE_PROXY_URL: youtubeProxyUrl }, extractor).health(), internalSecretConfigured, controlConfigurationValid: control.success, liveDiscord: 'BLOCKED: no Gateway login or human Voice interaction in this diagnostic' }));
   if (!ready) process.exitCode = 1;
 } catch { console.error('Media engine dependency import failed. Core bot modules are unaffected.'); process.exitCode = 1; }

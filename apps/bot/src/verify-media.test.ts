@@ -17,6 +17,7 @@ beforeEach(() => {
   vi.stubEnv('NODE_ENV', 'production'); vi.stubEnv('RAILWAY_PROJECT_ID', undefined); vi.stubEnv('RAILWAY_ENVIRONMENT_ID', undefined);
   vi.stubEnv('MEDIA_INTERNAL_SECRET', 'm'.repeat(32)); vi.stubEnv('SESSION_SECRET', 's'.repeat(32)); vi.stubEnv('MEDIA_INTERNAL_HOST', '::'); vi.stubEnv('MEDIA_INTERNAL_PORT', '3100');
   vi.stubEnv('MEDIA_YOUTUBE_IP_FAMILY', undefined);
+  vi.stubEnv('MEDIA_YOUTUBE_PROXY_URL', undefined);
   vi.spyOn(console, 'info').mockImplementation(() => undefined); vi.spyOn(console, 'error').mockImplementation(() => undefined);
 });
 afterEach(() => { process.exitCode = previousExit; vi.unstubAllEnvs(); vi.restoreAllMocks(); });
@@ -31,10 +32,17 @@ describe('deployable Media diagnostic', () => {
   });
   it('reports the validated YouTube family and passes it to the extractor', async () => {
     vi.stubEnv('MEDIA_YOUTUBE_IP_FAMILY', 'ipv6'); await import('./verify-media');
-    expect(mocks.extractorConfiguration).toHaveBeenCalledWith(undefined, 'ipv6');
+    expect(mocks.extractorConfiguration).toHaveBeenCalledWith(undefined, 'ipv6', undefined);
     expect(JSON.parse(String(vi.mocked(console.info).mock.calls[0]![0]))).toMatchObject({ ready: true, youtubeIpFamily: 'ipv6' });
   });
-  it.each(['absent', 'non-executable', 'secret', 'shared-secret', 'port', 'engine', 'ip-family'])('exits unsuccessfully for missing readiness prerequisite: %s', async (failure) => {
+  it('reports proxy routing without exposing its origin or credentials', async () => {
+    vi.stubEnv('MEDIA_YOUTUBE_PROXY_URL', 'https://proxy-user:proxy-secret@proxy.example:8443'); await import('./verify-media');
+    const output = String(vi.mocked(console.info).mock.calls[0]![0]);
+    expect(JSON.parse(output)).toMatchObject({ ready: true, youtubeRoute: 'proxy' });
+    expect(output).not.toMatch(/proxy-user|proxy-secret|proxy\.example/);
+    expect(mocks.extractorConfiguration).toHaveBeenCalledWith(undefined, 'ipv4', process.env.MEDIA_YOUTUBE_PROXY_URL);
+  });
+  it.each(['absent', 'non-executable', 'secret', 'shared-secret', 'port', 'engine', 'ip-family', 'proxy'])('exits unsuccessfully for missing readiness prerequisite: %s', async (failure) => {
     if (failure === 'absent') mocks.extractor.mockReturnValue(false);
     if (failure === 'non-executable') mocks.probe.mockReturnValue({ status: null });
     if (failure === 'secret') vi.stubEnv('MEDIA_INTERNAL_SECRET', undefined);
@@ -42,6 +50,7 @@ describe('deployable Media diagnostic', () => {
     if (failure === 'port') vi.stubEnv('MEDIA_INTERNAL_PORT', '70000');
     if (failure === 'engine') mocks.engine.mockReturnValue({ available: false, ffmpeg: false, opus: true, dave: true });
     if (failure === 'ip-family') vi.stubEnv('MEDIA_YOUTUBE_IP_FAMILY', 'wrong');
+    if (failure === 'proxy') vi.stubEnv('MEDIA_YOUTUBE_PROXY_URL', 'socks5://proxy.example:1080');
     await import('./verify-media');
     expect(process.exitCode).toBe(1); expect(JSON.parse(String(vi.mocked(console.info).mock.calls[0]![0])).ready).toBe(false);
   });

@@ -1,3 +1,4 @@
+import { MetricCard, Panel } from '@/app/components/dashboard-screen';
 import { Fragment } from 'react';
 
 export function LoadingValue({ width = '6ch' }: { width?: string }) {
@@ -5,7 +6,7 @@ export function LoadingValue({ width = '6ch' }: { width?: string }) {
 }
 
 export function MetricsLoading({ labels, label = 'Завантаження статистики…', className = 'activity-summary' }: { labels: readonly string[]; label?: string; className?: string }) {
-  return <dl className={`voice-summary ${className}`} aria-label={label} aria-busy="true">{labels.map((name) => <div key={name}><dt>{name}</dt><dd><LoadingValue /></dd></div>)}</dl>;
+  return <dl className={`voice-summary ${className}`} aria-label={label} aria-busy="true">{labels.map((name) => <MetricCard key={name} label={name} value={<LoadingValue />} />)}</dl>;
 }
 
 export function RowsLoading({ label, rows = 3 }: { label: string; rows?: number }) {
@@ -19,14 +20,14 @@ export function TableLoading({ label, columns, rows = 3, className = 'activity-t
 export function SettingsLoading({ title, sections, label }: { title: string; sections: ReadonlyArray<{ title: string; fields: readonly string[]; control?: 'switch' | 'checkbox' }>; label: string }) {
   return <section className="settings-page" aria-label={label} aria-busy="true">
     <div className="section-intro"><h2>{title}</h2></div>
-    <div className="voice-form settings-sections">{sections.map((section) => <fieldset key={section.title} className="settings-card settings-section">
+    <div className="voice-form settings-sections">{sections.map((section) => <Panel as="fieldset" key={section.title} className="settings-card settings-section">
       <legend>{section.title}</legend>
       <div className={section.control === 'checkbox' ? 'toggle-grid' : 'form-grid'}>{section.fields.map((field) => section.control === 'switch'
         ? <div key={field} className="voice-switch"><span><strong>{field}</strong></span><span className="loading-switch"><LoadingValue width="2ch" /></span></div>
         : section.control === 'checkbox'
           ? <div key={field} className="voice-check"><span className="loading-checkbox"><LoadingValue width="1ch" /></span><span>{field}</span></div>
           : <div key={field} className="loading-field"><span>{field}</span><div className="loading-control"><LoadingValue width="12ch" /></div></div>)}</div>
-    </fieldset>)}</div>
+    </Panel>)}</div>
   </section>;
 }
 

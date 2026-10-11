@@ -1,13 +1,16 @@
 import { execFile, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { IncomingMessage } from 'node:http';
 import { z } from 'zod';
-import { log, type MediaProviderHealth, type MediaTrack } from '@scrt/shared';
+import { log, redactLogText, type MediaProviderHealth, type MediaTrack } from '@scrt/shared';
 import { mediaTrackSchema } from '@scrt/validation';
 import { MediaAudioHttpError, openAudioStream, validateMediaUrl } from './audio-http';
+import { MediaAudioProxyError } from './audio-proxy';
 import type { MediaSourceProvider } from './providers';
+import { catalogSearchPageSize } from './search-query';
+import { SoundCloudPlaylists } from './soundcloud-playlists';
 
 type OnlineProviderId = 'youtube' | 'soundcloud';
 export type YouTubeIpFamily = 'ipv4' | 'ipv6';
@@ -18,6 +21,8 @@ const detailsSchema = z.object({
   webpage_url: z.string(), url: z.string().optional(), protocol: z.string().optional(),
   is_live: z.boolean().optional(), availability: z.string().nullish(), age_limit: z.number().optional(),
   http_headers: z.record(z.string(), z.string()).optional(),
+  thumbnails: z.array(z.object({ url: z.string() })).max(30).optional(), artists: z.array(z.string()).max(20).optional(),
+  catalogOnly: z.literal(true).optional(),
 });
 type AudioDetails = z.infer<typeof detailsSchema>;
 export interface OnlineAudioExtractor {
@@ -26,7 +31,7 @@ export interface OnlineAudioExtractor {
   search(provider: OnlineProviderId, query: string, page?: number): Promise<AudioDetails[]>;
 }
 export class MediaSourceError extends Error {
-  constructor(message: string, readonly code?: 'NETWORK_BLOCKED' | 'NETWORK_UNREACHABLE') { super(message); }
+  constructor(message: string, readonly code?: 'NETWORK_BLOCKED' | 'NETWORK_UNREACHABLE' | 'PROXY_AUTH_REQUIRED') { super(message); }
 }
 function networkBlockedMessage(provider: OnlineProviderId): string {
   return `${names[provider]} відхиляє запити з мережі бота. Спробуйте інше джерело; адміністратору потрібно перевірити підключення бота.`;
@@ -58,10 +63,10 @@ function publicTrack(provider: OnlineProviderId, value: AudioDetails): MediaTrac
   const restricted = Boolean(value.availability && !['public', 'unlisted'].includes(value.availability)) || (value.age_limit ?? 0) >= 18;
   return mediaTrackSchema.parse({
     provider, providerItemId: provider === 'youtube' ? youtubeReference(externalUrl) : externalUrl,
-    title: value.title.slice(0, 300), artist: (value.artist || value.uploader || names[provider]).slice(0, 200),
+    title: value.title.slice(0, 300), artist: (value.artist || value.artists?.join(', ') || value.uploader || names[provider]).slice(0, 200),
     durationMs: value.duration ? Math.round(value.duration * 1000) : null, type: value.is_live ? 'live' : 'track',
-    artworkUrl: value.thumbnail ? validateMediaUrl(value.thumbnail).href : null,
-    externalUrl, playable: !restricted && Boolean(value.url), seekable: !restricted && Boolean(value.url) && !value.is_live && Boolean(value.duration && value.duration > 0), explicit: null,
+    artworkUrl: value.thumbnail || value.thumbnails?.at(-1)?.url ? validateMediaUrl((value.thumbnail || value.thumbnails?.at(-1)?.url)!).href : null,
+    externalUrl, playable: !restricted && Boolean(value.catalogOnly || value.url), seekable: !restricted && Boolean(value.catalogOnly || value.url) && !value.is_live && Boolean(value.duration && value.duration > 0), explicit: null,
   });
 }
 export function extractorExecutable(cwd = process.cwd()): string {
@@ -75,7 +80,9 @@ class ExtractionFailure extends MediaSourceError {
 function extractorEnvironment() {
   return Object.fromEntries(Object.entries(process.env).filter(([name]) => /^(PATH|SYSTEMROOT|WINDIR|TEMP|TMP|HOME|USERPROFILE|LANG|LC_ALL)$/i.test(name)));
 }
-function extractionError(provider: OnlineProviderId, stderr: string): ExtractionFailure {
+function extractionError(provider: OnlineProviderId, stderr: string, proxyConfigured = false): ExtractionFailure {
+  if (proxyConfigured && /407|proxy authentication required|tunnel connection failed[^\r\n]*authentication/i.test(stderr)) return new ExtractionFailure('Проксі YouTube відхилив авторизацію. Адміністратору потрібно перевірити налаштування проксі.', false, 'PROXY_AUTH_REQUIRED');
+  if (proxyConfigured && /unable to connect to proxy|proxyerror|tunnel connection failed|connection refused|could not resolve proxy/i.test(stderr)) return new ExtractionFailure('Проксі YouTube недоступний. Адміністратору потрібно перевірити підключення проксі.', false, 'NETWORK_UNREACHABLE');
   if (/confirm you[^\r\n]{0,30}not a bot/i.test(stderr)) return new ExtractionFailure(networkBlockedMessage(provider), false, 'NETWORK_BLOCKED');
   // YouTube prefixes both throttling and deleted videos with "Video unavailable".
   // Classify the reason before that generic prefix or extractor advice/URLs.
@@ -91,14 +98,25 @@ function extractionError(provider: OnlineProviderId, stderr: string): Extraction
 }
 export class YtDlpExtractor implements OnlineAudioExtractor {
   private active = 0;
-  constructor(private readonly executable = extractorExecutable(), private readonly youtubeIpFamily: YouTubeIpFamily = 'ipv4') {}
-  private addressFamily(provider: OnlineProviderId): 4 | 6 { return provider === 'youtube' && this.youtubeIpFamily === 'ipv6' ? 6 : 4; }
+  private activeSearches = 0;
+  constructor(private readonly executable = extractorExecutable(), private readonly youtubeIpFamily: YouTubeIpFamily = 'ipv4', private readonly youtubeProxyUrl?: string) {}
+  private proxy(provider: OnlineProviderId) { return provider === 'youtube' ? this.youtubeProxyUrl : undefined; }
+  private addressFamily(provider: OnlineProviderId): 4 | 6 { return !this.proxy(provider) && provider === 'youtube' && this.youtubeIpFamily === 'ipv6' ? 6 : 4; }
+  private safeStderr(provider: OnlineProviderId, stderr: string): string {
+    const proxy = this.proxy(provider); let result = stderr;
+    if (proxy) {
+      const url = new URL(proxy); const username = decodeURIComponent(url.username); const password = decodeURIComponent(url.password);
+      const secrets = [url.username, url.password, username, password, Buffer.from(`${username}:${password}`).toString('base64')];
+      for (const secret of secrets.filter(Boolean).sort((a, b) => b.length - a.length)) result = result.split(secret).join('[REDACTED]');
+    }
+    return redactLogText(result);
+  }
   available() { return existsSync(this.executable); }
   logDiagnostics() {
     const probe = spawnSync(this.executable, ['--version'], { windowsHide: true, timeout: 3000, maxBuffer: 16000, encoding: 'utf8', env: extractorEnvironment() });
     log(probe.status === 0 ? 'info' : 'error', 'media', 'extractor.dependencies.checked', {
       installed: this.available(), executable: probe.status === 0, version: probe.stdout?.trim(), code: probe.status, signal: probe.signal,
-      platform: process.platform, arch: process.arch, nodeVersion: process.version, youtubeIpFamily: this.youtubeIpFamily,
+      platform: process.platform, arch: process.arch, nodeVersion: process.version, youtubeIpFamily: this.youtubeIpFamily, youtubeRoute: this.youtubeProxyUrl ? 'proxy' : 'direct',
     }, probe.error);
   }
   private async execute(provider: OnlineProviderId, input: string, signal?: AbortSignal, items?: string): Promise<unknown> {
@@ -107,16 +125,19 @@ export class YtDlpExtractor implements OnlineAudioExtractor {
       throw new MediaSourceError('Аудіоджерело не встановлено на сервері бота. Перезберіть і перезапустіть bot worker.');
     }
     // Only canonical provider URLs or our own search prefixes reach the executable; no shell or user flags.
-    const args = ['--ignore-config', '--no-playlist', '--no-cache-dir', '--no-plugin-dirs', this.addressFamily(provider) === 6 ? '--force-ipv6' : '--force-ipv4',
+    const args = ['--ignore-config', '--no-playlist', ...(provider === 'soundcloud' ? ['--cache-dir', join(dirname(this.executable), 'soundcloud-cache')] : ['--no-cache-dir']), '--no-plugin-dirs', this.addressFamily(provider) === 6 ? '--force-ipv6' : '--force-ipv4',
       '--js-runtimes', `node:${process.execPath}`, '--socket-timeout', '8', '--retries', '0', '--extractor-retries', '0',
       '--use-extractors', provider === 'youtube' ? 'youtube,youtube:search' : 'soundcloud,soundcloud:search',
-      '--skip-download', '--print', '%(.{id,title,uploader,artist,duration,thumbnail,webpage_url,url,protocol,is_live,availability,age_limit,http_headers})j',
-      '-f', 'bestaudio[protocol=https]/bestaudio[protocol=http]',
-      ...(items ? ['--playlist-items', items] : []), '--', input];
+      '--skip-download', '--print', '%(.{id,title,uploader,artist,artists,duration,thumbnail,thumbnails,webpage_url,url,protocol,is_live,availability,age_limit,http_headers})j',
+      ...(items ? ['--flat-playlist'] : ['-f', 'bestaudio[protocol=https]/bestaudio[protocol=http]']),
+      // Override any implicit proxy defaults for both providers; only YouTube uses this secret.
+      '--proxy', this.proxy(provider) ?? '', ...(items ? ['--playlist-items', items] : []), '--', input];
     if (this.active >= 4) throw new MediaSourceError('Аудіоджерела зайняті. Спробуйте за кілька секунд.');
+    if (items && this.activeSearches >= 2) throw new MediaSourceError('Пошук зайнятий іншими запитами. Спробуйте за кілька секунд.');
     this.active++;
+    if (items) this.activeSearches++;
     const extractionId = globalThis.crypto.randomUUID();
-    const deadline = Date.now() + 20000;
+    const deadline = Date.now() + (items ? 8000 : 20000);
     try {
       for (let attempt = 0; ; attempt++) {
         try { return await this.run(provider, args, Math.max(1, deadline - Date.now()), extractionId, attempt, signal, items); }
@@ -128,11 +149,11 @@ export class YtDlpExtractor implements OnlineAudioExtractor {
           catch { throw new MediaSourceError('Завантаження аудіо скасовано.'); }
         }
       }
-    } finally { this.active--; }
+    } finally { this.active--; if (items) this.activeSearches--; }
   }
   private run(provider: OnlineProviderId, args: string[], timeout: number, extractionId: string, attempt: number, signal?: AbortSignal, items?: string): Promise<unknown> {
     const startedAt = Date.now();
-    const diagnostic = { provider, extractionId, attempt, operation: items ? 'search' : 'inspect', timeoutMs: timeout, family: this.addressFamily(provider) };
+    const diagnostic = { provider, extractionId, attempt, operation: items ? 'search' : 'inspect', timeoutMs: timeout, family: this.addressFamily(provider), route: this.proxy(provider) ? 'proxy' : 'direct' };
     log('info', 'media', 'extractor.started', { ...diagnostic, platform: process.platform, arch: process.arch, nodeVersion: process.version });
     return new Promise<unknown>((resolve, reject) => {
       execFile(this.executable, args, { windowsHide: true, timeout, maxBuffer: 2000000, signal,
@@ -143,11 +164,11 @@ export class YtDlpExtractor implements OnlineAudioExtractor {
           const failure = signal?.aborted ? new MediaSourceError('Завантаження аудіо скасовано.')
             : error.code === 'ENOENT' || error.code === 'EACCES' ? new MediaSourceError('Не вдалося запустити аудіоджерело на сервері бота. Перевірте встановлення bot worker.')
               : error.killed || error.code === 'ETIMEDOUT' ? new ExtractionFailure(`${names[provider]} не відповів у відведений час. Спробуйте ще раз пізніше.`, true)
-                : extractionError(provider, stderr);
-          log(signal?.aborted ? 'info' : 'error', 'media', 'extractor.failed', { ...diagnostic, durationMs: Date.now() - startedAt, code: error.code, sourceErrorCode: failure.code, signal: error.signal, killed: error.killed, cancelled: signal?.aborted ?? false, reason: failure.message, stderr });
+                : extractionError(provider, stderr, Boolean(this.proxy(provider)));
+          log(signal?.aborted ? 'info' : 'error', 'media', 'extractor.failed', { ...diagnostic, durationMs: Date.now() - startedAt, code: error.code, sourceErrorCode: failure.code, signal: error.signal, killed: error.killed, cancelled: signal?.aborted ?? false, reason: failure.message, stderr: this.safeStderr(provider, stderr) });
           reject(failure); return;
         }
-        if (stderr.trim()) log('warn', 'media', 'extractor.warnings', { ...diagnostic, stderr });
+        if (stderr.trim()) log('warn', 'media', 'extractor.warnings', { ...diagnostic, stderr: this.safeStderr(provider, stderr) });
         try {
           // Full search JSON includes every format and thumbnail and can exceed the process budget.
           // Ask for only the required fields, one JSON object per selected track.
@@ -167,21 +188,25 @@ export class YtDlpExtractor implements OnlineAudioExtractor {
   }
   async search(provider: OnlineProviderId, query: string, page = 0) {
     z.number().int().min(0).max(9).parse(page);
-    const end = (page + 1) * 3;
+    const end = (page + 1) * catalogSearchPageSize;
     const prefix = `${provider === 'youtube' ? 'ytsearch' : 'scsearch'}${end}:`;
-    const value = z.object({ entries: z.array(detailsSchema.nullable()) }).parse(await this.execute(provider, `${prefix}${query}`, undefined, `${page * 3 + 1}:${end}`));
-    return value.entries.filter((entry): entry is AudioDetails => entry !== null);
+    const value = z.object({ entries: z.array(z.unknown()).max(catalogSearchPageSize) }).parse(await this.execute(provider, `${prefix}${query}`, undefined, `${page * catalogSearchPageSize + 1}:${end}`));
+    const entries = value.entries.flatMap((entry) => { const parsed = detailsSchema.safeParse(entry); return parsed.success ? [{ ...parsed.data, catalogOnly: true as const }] : []; });
+    if (entries.length !== value.entries.length) log('warn', 'media', 'extractor.search.entries.skipped', { provider, page, skipped: value.entries.length - entries.length });
+    if (value.entries.length && !entries.length) throw new MediaSourceError('Джерело повернуло некоректні результати пошуку. Спробуйте пізніше.');
+    return entries;
   }
 }
 export class OnlineAudioProvider implements MediaSourceProvider {
-  readonly searchPageSize = 3;
+  readonly searchPageSize = catalogSearchPageSize;
   private readonly recent = new Map<string, { until: number; value: AudioDetails }>();
   private readonly pendingInspections = new Map<string, Promise<AudioDetails>>();
   private networkBlockedUntil = 0;
-  constructor(readonly id: OnlineProviderId, private readonly extractor?: OnlineAudioExtractor, private readonly youtubeIpFamily: YouTubeIpFamily = 'ipv4') {}
+  private readonly soundcloudPlaylists = new SoundCloudPlaylists();
+  constructor(readonly id: OnlineProviderId, private readonly extractor?: OnlineAudioExtractor, private readonly youtubeIpFamily: YouTubeIpFamily = 'ipv4', private readonly youtubeProxyUrl?: string) {}
   health(): MediaProviderHealth {
     return { id: this.id, name: names[this.id], state: this.extractor?.available() ? this.networkBlockedUntil > Date.now() ? 'degraded' : 'available' : 'unconfigured',
-      capabilities: { search: true, metadata: true, playback: true, live: false, seek: true, playlists: false } };
+      capabilities: { search: true, metadata: true, playback: true, live: false, seek: true, playlists: this.id === 'soundcloud' } };
   }
   private ready() {
     if (!this.extractor?.available()) throw new MediaSourceError(`${names[this.id]}: аудіоджерело не встановлено. Перезапустіть бота через pnpm dev.`);
@@ -200,9 +225,29 @@ export class OnlineAudioProvider implements MediaSourceProvider {
   }
   async search(query: string, page = 0): Promise<MediaTrack[]> {
     if (/^https?:\/\//i.test(query)) return page === 0 ? [await this.resolve(query)] : [];
-    return (await this.sourceResult(this.ready().search(this.id, query, page))).map((value) => { const track = publicTrack(this.id, value); this.remember(track.externalUrl, value); return track; });
+    const entries = await this.sourceResult(this.ready().search(this.id, query, page));
+    const tracks = entries.flatMap((value) => {
+      try { const track = publicTrack(this.id, value); this.remember(track.externalUrl, value); return [track]; }
+      catch (error) { log('warn', 'media', 'source.search.entry.invalid', { provider: this.id, page }, error); return []; }
+    });
+    if (entries.length && !tracks.length) throw new MediaSourceError('Джерело повернуло некоректні результати пошуку. Спробуйте пізніше.');
+    return tracks;
+  }
+  async playlist(reference: string, page = 0) {
+    this.ready();
+    if (this.id !== 'soundcloud') throw new MediaSourceError('Підтримуються плейлисти SoundCloud.');
+    try { return await this.soundcloudPlaylists.page(reference, page); }
+    catch (error) {
+      if (error instanceof MediaAudioHttpError) throw new MediaSourceError([400, 404].includes(error.status)
+        ? 'Плейлист SoundCloud недоступний: він приватний, видалений або посилання змінилося.'
+        : 'SoundCloud тимчасово відхилив доступ до плейлиста. Спробуйте пізніше.');
+      throw new MediaSourceError(error instanceof Error && !(error instanceof z.ZodError) && /[\u0400-\u04ff]/.test(error.message)
+        ? error.message : 'Не вдалося завантажити публічний плейлист SoundCloud. Перевірте посилання або спробуйте пізніше.');
+    }
   }
   private remember(key: string, value: AudioDetails) {
+    // Flat search URLs identify a catalog entry, never an audio stream.
+    if (value.catalogOnly) return;
     if (!publicTrack(this.id, value).playable) return;
     const now = Date.now(); let until = now + 300000;
     if (value.url) {
@@ -256,10 +301,13 @@ export class OnlineAudioProvider implements MediaSourceProvider {
     const headers = Object.fromEntries(Object.entries(value.http_headers ?? {}).filter(([name, value]) =>
       ['user-agent', 'referer', 'origin', 'accept-language'].includes(name.toLowerCase()) && value.length <= 2048 && !/[\r\n]/.test(value)));
     for (let attempt = 0; ; attempt++) {
-      try { return await (this.id === 'youtube' && this.youtubeIpFamily === 'ipv6'
+      try { return await (this.id === 'youtube' && this.youtubeProxyUrl
+        ? openAudioStream(url.href, signal, 0, undefined, headers, 4, this.youtubeProxyUrl)
+        : this.id === 'youtube' && this.youtubeIpFamily === 'ipv6'
         ? openAudioStream(url.href, signal, 0, undefined, headers, 6)
         : openAudioStream(url.href, signal, 0, undefined, headers)); }
       catch (error) {
+        if (error instanceof MediaAudioProxyError) throw new MediaSourceError(error.message, error.code === 'PROXY_AUTH_REQUIRED' ? error.code : 'NETWORK_UNREACHABLE');
         const temporary = error instanceof MediaAudioHttpError && [408, 500, 502, 503, 504].includes(error.status)
           || error instanceof Error && 'code' in error && ['EAI_AGAIN', 'ECONNRESET', 'ETIMEDOUT'].includes(String(error.code));
         if (temporary && attempt === 0 && !signal.aborted) {
