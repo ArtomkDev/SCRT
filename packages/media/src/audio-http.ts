@@ -2,6 +2,7 @@ import { lookup } from 'node:dns/promises';
 import { BlockList, isIP } from 'node:net';
 import { request as httpRequest, type IncomingMessage, type RequestOptions } from 'node:http';
 import { request as httpsRequest } from 'node:https';
+import type { Readable } from 'node:stream';
 import { log } from '@scrt/shared';
 import { audioProxyAgent } from './audio-proxy';
 
@@ -21,8 +22,9 @@ export function validateMediaUrl(value: string): URL {
   return url;
 }
 export type MediaDnsLookup = (host: string) => Promise<Array<{ address: string; family: number }>>;
-const streamRequests = new WeakMap<IncomingMessage, string>();
-export function audioStreamRequestId(stream: IncomingMessage): string | undefined { return streamRequests.get(stream); }
+export type MediaAudioStream = Readable & Partial<Pick<IncomingMessage, 'socket' | 'headers' | 'complete' | 'aborted'>> & { setReadTimeout?: (timeoutMs: number) => void };
+const streamRequests = new WeakMap<MediaAudioStream, string>();
+export function audioStreamRequestId(stream: MediaAudioStream): string | undefined { return streamRequests.get(stream); }
 function audioTimeout(message: string): Error & { code: string } { return Object.assign(new Error(message), { code: 'ETIMEDOUT' }); }
 export class MediaAudioHttpError extends Error {
   constructor(readonly status: number) { super('Джерело не повернуло доступний аудіопотік.'); }
@@ -44,8 +46,8 @@ export async function mediaDestination(value: string, resolve: MediaDnsLookup = 
   if (!selected) throw Object.assign(new Error(`Джерело не має доступної IPv${requiredFamily}-адреси.`), { code: 'EAFNOSUPPORT' });
   return { url, ...selected };
 }
-export async function openAudioStream(value: string, signal?: AbortSignal, redirects = 0, resolve?: MediaDnsLookup, headers: Record<string, string> = {}, requiredFamily?: 4 | 6, proxyUrl?: string): Promise<IncomingMessage> {
-  return openMediaResponse(value, signal, redirects, resolve, headers, requiredFamily, proxyUrl);
+export async function openAudioStream(value: string, signal?: AbortSignal, redirects = 0, resolve?: MediaDnsLookup, headers: Record<string, string> = {}, requiredFamily?: 4 | 6, proxyUrl?: string, hosts?: readonly string[]): Promise<IncomingMessage> {
+  return openMediaResponse(value, signal, redirects, resolve, headers, requiredFamily, proxyUrl, undefined, hosts);
 }
 type DocumentPolicy = { hosts: string[]; contentTypes: string[]; maxBytes: number };
 export async function readMediaDocument(value: string, policy: DocumentPolicy, signal?: AbortSignal): Promise<string> {
@@ -61,8 +63,12 @@ export async function readMediaDocument(value: string, policy: DocumentPolicy, s
     return Buffer.concat(chunks).toString('utf8');
   } finally { stream.destroy(); }
 }
-async function openMediaResponse(value: string, signal?: AbortSignal, redirects = 0, resolve?: MediaDnsLookup, headers: Record<string, string> = {}, requiredFamily?: 4 | 6, proxyUrl?: string, document?: DocumentPolicy): Promise<IncomingMessage> {
+async function openMediaResponse(value: string, signal?: AbortSignal, redirects = 0, resolve?: MediaDnsLookup, headers: Record<string, string> = {}, requiredFamily?: 4 | 6, proxyUrl?: string, document?: DocumentPolicy, hosts?: readonly string[]): Promise<IncomingMessage> {
   if (redirects > 3) throw new Error('Забагато переадресацій аудіо.');
+  if (hosts) {
+    const url = validateMediaUrl(value);
+    if (url.protocol !== 'https:' || !hosts.some((host) => url.hostname === host || url.hostname.endsWith(`.${host}`))) throw new Error('Недозволена адреса сегмента аудіо.');
+  }
   if (document) {
     const url = validateMediaUrl(value);
     if (url.protocol !== 'https:' || !document.hosts.includes(url.hostname)) throw new Error('Недозволена адреса документа джерела.');
@@ -86,7 +92,7 @@ async function openMediaResponse(value: string, signal?: AbortSignal, redirects 
     req.once('response', () => clearTimeout(deadline));
     req.once('error', (error) => {
       clearTimeout(deadline);
-      log('error', 'media', 'source.http.failed', { requestId, family, route, durationMs: Date.now() - startedAt, code: 'code' in error ? String(error.code) : undefined, cancelled: signal?.aborted ?? false }, error);
+      log(signal?.aborted ? 'info' : 'error', 'media', 'source.http.failed', { requestId, family, route, durationMs: Date.now() - startedAt, code: 'code' in error ? String(error.code) : undefined, cancelled: signal?.aborted ?? false }, error);
       reject(error);
     });
     req.setTimeout(15000, () => req.destroy(audioTimeout('Audio read timeout')));
@@ -97,7 +103,7 @@ async function openMediaResponse(value: string, signal?: AbortSignal, redirects 
   if ([301, 302, 303, 307, 308].includes(response.statusCode ?? 0)) {
     response.destroy();
     if (!response.headers.location) throw new Error('Invalid audio redirect');
-    return openMediaResponse(new URL(response.headers.location, url).href, signal, redirects + 1, resolve, headers, requiredFamily, proxyUrl, document);
+    return openMediaResponse(new URL(response.headers.location, url).href, signal, redirects + 1, resolve, headers, requiredFamily, proxyUrl, document, hosts);
   }
   const contentType = String(response.headers['content-type'] ?? '').split(';')[0]!.toLowerCase();
   if (response.statusCode !== 200) {

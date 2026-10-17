@@ -1,19 +1,19 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { pipeline } from 'node:stream';
-import type { IncomingMessage } from 'node:http';
 import type { AudioPlayerError, AudioResource, VoiceConnection } from '@discordjs/voice';
 import type { Guild } from 'discord.js';
 import { log } from '@scrt/shared';
-import { audioStreamRequestId } from '@scrt/media';
+import { audioStreamRequestId, type MediaAudioStream } from '@scrt/media';
 
 // The supported CommonJS entry avoids a stalled ESM import under tsx watch on Windows.
 const { AudioPlayerStatus, NoSubscriberBehavior, StreamType, VoiceConnectionStatus, createAudioPlayer, createAudioResource, entersState, joinVoiceChannel } = createRequire(import.meta.url)('@discordjs/voice') as typeof import('@discordjs/voice');
 // Each Discord audio frame lasts 20 ms. Allow short network/CPU stalls before failing.
 const maxMissedFrames = 150;
-function setReadTimeout(input: IncomingMessage, timeoutMs: number): void {
+function setReadTimeout(input: MediaAudioStream, timeoutMs: number): void {
   // HTTP can finish and detach its socket while buffered audio is still playing.
   // Only a live, unread response owns a socket inactivity timer.
+  input.setReadTimeout?.(timeoutMs);
   const socket = input.socket;
   if (!input.destroyed && !input.readableEnded && socket && !socket.destroyed) socket.setTimeout(timeoutMs);
 }
@@ -21,8 +21,8 @@ function setReadTimeout(input: IncomingMessage, timeoutMs: number): void {
 export type EngineEvent = { type: 'ended' | 'failed'; queueItemId: string; reason?: string; playedMs?: number } | { type: 'reconnecting' | 'reconnected' | 'disconnected' };
 export interface PlaybackEngine {
   connect(guild: Guild, channelId: string, readyTimeoutMs?: number): Promise<void>;
-  play(input: IncomingMessage, queueItemId: string, volume: number, maxSeconds: number | null, readyTimeoutMs?: number, beforeCommit?: () => Promise<void>): Promise<void>;
-  seek(input: IncomingMessage, queueItemId: string, volume: number, maxSeconds: number, positionMs: number, paused: boolean, beforeCommit: () => Promise<void>, readyTimeoutMs?: number): Promise<void>;
+  play(input: MediaAudioStream, queueItemId: string, volume: number, maxSeconds: number | null, readyTimeoutMs?: number, beforeCommit?: () => Promise<void>): Promise<void>;
+  seek(input: MediaAudioStream, queueItemId: string, volume: number, maxSeconds: number, positionMs: number, paused: boolean, beforeCommit: () => Promise<void>, readyTimeoutMs?: number): Promise<void>;
   pause(): void; resume(): void; volume(value: number): void; stop(): void; destroy(): void;
 }
 export function playbackDependencies(ffmpeg = 'ffmpeg'): { available: boolean; ffmpeg: boolean; opus: boolean; dave: boolean } {
@@ -40,7 +40,7 @@ export class MediaPlaybackEngine implements PlaybackEngine {
   private readonly player = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Pause, maxMissedFrames } });
   private resource: AudioResource | null = null;
   private process: ChildProcessWithoutNullStreams | null = null;
-  private input: IncomingMessage | null = null;
+  private input: MediaAudioStream | null = null;
   private queueItemId: string | null = null;
   private reconnecting = false;
   private pausedBeforeReconnect = false;
@@ -100,7 +100,7 @@ export class MediaPlaybackEngine implements PlaybackEngine {
     await entersState(connection, VoiceConnectionStatus.Ready, readyTimeoutMs);
     connection.subscribe(this.player);
   }
-  async play(input: IncomingMessage, queueItemId: string, volume: number, maxSeconds: number | null, readyTimeoutMs = 15000, beforeCommit?: () => Promise<void>): Promise<void> {
+  async play(input: MediaAudioStream, queueItemId: string, volume: number, maxSeconds: number | null, readyTimeoutMs = 15000, beforeCommit?: () => Promise<void>): Promise<void> {
     if (beforeCommit) {
       await this.replace(input, queueItemId, volume, maxSeconds, 0, false, beforeCommit, readyTimeoutMs);
       const resource = this.resource;
@@ -115,7 +115,7 @@ export class MediaPlaybackEngine implements PlaybackEngine {
     await entersState(this.player, AudioPlayerStatus.Playing, readyTimeoutMs);
     if (this.resource !== decoded.resource || this.queueItemId !== queueItemId) throw new Error('Відтворення перервано під час запуску.');
   }
-  private decode(input: IncomingMessage, queueItemId: string, volume: number, maxSeconds: number | null, positionMs: number, failed: (child: ChildProcessWithoutNullStreams, reason: string) => void) {
+  private decode(input: MediaAudioStream, queueItemId: string, volume: number, maxSeconds: number | null, positionMs: number, failed: (child: ChildProcessWithoutNullStreams, reason: string) => void) {
     // Backpressure is expected: decoded audio is consumed at realtime speed.
     // A socket inactivity timer must run only while the pipeline wants bytes.
     const updateTimeout = () => setReadTimeout(input, input.isPaused() ? 0 : 15000);
@@ -159,11 +159,11 @@ export class MediaPlaybackEngine implements PlaybackEngine {
       resource.volume?.setVolume(volume / 100); return { process, resource };
     } catch (error) { input.destroy(); process.kill('SIGKILL'); throw error; }
   }
-  async seek(input: IncomingMessage, queueItemId: string, volume: number, maxSeconds: number, positionMs: number, paused: boolean, beforeCommit: () => Promise<void>, readyTimeoutMs = 15000): Promise<void> {
+  async seek(input: MediaAudioStream, queueItemId: string, volume: number, maxSeconds: number, positionMs: number, paused: boolean, beforeCommit: () => Promise<void>, readyTimeoutMs = 15000): Promise<void> {
     if (!Number.isSafeInteger(positionMs) || positionMs < 0 || positionMs >= maxSeconds * 1000) { input.destroy(); throw new Error('Перемотування недоступне.'); }
     await this.replace(input, queueItemId, volume, maxSeconds, positionMs, paused, beforeCommit, readyTimeoutMs);
   }
-  private async replace(input: IncomingMessage, queueItemId: string, volume: number, maxSeconds: number | null, positionMs: number, paused: boolean, beforeCommit: () => Promise<void>, readyTimeoutMs: number): Promise<void> {
+  private async replace(input: MediaAudioStream, queueItemId: string, volume: number, maxSeconds: number | null, positionMs: number, paused: boolean, beforeCommit: () => Promise<void>, readyTimeoutMs: number): Promise<void> {
     if (this.cancelPreparation || this.reconnecting) { input.destroy(); throw new Error('Заміна аудіо недоступна.'); }
     const generation = this.generation;
     let rejectReady!: (error: Error) => void; let resolveReady!: () => void;

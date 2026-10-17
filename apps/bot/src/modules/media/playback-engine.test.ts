@@ -49,6 +49,13 @@ async function decodedEof(resource: unknown) {
   stream.resume(); stream.end(); await ended;
 }
 describe('Media track replacement lifecycle', () => {
+  it('accepts segmented audio without an HTTP socket and forwards pause timeouts', async () => {
+    const f = fixture(); const source = Object.assign(new PassThrough(), { setReadTimeout: vi.fn() });
+    await f.engine.play(source, 'hls', 60, 60);
+    f.engine.pause(); expect(source.setReadTimeout).toHaveBeenLastCalledWith(0);
+    f.engine.resume(); expect(source.setReadTimeout).toHaveBeenLastCalledWith(15000);
+    f.engine.destroy(); expect(source.destroyed).toBe(true);
+  });
   it('forwards buffered source bytes intact when adding stream diagnostics', async () => {
     const f = fixture(); const source = input(); const bytes = Buffer.alloc(16384, 37);
     (source as unknown as PassThrough).end(bytes);

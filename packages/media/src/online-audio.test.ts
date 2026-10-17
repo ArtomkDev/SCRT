@@ -1,10 +1,11 @@
 import { PassThrough } from 'node:stream';
 import type { IncomingMessage } from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-const mocks = vi.hoisted(() => ({ open: vi.fn(), exec: vi.fn(), probe: vi.fn(), exists: vi.fn(() => true) }));
+const mocks = vi.hoisted(() => ({ open: vi.fn(), hls: vi.fn(), exec: vi.fn(), probe: vi.fn(), exists: vi.fn(() => true) }));
 vi.mock('node:child_process', () => ({ execFile: mocks.exec, spawnSync: mocks.probe }));
 vi.mock('node:fs', () => ({ existsSync: mocks.exists }));
 vi.mock('./audio-http', async (original) => ({ ...await original<typeof import('./audio-http')>(), openAudioStream: mocks.open }));
+vi.mock('./soundcloud-hls', async (original) => ({ ...await original<typeof import('./soundcloud-hls')>(), openSoundCloudHls: mocks.hls }));
 import { createMediaSources, DirectAudioProvider, MediaSourceRegistry } from './providers';
 import { MediaSourceError, OnlineAudioProvider, YtDlpExtractor, soundcloudReference, youtubeReference, type OnlineAudioExtractor } from './online-audio';
 import { MediaAudioProxyError } from './audio-proxy';
@@ -22,6 +23,16 @@ function extractor() {
   return { available: () => true, inspect: vi.fn(async () => details()), search: vi.fn(async () => [details()]) } satisfies OnlineAudioExtractor;
 }
 describe('online audio providers', () => {
+  it('opens HLS-only SoundCloud tracks on its current CDN without treating the manifest as direct audio', async () => {
+    const adapter = extractor(); const signal = new AbortController().signal; const stream = new PassThrough();
+    const value = { ...details('soundcloud'), protocol: 'm3u8_native', url: 'https://playback.media-streaming.soundcloud.cloud/track/playlist.m3u8?token=secret' };
+    adapter.inspect.mockResolvedValue(value); mocks.hls.mockResolvedValue(stream);
+    const provider = new OnlineAudioProvider('soundcloud', adapter);
+    expect((await provider.resolve(value.webpage_url)).seekable).toBe(true);
+    expect(await provider.getPlayableResource(value.webpage_url, signal)).toBe(stream);
+    expect(mocks.hls).toHaveBeenCalledWith(value.url, signal, expect.any(Object));
+    expect(mocks.open).not.toHaveBeenCalled();
+  });
   it('returns twenty flat entries with artwork, without caching catalog URLs as audio', async () => {
     const entry = { ...details('soundcloud'), url: 'https://api.soundcloud.com/tracks/2363190935', protocol: undefined,
       thumbnail: undefined, thumbnails: [{ url: 'https://i1.sndcdn.com/artwork.jpg' }], artists: ['Actual Artist'], uploader: 'Uploader' };
@@ -255,6 +266,14 @@ describe('online audio providers', () => {
   });
 });
 describe('extractor process boundary', () => {
+  it('allows native HLS as a SoundCloud fallback while keeping YouTube on direct audio formats', async () => {
+    mocks.exec.mockImplementation((_file, _args, _options, callback) => callback(null, JSON.stringify(details('soundcloud')), ''));
+    const adapter = new YtDlpExtractor('/installed/yt-dlp');
+    await adapter.inspect('soundcloud', details('soundcloud').webpage_url);
+    await adapter.inspect('youtube', 'TwumA6YhQp4');
+    const formats = mocks.exec.mock.calls.map(([, args]) => args[args.indexOf('-f') + 1]);
+    expect(formats).toEqual(['bestaudio[protocol=https]/bestaudio[protocol=http]/bestaudio[protocol=m3u8_native]', 'bestaudio[protocol=https]/bestaudio[protocol=http]']);
+  });
   it('records installed versus executable health and probes versions without forwarding bot credentials', () => {
     const before = runtimeLogSnapshot(); const after = before.entries.at(-1)?.sequence ?? 0;
     vi.stubEnv('DISCORD_BOT_TOKEN', 'never-forward'); vi.stubEnv('NODE_OPTIONS', '--require unwanted');

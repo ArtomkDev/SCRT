@@ -2,15 +2,15 @@ import { execFile, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import type { IncomingMessage } from 'node:http';
 import { z } from 'zod';
 import { log, redactLogText, type MediaProviderHealth, type MediaTrack } from '@scrt/shared';
 import { mediaTrackSchema } from '@scrt/validation';
-import { MediaAudioHttpError, openAudioStream, validateMediaUrl } from './audio-http';
+import { MediaAudioHttpError, openAudioStream, validateMediaUrl, type MediaAudioStream } from './audio-http';
 import { MediaAudioProxyError } from './audio-proxy';
 import type { MediaSourceProvider } from './providers';
 import { catalogSearchPageSize } from './search-query';
 import { SoundCloudPlaylists } from './soundcloud-playlists';
+import { openSoundCloudHls, soundcloudAudioHosts } from './soundcloud-hls';
 
 type OnlineProviderId = 'youtube' | 'soundcloud';
 export type YouTubeIpFamily = 'ipv4' | 'ipv6';
@@ -129,7 +129,7 @@ export class YtDlpExtractor implements OnlineAudioExtractor {
       '--js-runtimes', `node:${process.execPath}`, '--socket-timeout', '8', '--retries', '0', '--extractor-retries', '0',
       '--use-extractors', provider === 'youtube' ? 'youtube,youtube:search' : 'soundcloud,soundcloud:search',
       '--skip-download', '--print', '%(.{id,title,uploader,artist,artists,duration,thumbnail,thumbnails,webpage_url,url,protocol,is_live,availability,age_limit,http_headers})j',
-      ...(items ? ['--flat-playlist'] : ['-f', 'bestaudio[protocol=https]/bestaudio[protocol=http]']),
+      ...(items ? ['--flat-playlist'] : ['-f', `bestaudio[protocol=https]/bestaudio[protocol=http]${provider === 'soundcloud' ? '/bestaudio[protocol=m3u8_native]' : ''}`]),
       // Override any implicit proxy defaults for both providers; only YouTube uses this secret.
       '--proxy', this.proxy(provider) ?? '', ...(items ? ['--playlist-items', items] : []), '--', input];
     if (this.active >= 4) throw new MediaSourceError('Аудіоджерела зайняті. Спробуйте за кілька секунд.');
@@ -276,7 +276,7 @@ export class OnlineAudioProvider implements MediaSourceProvider {
     const value = await this.sourceResult(this.ready().inspect(this.id, key, signal)); this.remember(key, value); return value;
   }
   async resolve(reference: string, signal?: AbortSignal) { return publicTrack(this.id, await this.inspect(reference, signal)); }
-  async getPlayableResource(reference: string, signal: AbortSignal): Promise<IncomingMessage> {
+  async getPlayableResource(reference: string, signal: AbortSignal): Promise<MediaAudioStream> {
     // Keep valid signed URLs worker-local for at most five minutes. A rejected cached
     // signature gets one fresh extraction; every opening still uses the safe transport.
     const key = canonical(this.id, reference);
@@ -293,15 +293,17 @@ export class OnlineAudioProvider implements MediaSourceProvider {
       catch (error) { this.recent.delete(key); throw error; }
     }
   }
-  private async open(value: AudioDetails, signal: AbortSignal): Promise<IncomingMessage> {
+  private async open(value: AudioDetails, signal: AbortSignal): Promise<MediaAudioStream> {
     if (!publicTrack(this.id, value).playable || !value.url) throw new MediaSourceError('Для цього треку немає доступного аудіопотоку.');
     const url = validateMediaUrl(value.url);
-    const hosts = this.id === 'youtube' ? ['googlevideo.com'] : ['sndcdn.com', 'soundcloud.com'];
+    const hosts = this.id === 'youtube' ? ['googlevideo.com'] : soundcloudAudioHosts;
     if (!hosts.some((host) => url.hostname === host || url.hostname.endsWith(`.${host}`))) throw new MediaSourceError('Джерело повернуло недозволену адресу аудіо.');
     const headers = Object.fromEntries(Object.entries(value.http_headers ?? {}).filter(([name, value]) =>
       ['user-agent', 'referer', 'origin', 'accept-language'].includes(name.toLowerCase()) && value.length <= 2048 && !/[\r\n]/.test(value)));
     for (let attempt = 0; ; attempt++) {
-      try { return await (this.id === 'youtube' && this.youtubeProxyUrl
+      try { return await (this.id === 'soundcloud' && value.protocol === 'm3u8_native'
+        ? openSoundCloudHls(url.href, signal, headers)
+        : this.id === 'youtube' && this.youtubeProxyUrl
         ? openAudioStream(url.href, signal, 0, undefined, headers, 4, this.youtubeProxyUrl)
         : this.id === 'youtube' && this.youtubeIpFamily === 'ipv6'
         ? openAudioStream(url.href, signal, 0, undefined, headers, 6)

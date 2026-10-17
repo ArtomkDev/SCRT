@@ -49,6 +49,11 @@ describe('audio HTTP redirect transport', () => {
     const dns = vi.fn(async () => [{ address: '8.8.8.8', family: 4 }]); const stream = await openAudioStream('https://audio.example/file', undefined, 0, dns); expect(stream).toBe(audio); expect(dns).toHaveBeenCalledTimes(2); stream.destroy();
     transport(response(200, { 'content-type': 'text/html' })); await expect(openAudioStream('https://audio.example/file', undefined, 0, dns)).rejects.toThrow('аудіопотік');
   });
+  it('retains the segment CDN allowlist across redirects', async () => {
+    const redirect = response(302, { location: 'https://evil.example/segment.mp4' }); transport(redirect);
+    await expect(openAudioStream('https://audio.example/init.mp4', undefined, 0, async () => [{ address: '8.8.8.8', family: 4 }], {}, undefined, undefined, ['audio.example'])).rejects.toThrow('Недозволена');
+    expect(mocks.request).toHaveBeenCalledOnce(); expect(redirect.destroyed).toBe(true);
+  });
   it('keeps buffered audio unread while recording transport metadata and a stream identity', async () => {
     const audio = response(200, { 'content-type': 'audio/mpeg', 'content-length': '4' });
     const bytes = Buffer.from([1, 2, 3, 4]); (audio as unknown as PassThrough).write(bytes); transport(audio);

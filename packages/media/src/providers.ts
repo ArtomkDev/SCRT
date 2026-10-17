@@ -1,8 +1,7 @@
 import { z } from 'zod';
-import type { IncomingMessage } from 'node:http';
 import { log, type MediaProviderHealth, type MediaProviderId, type MediaTrack } from '@scrt/shared';
 import { mediaTrackSchema, mediaPlaylistPageSchema, soundcloudPlaylistUrl, type MediaPlaylistPage } from '@scrt/validation';
-import { openAudioStream, validateMediaUrl } from './audio-http';
+import { openAudioStream, validateMediaUrl, type MediaAudioStream } from './audio-http';
 import { MediaSourceError, OnlineAudioProvider, type OnlineAudioExtractor } from './online-audio';
 import { fallbackSearchQuery, normalizeSearchQuery, preferredSearchQuery, searchRelevance } from './search-query';
 
@@ -15,7 +14,7 @@ export interface MediaSourceProvider {
   playlist?(reference: string, page?: number): Promise<MediaPlaylistPage>;
   search(query: string, page?: number): Promise<MediaTrack[]>;
   resolve(reference: string, signal?: AbortSignal): Promise<MediaTrack>;
-  getPlayableResource(reference: string, signal: AbortSignal): Promise<IncomingMessage>;
+  getPlayableResource(reference: string, signal: AbortSignal): Promise<MediaAudioStream>;
 }
 const capabilities = (playback: boolean, live = false) => ({ search: true, metadata: true, playback, live, seek: false, playlists: false });
 export class DirectAudioProvider implements MediaSourceProvider {
@@ -64,7 +63,7 @@ export class YouTubeProvider implements MediaSourceProvider {
     return ids.length ? this.videos(ids) : [];
   }
   async resolve(reference: string) { if (!/^[\w-]{11}$/.test(reference)) throw new Error('Invalid YouTube ID'); const track = (await this.videos([reference]))[0]; if (!track) throw new Error('Відео не знайдено.'); return track; }
-  async getPlayableResource(): Promise<IncomingMessage> { throw new Error('YouTube підтримує лише пошук та інформацію.'); }
+  async getPlayableResource(): Promise<MediaAudioStream> { throw new Error('YouTube підтримує лише пошук та інформацію.'); }
 }
 export class MediaSourceRegistry {
   private readonly cache = new Map<string, { until: number; value: MediaSearchResult }>();

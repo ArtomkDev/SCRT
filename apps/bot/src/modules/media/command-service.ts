@@ -1,16 +1,15 @@
 import { randomUUID, randomInt, createHash } from 'node:crypto';
-import type { IncomingMessage } from 'node:http';
 import { ChannelType, PermissionFlagsBits, type Client, type Guild, type GuildMember, type VoiceState } from 'discord.js';
 import { PermissionService, mediaPolicy, type MediaActor } from '@scrt/permissions';
 import type { GuildRepository, MediaStore } from '@scrt/database';
 import { mediaCommandSchema, mediaSettingsSchema, type MediaAction, type MediaCommand, type MediaSettings } from '@scrt/validation';
 import { log, type MediaHistoryItem, type MediaQueueItem, type MediaSession, type MediaTrack } from '@scrt/shared';
-import { countedVotes, scheduledQueue, voteThreshold, MediaSourceError, MediaAudioHttpError, type MediaSourceRegistry } from '@scrt/media';
+import { countedVotes, scheduledQueue, voteThreshold, MediaSourceError, MediaAudioHttpError, type MediaAudioStream, type MediaSourceRegistry } from '@scrt/media';
 import type { EngineEvent, PlaybackEngine } from './playback-engine';
 
 export class MediaError extends Error { constructor(message: string, readonly status = 409) { super(message); } }
 type Actor = MediaActor & { member: GuildMember; guild: Guild };
-type PreparedPlayback = { stream: IncomingMessage; claimed: boolean };
+type PreparedPlayback = { stream: MediaAudioStream; claimed: boolean };
 type Runtime = { session: MediaSession | null; engine: PlaybackEngine; votes: Set<string>; emptyTimer: NodeJS.Timeout | null; emptyPaused: boolean; reconnectState: MediaSession['state'] | null; connected: boolean; idleSince: number | null; idleTimer: NodeJS.Timeout | null; idleDeadline: number | null; inactivityDisconnectSeconds: number };
 export class MediaSessionService {
   private readonly runtimes = new Map<string, Runtime>();
